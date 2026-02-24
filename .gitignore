@@ -1,2 +1,17 @@
+# Maven/Gradle build outputs
 /target/
 **/target/
+build/
+out/
+
+# IDE metadata
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
