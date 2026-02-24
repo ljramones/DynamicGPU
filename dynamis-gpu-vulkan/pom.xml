@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.dynamisgpu</groupId>
     <artifactId>dynamisgpu-parent</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
   </parent>
   <artifactId>dynamis-gpu-vulkan</artifactId>
   <name>DynamisGPU Vulkan</name>
