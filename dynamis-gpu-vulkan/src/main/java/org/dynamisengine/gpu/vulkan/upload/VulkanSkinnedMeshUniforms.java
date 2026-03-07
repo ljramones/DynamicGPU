@@ -4,6 +4,9 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.gpu.JointPaletteBuffer;
 
+/**
+ * Vulkan-backed implementation of skinned-mesh joint palette uploads.
+ */
 public final class VulkanSkinnedMeshUniforms implements JointPaletteBuffer {
   private static final AtomicLong NEXT_HANDLE = new AtomicLong(5000);
 
@@ -12,6 +15,9 @@ public final class VulkanSkinnedMeshUniforms implements JointPaletteBuffer {
   private int jointCount;
   private boolean destroyed;
 
+  /**
+   * Creates an empty joint palette buffer wrapper.
+   */
   public VulkanSkinnedMeshUniforms() {
     this.bufferHandle = NEXT_HANDLE.getAndIncrement();
   }

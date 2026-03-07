@@ -28,10 +28,18 @@ import static org.lwjgl.vulkan.VK10.vkDestroyCommandPool;
 import static org.lwjgl.vulkan.VK10.vkDestroyFence;
 import static org.lwjgl.vulkan.VK10.vkDestroySemaphore;
 
+/**
+ * Allocates and destroys Vulkan per-frame synchronization resources.
+ */
 public final class VulkanFrameSyncResources {
     private VulkanFrameSyncResources() {
     }
 
+    /**
+     * Creates frame synchronization primitives and command buffers.
+     *
+     * @return allocation bundle containing command pool/buffers and sync primitives
+     */
     public static Allocation create(
             VkDevice device,
             MemoryStack stack,
@@ -44,6 +52,9 @@ public final class VulkanFrameSyncResources {
         return new Allocation(commandPool, commandBuffers, sync.imageAvailableSemaphores(), sync.renderFinishedSemaphores(), sync.renderFences());
     }
 
+    /**
+     * Destroys synchronization resources created by {@link #create(VkDevice, MemoryStack, int, int)}.
+     */
     public static void destroy(VkDevice device, Allocation resources) {
         if (device == null || resources == null) {
             return;
@@ -142,6 +153,9 @@ public final class VulkanFrameSyncResources {
     private record SyncPrimitives(long[] imageAvailableSemaphores, long[] renderFinishedSemaphores, long[] renderFences) {
     }
 
+    /**
+     * Immutable frame-sync allocation bundle.
+     */
     public record Allocation(
             long commandPool,
             VkCommandBuffer[] commandBuffers,

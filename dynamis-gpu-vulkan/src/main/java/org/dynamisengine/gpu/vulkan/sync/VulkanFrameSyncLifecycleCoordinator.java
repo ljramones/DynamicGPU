@@ -7,10 +7,19 @@ import org.lwjgl.vulkan.VkDevice;
 
 import static org.lwjgl.vulkan.VK10.VK_NULL_HANDLE;
 
+/**
+ * Coordinates creation of frame-sync state objects used by the Vulkan renderer lifecycle.
+ */
 public final class VulkanFrameSyncLifecycleCoordinator {
     private VulkanFrameSyncLifecycleCoordinator() {
     }
 
+    /**
+     * Creates initialized frame-sync state from a request.
+     *
+     * @param request frame-sync creation inputs
+     * @return initialized frame-sync state
+     */
     public static State create(CreateRequest request) throws GpuException {
         VulkanFrameSyncResources.Allocation frameSyncResources = VulkanFrameSyncResources.create(
                 request.device(),
@@ -28,6 +37,11 @@ public final class VulkanFrameSyncLifecycleCoordinator {
         );
     }
 
+    /**
+     * Returns an empty state object with null handles.
+     *
+     * @return empty state
+     */
     public static State empty() {
         return new State(
                 VK_NULL_HANDLE,
@@ -39,6 +53,9 @@ public final class VulkanFrameSyncLifecycleCoordinator {
         );
     }
 
+    /**
+     * Immutable request object for state creation.
+     */
     public record CreateRequest(
             VkDevice device,
             MemoryStack stack,
@@ -47,6 +64,9 @@ public final class VulkanFrameSyncLifecycleCoordinator {
     ) {
     }
 
+    /**
+     * Immutable snapshot of frame-sync runtime state.
+     */
     public record State(
             long commandPool,
             VkCommandBuffer[] commandBuffers,

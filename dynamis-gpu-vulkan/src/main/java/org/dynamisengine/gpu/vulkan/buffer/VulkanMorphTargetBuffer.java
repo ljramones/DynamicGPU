@@ -18,6 +18,9 @@ import static org.lwjgl.vulkan.VK10.VK_NULL_HANDLE;
 import static org.lwjgl.vulkan.VK10.vkDestroyBuffer;
 import static org.lwjgl.vulkan.VK10.vkFreeMemory;
 
+/**
+ * Immutable Vulkan morph-target delta buffer allocation wrapper.
+ */
 public final class VulkanMorphTargetBuffer {
     private final long buffer;
     private final long memory;
@@ -33,6 +36,11 @@ public final class VulkanMorphTargetBuffer {
         this.bytes = bytes;
     }
 
+    /**
+     * Creates a device-local morph target buffer and uploads packed delta data through staging.
+     *
+     * @return created morph target buffer, or {@code null} when input payload is empty
+     */
     public static VulkanMorphTargetBuffer create(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -78,6 +86,11 @@ public final class VulkanMorphTargetBuffer {
         );
     }
 
+    /**
+     * Destroys Vulkan objects owned by this buffer wrapper.
+     *
+     * @param device Vulkan device used for destruction calls
+     */
     public void destroy(VkDevice device) {
         if (device == null) {
             return;
@@ -90,18 +103,30 @@ public final class VulkanMorphTargetBuffer {
         }
     }
 
+    /**
+     * @return Vulkan storage buffer handle
+     */
     public long bufferHandle() {
         return buffer;
     }
 
+    /**
+     * @return vertex count encoded in this payload
+     */
     public int vertexCount() {
         return vertexCount;
     }
 
+    /**
+     * @return morph target count encoded in this payload
+     */
     public int targetCount() {
         return targetCount;
     }
 
+    /**
+     * @return payload size in bytes
+     */
     public int bytes() {
         return bytes;
     }

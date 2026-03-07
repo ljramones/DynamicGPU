@@ -5,6 +5,9 @@ import java.util.Objects;
 import org.dynamisengine.gpu.api.gpu.ComputeCullingDispatch;
 import org.dynamisengine.gpu.api.gpu.VkCommandBuffer;
 
+/**
+ * Simple Vulkan compute-dispatch adapter that captures last submitted values.
+ */
 public final class VulkanComputeCullingDispatch implements ComputeCullingDispatch {
   private boolean destroyed;
   private long lastCommandBufferHandle;
@@ -33,14 +36,23 @@ public final class VulkanComputeCullingDispatch implements ComputeCullingDispatc
     lastFrustumPlanes = null;
   }
 
+  /**
+   * @return handle of the last command buffer used for dispatch
+   */
   public long lastCommandBufferHandle() {
     return lastCommandBufferHandle;
   }
 
+  /**
+   * @return mesh count from the most recent dispatch call
+   */
   public int lastMeshCount() {
     return lastMeshCount;
   }
 
+  /**
+   * @return defensive copy of the most recent frustum payload
+   */
   public float[] lastFrustumPlanes() {
     return lastFrustumPlanes == null ? null : Arrays.copyOf(lastFrustumPlanes, lastFrustumPlanes.length);
   }

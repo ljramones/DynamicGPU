@@ -3,6 +3,9 @@ package org.dynamisengine.gpu.vulkan.buffer;
 import java.util.Arrays;
 import org.dynamisengine.gpu.api.gpu.DrawMetaWriter;
 
+/**
+ * Vulkan-oriented draw metadata staging buffer.
+ */
 public final class VulkanDrawMetaBuffer implements DrawMetaWriter {
   private static final int DRAW_META_FIELDS = 8;
 
@@ -10,6 +13,11 @@ public final class VulkanDrawMetaBuffer implements DrawMetaWriter {
   private boolean dirty;
   private boolean destroyed;
 
+  /**
+   * Creates a draw metadata buffer with fixed capacity.
+   *
+   * @param capacity max draw entries
+   */
   public VulkanDrawMetaBuffer(int capacity) {
     if (capacity <= 0) {
       throw new IllegalArgumentException("capacity must be > 0");
@@ -56,10 +64,21 @@ public final class VulkanDrawMetaBuffer implements DrawMetaWriter {
     return entries.length;
   }
 
+  /**
+   * Indicates whether unflushed metadata writes are present.
+   *
+   * @return true when writes are pending
+   */
   public boolean isDirty() {
     return dirty;
   }
 
+  /**
+   * Returns a copy of the raw metadata fields for one draw.
+   *
+   * @param drawIndex target draw slot
+   * @return copied draw metadata payload
+   */
   public int[] read(int drawIndex) {
     validateIndex(drawIndex);
     return Arrays.copyOf(entries[drawIndex], DRAW_META_FIELDS);

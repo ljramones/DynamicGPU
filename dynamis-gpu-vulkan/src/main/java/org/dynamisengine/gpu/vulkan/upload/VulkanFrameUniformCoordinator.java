@@ -7,6 +7,9 @@ import java.util.Objects;
 import org.dynamisengine.gpu.api.gpu.StagingScheduler;
 import org.dynamisengine.gpu.api.gpu.VkCommandBuffer;
 
+/**
+ * Tracks frame-local dirty ranges and clears them once flushed.
+ */
 public final class VulkanFrameUniformCoordinator implements StagingScheduler {
   private final List<DirtyRange> pendingRanges = new ArrayList<>();
   private boolean destroyed;
@@ -39,6 +42,11 @@ public final class VulkanFrameUniformCoordinator implements StagingScheduler {
     pendingRanges.clear();
   }
 
+  /**
+   * Returns a read-only view of currently pending dirty ranges.
+   *
+   * @return immutable pending-range list
+   */
   public List<DirtyRange> pendingRanges() {
     return Collections.unmodifiableList(pendingRanges);
   }
@@ -49,5 +57,12 @@ public final class VulkanFrameUniformCoordinator implements StagingScheduler {
     }
   }
 
+  /**
+   * Immutable dirty-range descriptor.
+   *
+   * @param bufferHandle target buffer handle
+   * @param offset byte offset
+   * @param size byte size
+   */
   public record DirtyRange(long bufferHandle, long offset, long size) {}
 }

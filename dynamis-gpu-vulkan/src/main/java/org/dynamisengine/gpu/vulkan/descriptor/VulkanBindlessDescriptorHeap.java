@@ -15,6 +15,9 @@ import static org.lwjgl.vulkan.VK10.*;
 import static org.lwjgl.vulkan.VK11.vkGetPhysicalDeviceFeatures2;
 import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
+/**
+ * Vulkan descriptor-indexing heap that allocates typed handles and manages deferred retirement.
+ */
 public final class VulkanBindlessDescriptorHeap {
     public static final int JOINT_CAPACITY = 8192;
     public static final int MORPH_DELTA_CAPACITY = 4096;
@@ -72,6 +75,9 @@ public final class VulkanBindlessDescriptorHeap {
         this.instanceState = instanceState;
     }
 
+    /**
+     * Creates an active bindless descriptor heap when descriptor indexing is supported.
+     */
     public static VulkanBindlessDescriptorHeap create(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -106,6 +112,9 @@ public final class VulkanBindlessDescriptorHeap {
         }
     }
 
+    /**
+     * Returns a disabled no-op heap implementation.
+     */
     public static VulkanBindlessDescriptorHeap disabled() {
         return new VulkanBindlessDescriptorHeap(
                 null,
@@ -121,22 +130,37 @@ public final class VulkanBindlessDescriptorHeap {
         );
     }
 
+    /**
+     * @return true when heap is active and descriptor indexing is enabled
+     */
     public boolean active() {
         return active;
     }
 
+    /**
+     * @return Vulkan descriptor set layout handle
+     */
     public long descriptorSetLayout() {
         return descriptorSetLayout;
     }
 
+    /**
+     * @return Vulkan descriptor pool handle
+     */
     public long descriptorPool() {
         return descriptorPool;
     }
 
+    /**
+     * @return Vulkan descriptor set handle
+     */
     public long descriptorSet() {
         return descriptorSet;
     }
 
+    /**
+     * Allocates a typed heap handle.
+     */
     public synchronized long allocate(HeapType type) {
         TypeState state = state(type);
         if (!active || state == null || state.top <= 0) {
@@ -153,6 +177,9 @@ public final class VulkanBindlessDescriptorHeap {
         return packHandle(type, gen, slot);
     }
 
+    /**
+     * Queues a handle for deferred retirement.
+     */
     public synchronized void retire(long handle, long currentFrame) {
         if (!active || handle == 0L) {
             return;
@@ -170,6 +197,11 @@ public final class VulkanBindlessDescriptorHeap {
         freesQueuedCount++;
     }
 
+    /**
+     * Processes queued retirements eligible at the current frame.
+     *
+     * @return number of handles retired
+     */
     public synchronized int processRetirements(long currentFrame) {
         if (!active || retirements.isEmpty()) {
             return 0;
@@ -201,6 +233,11 @@ public final class VulkanBindlessDescriptorHeap {
         return processed;
     }
 
+    /**
+     * Resolves a heap handle to its backing descriptor slot.
+     *
+     * @return slot index, or {@code -1} when handle is invalid/stale
+     */
     public synchronized int resolveSlot(long handle, long currentFrame) {
         if (!active || handle == 0L) {
             return -1;
@@ -217,6 +254,11 @@ public final class VulkanBindlessDescriptorHeap {
         return slot;
     }
 
+    /**
+     * Updates descriptor payload for a joint palette handle.
+     *
+     * @return true when update was accepted
+     */
     public synchronized boolean updateJointPaletteDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
         if (!active || handle == 0L || bufferHandle == VK_NULL_HANDLE || rangeBytes <= 0L) {
             return false;
@@ -245,23 +287,44 @@ public final class VulkanBindlessDescriptorHeap {
         }
     }
 
+    /**
+     * Updates descriptor payload for a morph delta handle.
+     *
+     * @return true when update was accepted
+     */
     public synchronized boolean updateMorphDeltaDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
         return updateStorageBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 1);
     }
 
+    /**
+     * Updates descriptor payload for a morph weight handle.
+     *
+     * @return true when update was accepted
+     */
     public synchronized boolean updateMorphWeightDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
         return updateUniformBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 2);
     }
 
+    /**
+     * Updates descriptor payload for an instance-data handle.
+     *
+     * @return true when update was accepted
+     */
     public synchronized boolean updateInstanceDataDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
         return updateStorageBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 3);
     }
 
+    /**
+     * Updates draw metadata-related counters.
+     */
     public synchronized void updateDrawMetaStats(int drawMetaCount, int invalidIndexWrites) {
         this.drawMetaCount = Math.max(0, drawMetaCount);
         this.invalidIndexWriteCount = Math.max(0, invalidIndexWrites);
     }
 
+    /**
+     * Returns current heap counters and utilization snapshot.
+     */
     public synchronized BindlessHeapStats stats() {
         return new BindlessHeapStats(
                 usedCount(jointState),
@@ -281,6 +344,9 @@ public final class VulkanBindlessDescriptorHeap {
         );
     }
 
+    /**
+     * Destroys Vulkan objects owned by this heap.
+     */
     public void destroy(VkDevice device) {
         if (device == null) {
             return;
@@ -583,6 +649,9 @@ public final class VulkanBindlessDescriptorHeap {
         return Math.max(0, state.capacity - state.top);
     }
 
+    /**
+     * Typed handle domains tracked in the bindless heap.
+     */
     public enum HeapType {
         JOINT_PALETTE(0, JOINT_CAPACITY),
         MORPH_DELTA(1, MORPH_DELTA_CAPACITY),

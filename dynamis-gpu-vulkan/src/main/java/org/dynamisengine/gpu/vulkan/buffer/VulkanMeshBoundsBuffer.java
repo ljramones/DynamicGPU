@@ -3,6 +3,9 @@ package org.dynamisengine.gpu.vulkan.buffer;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.gpu.BoundsBuffer;
 
+/**
+ * In-memory Vulkan-side bounds buffer implementation used for culling inputs.
+ */
 public final class VulkanMeshBoundsBuffer implements BoundsBuffer {
   private static final AtomicLong NEXT_HANDLE = new AtomicLong(2000);
 
@@ -11,6 +14,11 @@ public final class VulkanMeshBoundsBuffer implements BoundsBuffer {
   private boolean dirty;
   private boolean destroyed;
 
+  /**
+   * Creates a bounds buffer with a fixed number of writable slots.
+   *
+   * @param capacity number of bounds entries
+   */
   public VulkanMeshBoundsBuffer(int capacity) {
     if (capacity <= 0) {
       throw new IllegalArgumentException("capacity must be > 0");
@@ -48,6 +56,11 @@ public final class VulkanMeshBoundsBuffer implements BoundsBuffer {
     destroyed = true;
   }
 
+  /**
+   * Indicates whether unflushed bounds writes are present.
+   *
+   * @return true when writes are pending
+   */
   public boolean isDirty() {
     return dirty;
   }

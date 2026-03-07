@@ -64,10 +64,16 @@ import static org.lwjgl.vulkan.VK10.vkQueueSubmit;
 import static org.lwjgl.vulkan.VK10.vkQueueWaitIdle;
 import static org.lwjgl.vulkan.VK10.vkUnmapMemory;
 
+/**
+ * Static Vulkan memory helper methods for buffer/image creation and transfer operations.
+ */
 public final class VulkanMemoryOps {
     private VulkanMemoryOps() {
     }
 
+    /**
+     * Creates a Vulkan buffer and backing memory allocation, then binds them together.
+     */
     public static VulkanBufferAlloc createBuffer(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -112,6 +118,9 @@ public final class VulkanMemoryOps {
         return new VulkanBufferAlloc(buffer, memory);
     }
 
+    /**
+     * Uploads source bytes through a staging buffer into a device-local buffer.
+     */
     public static VulkanBufferAlloc createDeviceLocalBufferWithStaging(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -153,6 +162,9 @@ public final class VulkanMemoryOps {
         }
     }
 
+    /**
+     * Convenience overload for image allocation with one mip level.
+     */
     public static VulkanImageAlloc createImage(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -180,6 +192,9 @@ public final class VulkanMemoryOps {
         );
     }
 
+    /**
+     * Convenience overload for image allocation with explicit mip level count.
+     */
     public static VulkanImageAlloc createImage(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -209,6 +224,9 @@ public final class VulkanMemoryOps {
         );
     }
 
+    /**
+     * Creates a Vulkan image and its bound memory allocation.
+     */
     public static VulkanImageAlloc createImage(
             VkDevice device,
             VkPhysicalDevice physicalDevice,
@@ -268,6 +286,9 @@ public final class VulkanMemoryOps {
         return new VulkanImageAlloc(image, memory);
     }
 
+    /**
+     * Convenience overload for image layout transition using one array layer.
+     */
     public static void transitionImageLayout(
             VkDevice device,
             long commandPool,
@@ -280,6 +301,9 @@ public final class VulkanMemoryOps {
         transitionImageLayout(device, commandPool, graphicsQueue, image, oldLayout, newLayout, 1, 1, vkFailure);
     }
 
+    /**
+     * Transitions an image across Vulkan layouts for the specified layer count.
+     */
     public static void transitionImageLayout(
             VkDevice device,
             long commandPool,
@@ -337,6 +361,9 @@ public final class VulkanMemoryOps {
         }
     }
 
+    /**
+     * Convenience overload to copy a buffer into a one-layer image.
+     */
     public static void copyBufferToImage(
             VkDevice device,
             long commandPool,
@@ -350,6 +377,9 @@ public final class VulkanMemoryOps {
         copyBufferToImageLayers(device, commandPool, graphicsQueue, buffer, image, width, height, 1, width * height * 4, vkFailure);
     }
 
+    /**
+     * Copies a buffer into a Vulkan image across one or more array layers.
+     */
     public static void copyBufferToImageLayers(
             VkDevice device,
             long commandPool,
@@ -385,6 +415,9 @@ public final class VulkanMemoryOps {
         }
     }
 
+    /**
+     * Records and submits a one-shot buffer-to-buffer copy command.
+     */
     public static void copyBuffer(
             VkDevice device,
             long commandPool,
@@ -439,6 +472,9 @@ public final class VulkanMemoryOps {
         }
     }
 
+    /**
+     * Maps device memory and copies the given source bytes into it.
+     */
     public static void uploadToMemory(
             VkDevice device,
             long memory,

@@ -4,6 +4,9 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.gpu.InstanceDataBuffer;
 
+/**
+ * Vulkan implementation of per-instance data upload/storage.
+ */
 public final class VulkanInstanceBatchBuffer implements InstanceDataBuffer {
   private static final AtomicLong NEXT_HANDLE = new AtomicLong(3000);
 
@@ -14,6 +17,9 @@ public final class VulkanInstanceBatchBuffer implements InstanceDataBuffer {
   private int instanceCount;
   private boolean destroyed;
 
+  /**
+   * Creates an empty instance batch buffer.
+   */
   public VulkanInstanceBatchBuffer() {
     this.bufferHandle = NEXT_HANDLE.getAndIncrement();
   }

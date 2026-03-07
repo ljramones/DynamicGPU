@@ -4,6 +4,9 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.gpu.IndirectCommandBuffer;
 
+/**
+ * Vulkan implementation of an indirect draw command buffer with variant buckets.
+ */
 public final class VulkanIndirectDrawBuffer implements IndirectCommandBuffer {
   private static final AtomicLong NEXT_HANDLE = new AtomicLong(1000);
 
@@ -14,6 +17,12 @@ public final class VulkanIndirectDrawBuffer implements IndirectCommandBuffer {
   private final long countBufferHandle;
   private boolean destroyed;
 
+  /**
+   * Creates an indirect buffer and partitions it into variant capacity ranges.
+   *
+   * @param totalCapacity total command slots
+   * @param variantCapacities per-variant slot capacities
+   */
   public VulkanIndirectDrawBuffer(int totalCapacity, int[] variantCapacities) {
     if (totalCapacity <= 0) {
       throw new IllegalArgumentException("totalCapacity must be > 0");

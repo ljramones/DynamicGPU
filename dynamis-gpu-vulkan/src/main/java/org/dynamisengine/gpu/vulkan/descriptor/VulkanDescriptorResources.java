@@ -5,6 +5,9 @@ import java.util.Collections;
 import java.util.List;
 import org.dynamisengine.gpu.api.gpu.DescriptorWriter;
 
+/**
+ * In-memory descriptor write collector used by Vulkan descriptor update paths.
+ */
 public final class VulkanDescriptorResources implements DescriptorWriter {
   private final List<DescriptorWrite> writes = new ArrayList<>();
 
@@ -32,16 +35,27 @@ public final class VulkanDescriptorResources implements DescriptorWriter {
             WriteType.SAMPLED_IMAGE, descriptorSet, binding, arrayElement, 0L, 0L, 0L, imageView, sampler));
   }
 
+  /**
+   * Returns an immutable view of captured descriptor writes.
+   *
+   * @return descriptor write list
+   */
   public List<DescriptorWrite> writes() {
     return Collections.unmodifiableList(writes);
   }
 
+  /**
+   * Descriptor write operation kind.
+   */
   public enum WriteType {
     STORAGE_BUFFER,
     UNIFORM_BUFFER,
     SAMPLED_IMAGE
   }
 
+  /**
+   * Immutable captured descriptor write payload.
+   */
   public record DescriptorWrite(
       WriteType type,
       long descriptorSet,

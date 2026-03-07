@@ -4,6 +4,9 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.gpu.WeightBuffer;
 
+/**
+ * Vulkan-backed implementation of morph weight upload storage.
+ */
 public final class VulkanMorphWeightUniforms implements WeightBuffer {
   private static final AtomicLong NEXT_HANDLE = new AtomicLong(4000);
 
@@ -11,6 +14,9 @@ public final class VulkanMorphWeightUniforms implements WeightBuffer {
   private float[] weights = new float[0];
   private boolean destroyed;
 
+  /**
+   * Creates an empty morph-weight uniform buffer wrapper.
+   */
   public VulkanMorphWeightUniforms() {
     this.bufferHandle = NEXT_HANDLE.getAndIncrement();
   }
