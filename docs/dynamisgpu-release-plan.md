@@ -13,10 +13,10 @@ Prepare this repository for ecosystem-aligned release under the DynamisEngine co
   - Internal only (no normal Central release): `dynamis-gpu-bench`.
 
 ## Current State Snapshot
-- Current package root in code: `org.dynamisgpu...`.
-- Current groupId in POMs: `org.dynamisgpu`.
+- Current package root in code: `org.dynamisengine.gpu...`.
+- Current groupId in POMs: `org.dynamisengine`.
 - Modules present: `dynamis-gpu-api`, `dynamis-gpu-vulkan`, `dynamis-gpu-test`, `dynamis-gpu-bench`.
-- Root uses a local parent (`dynamisgpu-parent`) and not `dynamis-parent`.
+- Root inherits `org.dynamisengine:dynamis-parent`.
 - Current dependency surface:
   - No Vectrix dependency or imports detected in any module.
   - No DynamisCore dependency currently declared.
@@ -88,9 +88,17 @@ Prepare this repository for ecosystem-aligned release under the DynamisEngine co
 - Non-blocking warnings observed from Maven/Guice about deprecated `sun.misc.Unsafe` usage.
 
 ## Publish/Readiness Blockers (Remaining)
-- Namespace migration not yet applied in source code (`org.dynamisgpu` -> `org.dynamisengine.gpu`).
-- Release scripts not yet standardized (`build.sh`, `deploy.sh`).
 - README and module metadata still require coordinate/namespace update.
+
+## Phase 2 Progress (2026-03-07)
+- Namespace migration applied across `api`, `vulkan`, `test`, and `bench` modules:
+  - `org.dynamisgpu...` -> `org.dynamisengine.gpu...`
+- Source/test directory paths aligned to package declarations.
+- `build.sh` and `deploy.sh` added and standardized to ecosystem release flow.
+- Validation after namespace migration:
+  - `mvn -q clean test`: pass
+  - `mvn -q -DskipTests package`: pass
+  - `mvn -q -Prelease -DskipTests package`: pass
 
 ## Codex Execution Task List
 1. Coordinate migration PR (POM-only).
