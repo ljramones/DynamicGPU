@@ -63,6 +63,16 @@ Prepare this repository for ecosystem-aligned release under the DynamisEngine co
 - Remove legacy OSSRH/Nexus-era config if still present.
 - Ensure sources/javadocs/signing/Central metadata are inherited and active in release profile.
 
+## Phase 1C Dependency Realignment Result (2026-03-07)
+- `Vectrix`: no action required.
+  - No Vectrix dependency/import usage exists in this repository, so there is nothing to remove.
+- `DynamisCore`: deferred (no safe slice in this pass).
+  - No direct contract match was found that can replace existing GPU API types without changing public behavior.
+  - `GpuException` (checked + GPU error semantics) is not a drop-in for Core runtime exceptions.
+  - Core resource contracts (`Disposable`, `ResourceHandle`) would require API redesign across modules.
+- `Bench internal policy`: implemented.
+  - `dynamis-gpu-bench` now sets `maven.deploy.skip=true` to stay non-release in standard deploy flows.
+
 ## Validation Checklist
 - `mvn -q test`
 - `mvn -q -DskipTests package`
