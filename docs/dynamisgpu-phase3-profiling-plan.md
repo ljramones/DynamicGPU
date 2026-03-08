@@ -160,3 +160,26 @@ Updated action read:
 - Direct-buffer helper churn target is materially reduced; initial Phase 3.5 goal is met.
 - Deferred bookkeeping is now relatively more visible and remains the next wrap/cache target.
 - No new evidence justifies LWJGL patching or FFM replacement.
+
+## 12. Phase 3.6 Rerun (Deferred Prep/Bookkeeping Pass)
+
+Change scope:
+- Added per-plan sizing precompute in `submitBatchDeferred` to avoid repeated per-plan size/index checks.
+- Reused scratch range maps for copy validation to reduce per-batch temporary map/list creation churn.
+- Kept deferred semantics and public APIs unchanged.
+
+Rerun recording:
+- `/tmp/dgpu-phase3-sustained-phase36.jfr`
+- `jdk.ExecutionSample` count: `28`
+
+Measured delta table (Phase 3.5 -> Phase 3.6):
+
+| Path | Before (3.5) | After (3.6) | Delta | Action |
+| --- | ---: | ---: | ---: | --- |
+| `submitBatchDeferred` inclusive presence | `28.00%` | `39.29%` | `+11.29pp` | stop |
+| `preparePlanForBatch` inclusive presence | `24.00%` | `35.71%` | `+11.71pp` | stop |
+| Newly exposed hotspot (`ScopedMemoryAccess.copyMemoryInternal` top-of-stack) | `24.00%` | `32.14%` | `+8.14pp` | leave (native/runtime path) |
+
+Conclusion:
+- Phase 3.6 did **not** materially reduce the targeted Java-side submit/prep inclusive shares.
+- With direct-buffer churn already removed in Phase 3.5 and no LWJGL-internal hotspot evidence, further Java-side prep micro-optimization is likely low-yield relative to runtime/native transfer behavior.

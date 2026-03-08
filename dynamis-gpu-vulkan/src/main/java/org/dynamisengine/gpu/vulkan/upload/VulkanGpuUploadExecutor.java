@@ -85,6 +85,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private final ArrayDeque<PendingSubmission> pendingSubmissions = new ArrayDeque<>();
   private final AtomicLong nextSubmissionId = new AtomicLong(1L);
   private ByteBuffer reusableDirectCopyBuffer;
+  private final Map<Long, List<Range>> srcRangesByBufferScratch = new HashMap<>();
+  private final Map<Long, List<Range>> dstRangesByBufferScratch = new HashMap<>();
 
   public VulkanGpuUploadExecutor(
       VkDevice device,
@@ -156,19 +158,17 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     }
 
     ArrayList<PreparedPlan> preparedPlans = new ArrayList<>(plans.size());
+    ArrayList<PlanSizing> planSizings = new ArrayList<>(plans.size());
     long totalBytes = 0L;
-    int stageChunkCount = 0;
+    long estimatedBytes = 0L;
     for (GpuGeometryUploadPlan plan : plans) {
-      totalBytes += plan.vertexData().remaining();
-      stageChunkCount++;
-      if (plan.indexData() != null) {
-        totalBytes += plan.indexData().remaining();
-        stageChunkCount++;
-      }
+      PlanSizing sizing = PlanSizing.from(plan);
+      planSizings.add(sizing);
+      totalBytes += sizing.totalBytes();
+      estimatedBytes += sizing.estimatedStagingBytes();
     }
     long submissionId = nextSubmissionId.getAndIncrement();
     try (MemoryStack stack = MemoryStack.stackPush()) {
-      long estimatedBytes = totalBytes + (long) stageChunkCount * 16L;
       if (estimatedBytes > Integer.MAX_VALUE) {
         throw new GpuException(
             GpuErrorCode.BACKEND_INIT_FAILED,
@@ -177,10 +177,10 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       }
       uploadArena.reserveForBatch(stack, (int) estimatedBytes);
       uploadArena.reset();
-      for (GpuGeometryUploadPlan plan : plans) {
-        preparedPlans.add(preparePlanForBatch(stack, plan));
+      for (PlanSizing sizing : planSizings) {
+        preparedPlans.add(preparePlanForBatch(stack, sizing));
       }
-      validateCopyOps(preparedPlans, submissionId);
+      validateCopyOps(preparedPlans, submissionId, srcRangesByBufferScratch, dstRangesByBufferScratch);
       SubmissionHandles handles = submitCopies(stack, preparedPlans, false);
       uploadArena.markSubmissionInFlight(submissionId);
       PendingSubmission pending =
@@ -188,7 +188,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
               submissionId,
               handles.commandBufferHandle(),
               handles.fenceHandle(),
-              List.copyOf(preparedPlans),
+              preparedPlans,
               totalBytes);
       pendingSubmissions.addLast(pending);
       return new DeferredUploadBatch(pending.submissionId, pending.planCount(), pending.totalBytes);
@@ -412,13 +412,13 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     }
   }
 
-  private PreparedPlan preparePlanForBatch(MemoryStack stack, GpuGeometryUploadPlan plan)
+  private PreparedPlan preparePlanForBatch(MemoryStack stack, PlanSizing sizing)
       throws GpuException {
-    Objects.requireNonNull(plan, "plan");
+    GpuGeometryUploadPlan plan = sizing.plan;
     ByteBuffer vertexBytes = toReusableDirectCopy(plan.vertexData());
     int vertexUsage = toVkBufferUsage(GpuBufferUsage.VERTEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     VulkanDeviceLocalBufferPool.Lease vertexLease =
-        deviceBufferPool.acquire(stack, vertexBytes.remaining(), vertexUsage);
+        deviceBufferPool.acquire(stack, sizing.vertexBytes, vertexUsage);
     VulkanUploadArena.Slice vertexSlice = uploadArena.stage(stack, vertexBytes, 16);
     VulkanGpuBuffer vertexBuffer =
         new VulkanGpuBuffer(
@@ -432,11 +432,11 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
 
     VulkanGpuBuffer indexBuffer = null;
     CopyOp indexCopy = null;
-    if (plan.indexData() != null) {
+    if (sizing.hasIndexData) {
       ByteBuffer indexBytes = toReusableDirectCopy(plan.indexData());
       int indexUsage = toVkBufferUsage(GpuBufferUsage.INDEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
       VulkanDeviceLocalBufferPool.Lease indexLease =
-          deviceBufferPool.acquire(stack, indexBytes.remaining(), indexUsage);
+          deviceBufferPool.acquire(stack, sizing.indexBytes, indexUsage);
       VulkanUploadArena.Slice indexSlice = uploadArena.stage(stack, indexBytes, 16);
       indexBuffer =
           new VulkanGpuBuffer(
@@ -556,15 +556,26 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     vkCmdCopyBuffer(commandBuffer, copy.srcBuffer, copy.dstBuffer, copyRegion);
   }
 
-  private static void validateCopyOps(List<PreparedPlan> preparedPlans, long submissionId) {
-    Map<Long, List<Range>> srcRangesByBuffer = new HashMap<>();
-    Map<Long, List<Range>> dstRangesByBuffer = new HashMap<>();
+  private static void validateCopyOps(
+      List<PreparedPlan> preparedPlans,
+      long submissionId,
+      Map<Long, List<Range>> srcRangesByBuffer,
+      Map<Long, List<Range>> dstRangesByBuffer) {
+    clearRanges(srcRangesByBuffer);
+    clearRanges(dstRangesByBuffer);
     for (PreparedPlan prepared : preparedPlans) {
       validateCopy(prepared.vertexCopy, srcRangesByBuffer, dstRangesByBuffer, submissionId);
       if (prepared.indexCopy != null) {
         validateCopy(prepared.indexCopy, srcRangesByBuffer, dstRangesByBuffer, submissionId);
       }
     }
+  }
+
+  private static void clearRanges(Map<Long, List<Range>> rangesByBuffer) {
+    for (List<Range> ranges : rangesByBuffer.values()) {
+      ranges.clear();
+    }
+    rangesByBuffer.clear();
   }
 
   private static void validateCopy(
@@ -713,6 +724,26 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private record Range(long startInclusive, long endExclusive) {
     private boolean overlaps(Range other) {
       return this.startInclusive < other.endExclusive && other.startInclusive < this.endExclusive;
+    }
+  }
+
+  private record PlanSizing(
+      GpuGeometryUploadPlan plan,
+      int vertexBytes,
+      int indexBytes,
+      boolean hasIndexData,
+      long estimatedStagingBytes) {
+    private static PlanSizing from(GpuGeometryUploadPlan plan) {
+      int vertexBytes = plan.vertexData().remaining();
+      ByteBuffer indexData = plan.indexData();
+      boolean hasIndexData = indexData != null;
+      int indexBytes = hasIndexData ? indexData.remaining() : 0;
+      long chunkPadding = hasIndexData ? 32L : 16L;
+      return new PlanSizing(plan, vertexBytes, indexBytes, hasIndexData, vertexBytes + indexBytes + chunkPadding);
+    }
+
+    private long totalBytes() {
+      return (long) vertexBytes + indexBytes;
     }
   }
 }
