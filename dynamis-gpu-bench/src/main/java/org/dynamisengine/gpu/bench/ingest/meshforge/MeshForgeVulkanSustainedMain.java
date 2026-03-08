@@ -6,13 +6,19 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.dynamisengine.gpu.api.layout.IndexType;
 import org.dynamisengine.gpu.api.layout.SubmeshRange;
 import org.dynamisengine.gpu.api.layout.VertexAttribute;
 import org.dynamisengine.gpu.api.layout.VertexFormat;
 import org.dynamisengine.gpu.api.layout.VertexLayout;
 import org.dynamisengine.gpu.api.resource.GpuMeshResource;
+import org.dynamisengine.gpu.api.upload.DefaultUploadManager;
 import org.dynamisengine.gpu.api.upload.GpuGeometryUploadPlan;
+import org.dynamisengine.gpu.api.upload.GpuUploadExecutor;
+import org.dynamisengine.gpu.api.upload.UploadManager;
+import org.dynamisengine.gpu.api.upload.UploadTicket;
+import org.dynamisengine.gpu.api.upload.UploadTelemetry;
 import org.dynamisengine.gpu.vulkan.upload.VulkanGpuUploadExecutor;
 import org.dynamisengine.meshforge.api.Packers;
 import org.dynamisengine.meshforge.gpu.cache.RuntimeGeometryLoader;
@@ -28,6 +34,7 @@ public final class MeshForgeVulkanSustainedMain {
     boolean debug = containsArg(args, "--debug");
     boolean phase4Overlap = containsArg(args, "--phase4-4a1");
     boolean phase4PushPull = containsArg(args, "--phase4-4b-push-pull");
+    boolean phase5ManagerCompare = containsArg(args, "--phase5-manager-compare");
     int maxInflight = parseIntOption(args, "--max-inflight", 1);
     int arrivalJitterMs = parseIntOption(args, "--arrival-jitter-ms", 0);
     int microburstSize = parseIntOption(args, "--microburst-size", 10);
@@ -72,7 +79,7 @@ public final class MeshForgeVulkanSustainedMain {
                 context.commandPool(),
                 context.graphicsQueue(),
                 VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED)) {
-      if (phase4Overlap || phase4PushPull) {
+      if (phase4Overlap || phase4PushPull || phase5ManagerCompare) {
         List<VulkanGpuUploadExecutor> overlapExecutors = new ArrayList<>(maxInflight);
         try {
           for (int i = 0; i < maxInflight; i++) {
@@ -86,6 +93,15 @@ public final class MeshForgeVulkanSustainedMain {
           }
           if (phase4PushPull) {
             runPushPullComparison(
+                overlapExecutors,
+                dragonPlan,
+                lucyPlan,
+                maxInflight,
+                arrivalPattern,
+                arrivalJitterMs,
+                microburstSize);
+          } else if (phase5ManagerCompare) {
+            runPhase5ManagerComparison(
                 overlapExecutors,
                 dragonPlan,
                 lucyPlan,
@@ -332,6 +348,160 @@ public final class MeshForgeVulkanSustainedMain {
             arrivalJitterMs,
             microburstSize,
             SchedulingPolicy.PULL));
+  }
+
+  private static void runPhase5ManagerComparison(
+      List<VulkanGpuUploadExecutor> executors,
+      GpuGeometryUploadPlan dragonPlan,
+      GpuGeometryUploadPlan lucyPlan,
+      int maxInflight,
+      ArrivalPattern arrivalPattern,
+      int arrivalJitterMs,
+      int microburstSize)
+      throws Exception {
+    printResult(
+        runOverlapScenario(
+            "dragon_batch_10_phase5",
+            executors,
+            dragonPlan,
+            10,
+            100,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize,
+            SchedulingPolicy.PULL));
+    printResult(
+        runManagerScenario(
+            "dragon_batch_10_phase5",
+            executors,
+            dragonPlan,
+            10,
+            100,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize));
+    printResult(
+        runOverlapScenario(
+            "lucy_batch_100_phase5",
+            executors,
+            lucyPlan,
+            100,
+            100,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize,
+            SchedulingPolicy.PULL));
+    printResult(
+        runManagerScenario(
+            "lucy_batch_100_phase5",
+            executors,
+            lucyPlan,
+            100,
+            100,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize));
+    GpuGeometryUploadPlan synthetic = syntheticPlan(100 * 1024 * 1024);
+    printResult(
+        runOverlapScenario(
+            "synthetic_100mb_phase5",
+            executors,
+            synthetic,
+            1,
+            30,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize,
+            SchedulingPolicy.PULL));
+    printResult(
+        runManagerScenario(
+            "synthetic_100mb_phase5",
+            executors,
+            synthetic,
+            1,
+            30,
+            maxInflight,
+            arrivalPattern,
+            arrivalJitterMs,
+            microburstSize));
+  }
+
+  private static ScenarioResult runManagerScenario(
+      String name,
+      List<VulkanGpuUploadExecutor> executors,
+      GpuGeometryUploadPlan template,
+      int batchCount,
+      int iterations,
+      int maxInflight,
+      ArrivalPattern arrivalPattern,
+      int arrivalJitterMs,
+      int microburstSize)
+      throws Exception {
+    long uploads = (long) iterations * batchCount;
+    long totalBytes = totalPlanBytes(template) * uploads;
+    long totalSubmitNanos = 0L;
+    long totalCompletionNanos = 0L;
+    int maxBacklog = Math.max(64, maxInflight * batchCount * 8);
+    GpuUploadExecutor stripedExecutor = new StripedUploadExecutor(executors);
+    List<UploadTicket> tickets = new ArrayList<>((int) Math.min(Integer.MAX_VALUE, uploads));
+    long wallStart = System.nanoTime();
+    UploadTelemetry telemetry;
+    String debugSnapshot;
+
+    try (UploadManager manager = new DefaultUploadManager(stripedExecutor, maxInflight, maxBacklog)) {
+      for (int i = 0; i < iterations; i++) {
+        applyArrivalDelay(i, arrivalPattern, arrivalJitterMs, microburstSize);
+        for (int j = 0; j < batchCount; j++) {
+          long submitStart = System.nanoTime();
+          tickets.add(manager.submit(template));
+          long submitEnd = System.nanoTime();
+          totalSubmitNanos += (submitEnd - submitStart);
+        }
+      }
+
+      for (UploadTicket ticket : tickets) {
+        long completeStart = System.nanoTime();
+        GpuMeshResource resource = ticket.await();
+        long completeEnd = System.nanoTime();
+        totalCompletionNanos += (completeEnd - completeStart);
+        resource.close();
+      }
+      manager.drain();
+      telemetry = manager.telemetry();
+      debugSnapshot = manager.debugSnapshot();
+    }
+    long wallEnd = System.nanoTime();
+    long totalNanos = wallEnd - wallStart;
+    System.out.println(
+        "scenario="
+            + name
+            + "_manager_debug inflightTarget="
+            + maxInflight
+            + " snapshot=\""
+            + debugSnapshot
+            + "\"");
+    return new ScenarioResult(
+        name + "_manager_inflight" + maxInflight,
+        executors.get(0).mode().name(),
+        "MANAGER_PULL",
+        iterations,
+        (int) uploads,
+        totalBytes,
+        totalSubmitNanos,
+        totalCompletionNanos,
+        totalNanos,
+        toGbps(totalBytes, totalNanos),
+        telemetry.maxInflightSubmissions(),
+        telemetry.averageCompletionLatencyMillis(),
+        telemetry.averageTtfuMillis(),
+        telemetry.p95TtfuMillis(),
+        telemetry.maxBacklogDepth(),
+        telemetry.maxInflightBytes());
   }
 
   private static ScenarioResult runOverlapScenario(
@@ -847,5 +1017,20 @@ public final class MeshForgeVulkanSustainedMain {
     BURST,
     STAGGERED,
     MICROBURST
+  }
+
+  private static final class StripedUploadExecutor implements GpuUploadExecutor {
+    private final List<VulkanGpuUploadExecutor> executors;
+    private final AtomicInteger next = new AtomicInteger();
+
+    private StripedUploadExecutor(List<VulkanGpuUploadExecutor> executors) {
+      this.executors = executors;
+    }
+
+    @Override
+    public GpuMeshResource upload(GpuGeometryUploadPlan plan) throws org.dynamisengine.gpu.api.error.GpuException {
+      int index = Math.floorMod(next.getAndIncrement(), executors.size());
+      return executors.get(index).upload(plan);
+    }
   }
 }

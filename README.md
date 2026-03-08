@@ -86,6 +86,15 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
+Run Phase 5 manager validation (direct pull vs UploadManager):
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase5-manager-compare --max-inflight=2 --arrival-pattern=staggered --arrival-jitter-ms=1 /Users/larrymitchell/Dynamis/MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
 ## Run Vulkan Probe
 
 ```bash

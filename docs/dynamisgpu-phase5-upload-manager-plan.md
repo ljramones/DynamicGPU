@@ -114,6 +114,22 @@ Current behavior:
 - telemetry snapshots for upload triangle metrics + high-water marks
 - focused policy tests for backlog bounds, in-flight cap, and ticket completion
 
+## 8.2 Validation Harness Mode
+
+`MeshForgeVulkanSustainedMain` now includes `--phase5-manager-compare` to run the same fixture scenarios with:
+
+- direct pull overlap path (`DEFERRED_OVERLAP`)
+- UploadManager path (`MANAGER_PULL`)
+
+Command pattern:
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase5-manager-compare --max-inflight=2 --arrival-pattern=staggered --arrival-jitter-ms=1 ../MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
 ## 9. Stop Rules
 
 Stop Phase 5 expansion if:
