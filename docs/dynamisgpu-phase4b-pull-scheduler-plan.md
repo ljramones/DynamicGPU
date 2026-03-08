@@ -109,3 +109,27 @@ If 4B is successful:
 If 4B is inconclusive:
 
 - retain current overlap strategy (`max-inflight≈2`) and shift focus to streaming/residency integration experiments.
+
+## 10. Initial Push vs Pull Result (staggered, inflight=2)
+
+Command:
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase4-4b-push-pull --max-inflight=2 --arrival-pattern=staggered --arrival-jitter-ms=1 /Users/larrymitchell/Dynamis/MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
+| Scenario | Mode | Throughput (GB/s) | avg TTFU | p95 TTFU | max backlog depth | max inflight bytes | avg completion latency |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dragon_batch_10` | `push` | 15.780 | 6.184 ms | 6.916 ms | 0 | 99,992,800 | 4.295 ms |
+| `dragon_batch_10` | `pull` | 16.745 | 4.628 ms | 5.311 ms | 1 | 49,996,400 | 2.937 ms |
+| `lucy_batch_100` | `push` | 22.031 | 12.465 ms | 13.074 ms | 0 | 279,922,400 | 7.395 ms |
+| `lucy_batch_100` | `pull` | 23.818 | 10.416 ms | 10.876 ms | 1 | 139,961,200 | 5.832 ms |
+| `synthetic_100mb` | `push` | 19.624 | 10.183 ms | 15.939 ms | 0 | 209,715,176 | 6.158 ms |
+| `synthetic_100mb` | `pull` | 22.206 | 7.988 ms | 8.141 ms | 1 | 104,857,588 | 4.570 ms |
+
+Decision:
+
+- Pull scheduling is justified in this workload shape: it improved throughput and reduced avg/p95 TTFU while halving observed in-flight bytes.
