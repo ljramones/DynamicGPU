@@ -1,0 +1,545 @@
+package org.dynamisengine.gpu.bench.ingest.meshforge;
+
+import org.dynamisengine.gpu.api.error.GpuErrorCode;
+import org.dynamisengine.gpu.api.error.GpuException;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VK;
+import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkApplicationInfo;
+import org.lwjgl.vulkan.VkDevice;
+import org.lwjgl.vulkan.VkDeviceCreateInfo;
+import org.lwjgl.vulkan.VkDeviceQueueCreateInfo;
+import org.lwjgl.vulkan.VkExtensionProperties;
+import org.lwjgl.vulkan.VkInstance;
+import org.lwjgl.vulkan.VkInstanceCreateInfo;
+import org.lwjgl.vulkan.VkPhysicalDevice;
+import org.lwjgl.vulkan.VkPhysicalDeviceProperties;
+import org.lwjgl.vulkan.VkQueue;
+import org.lwjgl.vulkan.VkQueueFamilyProperties;
+import org.lwjgl.vulkan.VK11;
+
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.lwjgl.vulkan.KHRPortabilityEnumeration.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+import static org.lwjgl.vulkan.VK10.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+import static org.lwjgl.vulkan.VK10.VK_NULL_HANDLE;
+import static org.lwjgl.vulkan.VK10.VK_QUEUE_GRAPHICS_BIT;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_APPLICATION_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+import static org.lwjgl.vulkan.VK10.VK_SUCCESS;
+import static org.lwjgl.vulkan.VK10.vkCreateCommandPool;
+import static org.lwjgl.vulkan.VK10.vkCreateDevice;
+import static org.lwjgl.vulkan.VK10.vkCreateInstance;
+import static org.lwjgl.vulkan.VK10.vkDestroyCommandPool;
+import static org.lwjgl.vulkan.VK10.vkDestroyDevice;
+import static org.lwjgl.vulkan.VK10.vkDestroyInstance;
+import static org.lwjgl.vulkan.VK10.vkEnumerateDeviceExtensionProperties;
+import static org.lwjgl.vulkan.VK10.vkEnumeratePhysicalDevices;
+import static org.lwjgl.vulkan.VK10.vkGetDeviceQueue;
+import static org.lwjgl.vulkan.VK10.vkGetPhysicalDeviceQueueFamilyProperties;
+import static org.lwjgl.vulkan.VK10.vkGetPhysicalDeviceProperties;
+
+/**
+ * Minimal Vulkan context for ingestion-harness upload execution.
+ */
+public final class VulkanHarnessContext implements AutoCloseable {
+  public static final int VK_HEADER_VERSION_COMPLETE_DERIVED =
+      VK10.VK_MAKE_API_VERSION(0, 1, 0, VK10.VK_HEADER_VERSION);
+  public static final int REQUESTED_APP_API_VERSION = VK10.VK_MAKE_API_VERSION(0, 1, 1, 0);
+  private final VkInstance instance;
+  private final VkPhysicalDevice physicalDevice;
+  private final VkDevice device;
+  private final VkQueue graphicsQueue;
+  private final int graphicsQueueFamilyIndex;
+  private final long commandPool;
+
+  private VulkanHarnessContext(
+      VkInstance instance,
+      VkPhysicalDevice physicalDevice,
+      VkDevice device,
+      VkQueue graphicsQueue,
+      int graphicsQueueFamilyIndex,
+      long commandPool) {
+    this.instance = instance;
+    this.physicalDevice = physicalDevice;
+    this.device = device;
+    this.graphicsQueue = graphicsQueue;
+    this.graphicsQueueFamilyIndex = graphicsQueueFamilyIndex;
+    this.commandPool = commandPool;
+  }
+
+  public static VulkanHarnessContext create() throws GpuException {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
+          .pApplicationName(stack.UTF8("DynamisGPU Ingestion Harness"))
+          .pEngineName(stack.UTF8("DynamisEngine"))
+          .apiVersion(REQUESTED_APP_API_VERSION);
+
+      List<String> requestedInstanceExtensions = requiredInstanceExtensions();
+      PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
+      boolean portabilityEnumerationEnabled =
+          requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
+      VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
+          .pApplicationInfo(appInfo)
+          .ppEnabledExtensionNames(instanceExtensions);
+      if (portabilityEnumerationEnabled) {
+        instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
+      }
+
+      var pInstance = stack.mallocPointer(1);
+      int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
+      if (instanceResult != VK_SUCCESS) {
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=instance_create result="
+                + instanceResult
+                + " requestedInstanceExtensions="
+                + requestedInstanceExtensions,
+            false);
+      }
+      VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+
+      DeviceSelection selection =
+          pickPhysicalDevice(
+              instance, stack, requestedInstanceExtensions, portabilityEnumerationEnabled);
+      VkPhysicalDevice physicalDevice = selection.physicalDevice();
+      int queueFamilyIndex = selection.graphicsQueueFamilyIndex();
+
+      float[] priority = {1.0f};
+      VkDeviceQueueCreateInfo.Buffer queueInfo = VkDeviceQueueCreateInfo.calloc(1, stack)
+          .sType(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
+          .queueFamilyIndex(queueFamilyIndex)
+          .pQueuePriorities(stack.floats(priority));
+
+      List<String> requestedDeviceExtensions = requiredDeviceExtensions(physicalDevice);
+      VkDeviceCreateInfo deviceInfo = VkDeviceCreateInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO)
+          .pQueueCreateInfos(queueInfo)
+          .ppEnabledExtensionNames(pointerBufferOfUtf8(stack, requestedDeviceExtensions));
+
+      var pDevice = stack.mallocPointer(1);
+      int deviceResult = vkCreateDevice(physicalDevice, deviceInfo, null, pDevice);
+      if (deviceResult != VK_SUCCESS) {
+        vkDestroyInstance(instance, null);
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=device_create result="
+                + deviceResult
+                + " selectedDevice="
+                + selection.deviceName()
+                + " queueFamily="
+                + queueFamilyIndex
+                + " deviceSummaries="
+                + selection.discoveredDeviceSummaries()
+                + " requestedDeviceExtensions="
+                + requestedDeviceExtensions,
+            false);
+      }
+      VkDevice device = new VkDevice(pDevice.get(0), physicalDevice, deviceInfo);
+
+      var pQueue = stack.mallocPointer(1);
+      vkGetDeviceQueue(device, queueFamilyIndex, 0, pQueue);
+      VkQueue graphicsQueue = new VkQueue(pQueue.get(0), device);
+
+      var pCommandPool = stack.longs(VK_NULL_HANDLE);
+      var poolInfo = org.lwjgl.vulkan.VkCommandPoolCreateInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
+          .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+          .queueFamilyIndex(queueFamilyIndex);
+      int poolResult = vkCreateCommandPool(device, poolInfo, null, pCommandPool);
+      if (poolResult != VK_SUCCESS || pCommandPool.get(0) == VK_NULL_HANDLE) {
+        vkDestroyDevice(device, null);
+        vkDestroyInstance(instance, null);
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=command_pool_create result="
+                + poolResult
+                + " selectedDevice="
+                + selection.deviceName()
+                + " queueFamily="
+                + queueFamilyIndex,
+            false);
+      }
+
+      return new VulkanHarnessContext(
+          instance, physicalDevice, device, graphicsQueue, queueFamilyIndex, pCommandPool.get(0));
+    }
+  }
+
+  public static VulkanProbeReport probe() throws GpuException {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
+          .pApplicationName(stack.UTF8("DynamisGPU Vulkan Probe"))
+          .pEngineName(stack.UTF8("DynamisEngine"))
+          .apiVersion(REQUESTED_APP_API_VERSION);
+
+      List<String> requestedInstanceExtensions = requiredInstanceExtensions();
+      boolean portabilityEnumerationEnabled =
+          requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
+      PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
+      VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
+          .pApplicationInfo(appInfo)
+          .ppEnabledExtensionNames(instanceExtensions);
+      if (portabilityEnumerationEnabled) {
+        instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
+      }
+
+      var pInstance = stack.mallocPointer(1);
+      int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
+      if (instanceResult != VK_SUCCESS) {
+        InstanceVersionQuery versionQuery = queryInstanceVersion(stack);
+        return new VulkanProbeReport(
+            "INSTANCE_CREATE_FAILED",
+            instanceResult,
+            requestedInstanceExtensions,
+            portabilityEnumerationEnabled,
+            List.of(),
+            "vkCreateInstance returned " + instanceResult,
+            VK_HEADER_VERSION_COMPLETE_DERIVED,
+            REQUESTED_APP_API_VERSION,
+            versionQuery.resultCode(),
+            versionQuery.apiVersion(),
+            -1);
+      }
+
+      VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+      try {
+        InstanceVersionQuery versionQuery = queryInstanceVersion(stack);
+        int capabilityApiVersion = VK.getInstanceVersionSupported();
+        IntBuffer pCount = stack.ints(0);
+        int enumResult = vkEnumeratePhysicalDevices(instance, pCount, null);
+        if (enumResult != VK_SUCCESS) {
+          return new VulkanProbeReport(
+              "PHYSICAL_DEVICE_ENUMERATION_FAILED",
+              enumResult,
+              requestedInstanceExtensions,
+              portabilityEnumerationEnabled,
+              List.of(),
+              "vkEnumeratePhysicalDevices(count) returned " + enumResult,
+              VK_HEADER_VERSION_COMPLETE_DERIVED,
+              REQUESTED_APP_API_VERSION,
+              versionQuery.resultCode(),
+              versionQuery.apiVersion(),
+              capabilityApiVersion);
+        }
+
+        PointerBuffer devices = stack.mallocPointer(pCount.get(0));
+        int enumListResult = vkEnumeratePhysicalDevices(instance, pCount, devices);
+        if (enumListResult != VK_SUCCESS) {
+          return new VulkanProbeReport(
+              "PHYSICAL_DEVICE_ENUMERATION_LIST_FAILED",
+              enumListResult,
+              requestedInstanceExtensions,
+              portabilityEnumerationEnabled,
+              List.of(),
+              "vkEnumeratePhysicalDevices(list) returned " + enumListResult,
+              VK_HEADER_VERSION_COMPLETE_DERIVED,
+              REQUESTED_APP_API_VERSION,
+              versionQuery.resultCode(),
+              versionQuery.apiVersion(),
+              capabilityApiVersion);
+        }
+
+        List<String> summaries = new ArrayList<>(pCount.get(0));
+        for (int i = 0; i < pCount.get(0); i++) {
+          VkPhysicalDevice candidate = new VkPhysicalDevice(devices.get(i), instance);
+          String name = deviceName(candidate, stack);
+          IntBuffer queueCount = stack.ints(0);
+          vkGetPhysicalDeviceQueueFamilyProperties(candidate, queueCount, null);
+          VkQueueFamilyProperties.Buffer properties =
+              VkQueueFamilyProperties.calloc(queueCount.get(0), stack);
+          vkGetPhysicalDeviceQueueFamilyProperties(candidate, queueCount, properties);
+          int graphicsQueueFamily = -1;
+          for (int q = 0; q < properties.capacity(); q++) {
+            if ((properties.get(q).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0) {
+              graphicsQueueFamily = q;
+              break;
+            }
+          }
+          summaries.add(
+              "name="
+                  + name
+                  + ",queueFamilies="
+                  + properties.capacity()
+                  + ",graphicsQueueFamily="
+                  + graphicsQueueFamily
+                  + ",hasPortabilitySubset="
+                  + hasDeviceExtension(candidate, "VK_KHR_portability_subset"));
+        }
+
+        return new VulkanProbeReport(
+            "SUCCESS",
+            VK_SUCCESS,
+            requestedInstanceExtensions,
+            portabilityEnumerationEnabled,
+            summaries,
+            null,
+            VK_HEADER_VERSION_COMPLETE_DERIVED,
+            REQUESTED_APP_API_VERSION,
+            versionQuery.resultCode(),
+            versionQuery.apiVersion(),
+            capabilityApiVersion);
+      } finally {
+        vkDestroyInstance(instance, null);
+      }
+    }
+  }
+
+  public VkPhysicalDevice physicalDevice() {
+    return physicalDevice;
+  }
+
+  public VkDevice device() {
+    return device;
+  }
+
+  public VkQueue graphicsQueue() {
+    return graphicsQueue;
+  }
+
+  public int graphicsQueueFamilyIndex() {
+    return graphicsQueueFamilyIndex;
+  }
+
+  public long commandPool() {
+    return commandPool;
+  }
+
+  @Override
+  public void close() {
+    if (device != null && commandPool != VK_NULL_HANDLE) {
+      vkDestroyCommandPool(device, commandPool, null);
+    }
+    if (device != null) {
+      vkDestroyDevice(device, null);
+    }
+    if (instance != null) {
+      vkDestroyInstance(instance, null);
+    }
+  }
+
+  private static DeviceSelection pickPhysicalDevice(
+      VkInstance instance,
+      MemoryStack stack,
+      List<String> requestedInstanceExtensions,
+      boolean portabilityEnumerationEnabled)
+      throws GpuException {
+    IntBuffer pCount = stack.ints(0);
+    int countResult = vkEnumeratePhysicalDevices(instance, pCount, null);
+    if (countResult != VK_SUCCESS || pCount.get(0) <= 0) {
+      throw new GpuException(
+          GpuErrorCode.BACKEND_INIT_FAILED,
+          "stage=physical_device_enumeration result="
+              + countResult
+              + " count="
+              + pCount.get(0)
+              + " requestedInstanceExtensions="
+              + requestedInstanceExtensions
+              + " portabilityEnumerationEnabled="
+              + portabilityEnumerationEnabled
+              + " note=no_usable_vulkan_device_or_driver",
+          false);
+    }
+    PointerBuffer devices = stack.mallocPointer(pCount.get(0));
+    int enumResult = vkEnumeratePhysicalDevices(instance, pCount, devices);
+    if (enumResult != VK_SUCCESS) {
+      throw new GpuException(
+          GpuErrorCode.BACKEND_INIT_FAILED,
+          "stage=physical_device_enumeration_list result=" + enumResult,
+          false);
+    }
+
+    List<String> deviceNames = new ArrayList<>(pCount.get(0));
+    List<String> deviceSummaries = new ArrayList<>(pCount.get(0));
+    for (int i = 0; i < pCount.get(0); i++) {
+      VkPhysicalDevice candidate = new VkPhysicalDevice(devices.get(i), instance);
+      String name = deviceName(candidate, stack);
+      deviceNames.add(name);
+
+      IntBuffer queueCount = stack.ints(0);
+      vkGetPhysicalDeviceQueueFamilyProperties(candidate, queueCount, null);
+      VkQueueFamilyProperties.Buffer properties =
+          VkQueueFamilyProperties.calloc(queueCount.get(0), stack);
+      vkGetPhysicalDeviceQueueFamilyProperties(candidate, queueCount, properties);
+      int graphicsQueueFamily = -1;
+      for (int q = 0; q < properties.capacity(); q++) {
+        if ((properties.get(q).queueFlags() & VK_QUEUE_GRAPHICS_BIT) != 0) {
+          graphicsQueueFamily = q;
+          break;
+        }
+      }
+      boolean hasPortabilitySubset = hasDeviceExtension(candidate, "VK_KHR_portability_subset");
+      deviceSummaries.add(
+          "name="
+              + name
+              + ",queueFamilies="
+              + properties.capacity()
+              + ",graphicsQueueFamily="
+              + graphicsQueueFamily
+              + ",hasPortabilitySubset="
+              + hasPortabilitySubset);
+      if (graphicsQueueFamily >= 0) {
+        return new DeviceSelection(
+            candidate, name, graphicsQueueFamily, List.copyOf(deviceNames), List.copyOf(deviceSummaries));
+      }
+    }
+    throw new GpuException(
+        GpuErrorCode.BACKEND_INIT_FAILED,
+        "stage=queue_family_selection result=no_graphics_queue deviceNames="
+            + deviceNames
+            + " deviceSummaries="
+            + deviceSummaries,
+        false);
+  }
+
+  private static List<String> requiredInstanceExtensions() {
+    List<String> requested = new ArrayList<>();
+    if (hasExtension("VK_KHR_portability_enumeration")) {
+      requested.add("VK_KHR_portability_enumeration");
+    }
+    if (hasExtension("VK_EXT_debug_utils")) {
+      // Optional during harness bring-up.
+      requested.add("VK_EXT_debug_utils");
+    }
+    return requested;
+  }
+
+  private static List<String> requiredDeviceExtensions(VkPhysicalDevice physicalDevice)
+      throws GpuException {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      IntBuffer pCount = stack.ints(0);
+      int countResult =
+          vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, pCount, null);
+      if (countResult != VK_SUCCESS) {
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=device_extension_enumeration result=" + countResult,
+            false);
+      }
+      VkExtensionProperties.Buffer extProps = VkExtensionProperties.calloc(pCount.get(0), stack);
+      int enumResult =
+          vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, pCount, extProps);
+      if (enumResult != VK_SUCCESS) {
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=device_extension_enumeration_list result=" + enumResult,
+            false);
+      }
+      boolean hasPortabilitySubset = false;
+      for (int i = 0; i < extProps.capacity(); i++) {
+        if ("VK_KHR_portability_subset".equals(extProps.get(i).extensionNameString())) {
+          hasPortabilitySubset = true;
+          break;
+        }
+      }
+      List<String> requested = new ArrayList<>();
+      if (hasPortabilitySubset) {
+        requested.add("VK_KHR_portability_subset");
+      }
+      return requested;
+    }
+  }
+
+  private static boolean hasDeviceExtension(VkPhysicalDevice physicalDevice, String extensionName) {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      IntBuffer pCount = stack.ints(0);
+      int countResult =
+          vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, pCount, null);
+      if (countResult != VK_SUCCESS || pCount.get(0) <= 0) {
+        return false;
+      }
+      VkExtensionProperties.Buffer extProps = VkExtensionProperties.calloc(pCount.get(0), stack);
+      int enumResult =
+          vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, pCount, extProps);
+      if (enumResult != VK_SUCCESS) {
+        return false;
+      }
+      for (int i = 0; i < extProps.capacity(); i++) {
+        if (extensionName.equals(extProps.get(i).extensionNameString())) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  private static PointerBuffer pointerBufferOfUtf8(MemoryStack stack, List<String> values) {
+    PointerBuffer names = stack.mallocPointer(values.size());
+    for (String value : values) {
+      names.put(stack.UTF8(value));
+    }
+    names.flip();
+    return names;
+  }
+
+  private static String deviceName(VkPhysicalDevice device, MemoryStack stack) {
+    VkPhysicalDeviceProperties properties = VkPhysicalDeviceProperties.calloc(stack);
+    vkGetPhysicalDeviceProperties(device, properties);
+    return properties.deviceNameString();
+  }
+
+  private static boolean hasExtension(String extensionName) {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      IntBuffer pCount = stack.ints(0);
+      int countResult = VK10.vkEnumerateInstanceExtensionProperties((String) null, pCount, null);
+      if (countResult != VK_SUCCESS || pCount.get(0) <= 0) {
+        return false;
+      }
+      VkExtensionProperties.Buffer extensions =
+          VkExtensionProperties.calloc(pCount.get(0), stack);
+      int enumResult = VK10.vkEnumerateInstanceExtensionProperties((String) null, pCount, extensions);
+      if (enumResult != VK_SUCCESS) {
+        return false;
+      }
+      for (int i = 0; i < extensions.capacity(); i++) {
+        if (extensionName.equals(extensions.get(i).extensionNameString())) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  private record DeviceSelection(
+      VkPhysicalDevice physicalDevice,
+      String deviceName,
+      int graphicsQueueFamilyIndex,
+      List<String> discoveredDeviceNames,
+      List<String> discoveredDeviceSummaries) {}
+
+  public record VulkanProbeReport(
+      String stage,
+      int resultCode,
+      List<String> requestedInstanceExtensions,
+      boolean portabilityEnumerationEnabled,
+      List<String> discoveredDeviceSummaries,
+      String detail,
+      int vkHeaderVersionComplete,
+      int requestedAppApiVersion,
+      int enumerateInstanceVersionResult,
+      int enumerateInstanceApiVersion,
+      int capabilitiesApiVersion) {}
+
+  private static InstanceVersionQuery queryInstanceVersion(MemoryStack stack) {
+    IntBuffer pVersion = stack.ints(0);
+    try {
+      int result = VK11.vkEnumerateInstanceVersion(pVersion);
+      return new InstanceVersionQuery(result, pVersion.get(0));
+    } catch (Throwable t) {
+      return new InstanceVersionQuery(-1, 0);
+    }
+  }
+
+  private record InstanceVersionQuery(int resultCode, int apiVersion) {}
+}
