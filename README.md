@@ -114,3 +114,4 @@ vulkaninfo | head -40
 ## Docs
 - [Baseline ingestion note](docs/dynamisgpu-ingestion-baseline.md)
 - [Phase 2 upload optimization note](docs/dynamisgpu-phase2-upload-optimization.md)
+- [Phase 3 deferred upload note](docs/dynamisgpu-phase3-deferred-upload.md)
