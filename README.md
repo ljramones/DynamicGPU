@@ -39,6 +39,12 @@ RuntimeGeometryLoader
 - `OPTIMIZED`: Phase 2 path with reusable upload arena, batched copy submit, and initial device-local allocation reuse
 - `OPTIMIZED_DEFERRED`: Phase 3 deferred submission + fence-retirement path for sustained throughput scenarios
 
+Phase 5 introduces a minimal upload scheduling boundary in `dynamis-gpu-api`:
+- `UploadManager`
+- `UploadTicket`
+- `UploadTelemetry`
+- `DefaultUploadManager` (bounded backlog + pull dispatch with target in-flight control)
+
 ## macOS Vulkan Setup (MoltenVK)
 Known-good environment pattern:
 

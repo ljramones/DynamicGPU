@@ -97,6 +97,23 @@ Phase 5 is successful when:
 - metrics are consistently emitted and comparable run-to-run
 - no regression in correctness/lifetime safety
 
+## 8.1 Implementation Status (Initial)
+
+Initial Phase 5 boundary has been added in `dynamis-gpu-api`:
+
+- `UploadManager`
+- `UploadTicket`
+- `UploadTelemetry`
+- `DefaultUploadManager`
+
+Current behavior:
+
+- bounded FIFO backlog
+- pull-based dispatch on submit/completion
+- configurable target in-flight submissions (default `2`)
+- telemetry snapshots for upload triangle metrics + high-water marks
+- focused policy tests for backlog bounds, in-flight cap, and ticket completion
+
 ## 9. Stop Rules
 
 Stop Phase 5 expansion if:
