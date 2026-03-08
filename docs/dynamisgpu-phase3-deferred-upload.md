@@ -1,79 +1,33 @@
-# DynamisGPU Phase 3 Deferred Upload
+# Phase 3 Deferred Upload - Benchmark Summary
 
-Phase 3 introduces deferred upload completion and sustained-throughput benchmarking, enabling direct comparison of blocking vs deferred Vulkan upload behavior under repeated, batched, and synthetic workloads.
+Phase 3 establishes a stable deferred Vulkan upload pipeline delivering sustained throughput of ~3.7-7.0 GB/s on Apple M4 Max (MoltenVK).
 
-Phase 3 deferred upload hardening fixed a staging-lifetime bug and enabled stable sustained upload throughput of ~3.7–7.0 GB/s.
+## Environment
 
-## Benchmark Summary
-
-### Environment
 - Machine: Apple M4 Max
 - OS: macOS 26.3
-- JDK: Temurin 25.0.1
-- LWJGL: 3.4.1
+- CPU: Apple Silicon (ARM64)
+- GPU backend: Metal via MoltenVK
 - Vulkan SDK: 1.4.341
-- ICD: MoltenVK (`MoltenVK_icd.json`)
-- Loader: SDK-local `libvulkan.1.dylib`
+- ICD: `MoltenVK_icd.json`
+- Loader: `$VULKAN_SDK/lib/libvulkan.1.dylib`
+- Java: Temurin 25.0.1 (OpenJDK 25 LTS)
+- LWJGL: 3.4.1
 
-### Root Cause Fixed
-- Under sustained deferred load, staging arena growth could occur mid-batch.
-- That changed the source staging buffer handle while copy ops for the same submission were already recorded.
-- Result: invalid source-buffer lifetime for some copy commands and eventual native Metal crash.
+Runtime environment setup:
 
-Fix:
-- Reserve staging arena capacity once per batch (`reserveForBatch(...)`).
-- Forbid mid-submission arena growth.
-- Tie staging retirement to submission completion (`markSubmissionInFlight` / `retireSubmission`).
-- Add pool in-use guards and copy overlap/offset validation.
+```bash
+source "$HOME/VulkanSDK/1.4.341.0/setup-env.sh"
 
-### Sustained Throughput Highlights
+export VK_DRIVER_FILES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+export VK_ADD_LAYER_PATH="$VULKAN_SDK/share/vulkan/explicit_layer.d"
+export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
+```
 
-| Scenario | Mode | Completion | Uploaded Bytes | Total ms | GB/s |
-| --- | --- | --- | ---: | ---: | ---: |
-| dragon_repeat_100 | OPTIMIZED | BLOCKING | 499,964,000 | 98.892 | 5.056 |
-| lucy_repeat_1000 | OPTIMIZED | BLOCKING | 1,399,612,000 | 376.351 | 3.719 |
-| dragon_batch_10_deferred | OPTIMIZED_DEFERRED | DEFERRED | 49,996,400 | 10.111 | 4.945 |
-| lucy_batch_100_deferred | OPTIMIZED_DEFERRED | DEFERRED | 139,961,200 | 37.553 | 3.727 |
-| synthetic_100mb_deferred | OPTIMIZED_DEFERRED | DEFERRED | 104,857,588 | 15.041 | 6.971 |
+## Benchmark Commands
 
-### Interpretation
-- Phase 3 is now stable under sustained scenarios that previously crashed.
-- Deferred mode preserves strong throughput while making completion/retirement explicit.
-- Large synthetic transfer behavior is competitive (~7 GB/s peak observed), indicating the backend is no longer limited by one-shot setup overhead.
-- Remaining limits are expected to be transfer bandwidth, fence cadence, and allocator behavior under heavier multi-submission pressure.
-
-## Scope
-- Added third Vulkan upload mode: `OPTIMIZED_DEFERRED`
-- Added fence-backed pending submission tracking and retirement
-- Kept `SIMPLE` and `OPTIMIZED` as reference/baseline paths
-- Added sustained benchmark harness for repeated and batched scenarios
-- Extended report output with:
-  - upload mode
-  - completion mode
-  - uploaded bytes
-  - effective upload bandwidth (GB/s, when upload timing is available)
-
-## Upload Modes
-- `SIMPLE`
-  - Per-upload staging/allocation path, fully blocking.
-- `OPTIMIZED`
-  - Reusable staging arena + pool reuse, blocking completion.
-- `OPTIMIZED_DEFERRED`
-  - Reusable staging/pool with deferred submit/retire model backed by fences.
-
-## Deferred Completion Model
-- `submitBatchDeferred(plans)` records and submits transfer work without immediate wait.
-- `completeDeferredBatch(batch, timeoutNanos)` waits and materializes resources.
-- `tryCollectDeferredBatch()` polls completion non-blocking.
-- `drainDeferredSubmissions()` waits/drains all pending submissions.
-
-Current constraints:
-- Single pending submission at a time in this phase (intentional scope control).
-- Fence-based retirement (timeline semaphores deferred).
-
-## Bench Entry Points
-
-One-shot ingestion harness:
+### One-shot ingestion
 
 ```bash
 mvn -q -pl dynamis-gpu-bench exec:java \
@@ -82,7 +36,7 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
-Sustained throughput harness:
+### Sustained throughput harness
 
 ```bash
 mvn -q -pl dynamis-gpu-bench exec:java \
@@ -91,36 +45,98 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
-## Probe-First Run Protocol
-Always validate runtime first:
+## Root Cause Fixed During Phase 3
 
-```bash
-mvn -q -pl dynamis-gpu-bench exec:java \
-  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.VulkanProbeMain \
-  -Dexec.args="--debug" \
-  -Dexec.classpathScope=runtime
-```
+A crash under sustained upload pressure was traced to staging arena reallocation during batch construction.
 
-If probe fails at instance/device stage, do not treat upload benchmark output as authoritative.
+When a large batch exceeded staging capacity:
+- the arena resized mid-submission
+- earlier `vkCmdCopyBuffer` commands referenced the old staging buffer
+- the submission then contained mixed staging buffers
+- the Metal driver crashed during `copyBufferToBuffer`
 
-## Suggested Scenario Matrix
-- One-shot fixture comparison:
-  - `simple`, `optimized`, `optimized_deferred`
-  - `RevitHouse.obj`, `lucy.obj`, `xyzrgb_dragon.obj`
-- Sustained scenarios:
-  - repeated medium upload (many iterations)
-  - repeated small upload (many iterations)
-  - batched medium uploads
-  - batched small uploads
-  - synthetic sizes: 25 MB / 50 MB / 100 MB
+### Fix
 
-## Expected Phase 3 Effect
-- Single isolated upload latency: may improve modestly.
-- Repeated/batched workloads: expected stronger gains.
-- Effective GB/s: expected improvement in sustained scenarios.
+The staging arena now guarantees submission-stable memory:
+- `reserveForBatch()` pre-sizes staging memory before recording commands
+- mid-submission growth is disallowed
+- submission IDs track in-flight staging usage
+- retirement occurs only after fence completion
+- guards prevent reuse while memory is in flight
 
-## Deferred
-- Multi-queue orchestration
-- Timeline semaphore path
-- Full streaming/residency manager
-- Renderer-coupled scheduling
+Additional safety checks were added:
+- src/dst overlap validation
+- buffer-range validation
+- pool reuse detection
+- optional debug logging (`DYNAMISGPU_UPLOAD_DEBUG`)
+
+## Sustained Upload Results
+
+### Repeated uploads
+
+| Scenario | Uploads | Total Uploaded | Time | Throughput |
+| --- | ---: | ---: | ---: | ---: |
+| dragon_repeat_100 | 100 | 499,964,000 bytes | 98.892 ms | **5.056 GB/s** |
+| lucy_repeat_1000 | 1000 | 1,399,612,000 bytes | 376.351 ms | **3.719 GB/s** |
+
+### Batched uploads
+
+| Scenario | Mode | Throughput |
+| --- | --- | ---: |
+| dragon_batch_10_deferred | deferred | **4.945 GB/s** |
+| lucy_batch_100_deferred | deferred | **3.727 GB/s** |
+
+### Synthetic transfer test
+
+| Scenario | Uploaded | Throughput |
+| --- | --- | ---: |
+| synthetic_100mb_deferred | ~100 MB | **6.971 GB/s** |
+
+## Interpretation
+
+Phase 3 demonstrates stable and sustained upload throughput in the ~3.7-7.0 GB/s range on Apple M4 Max through MoltenVK.
+
+Key observations:
+- Deferred completion allows the GPU to process transfers without blocking the CPU.
+- Staging arena reuse eliminates repeated allocation overhead.
+- Device-local buffer pooling prevents driver allocation churn.
+- Submission-aware lifetime tracking prevents unsafe reuse of staging memory.
+
+The synthetic 100 MB test shows the backend approaching the expected limits for the Vulkan-to-Metal transfer path on Apple Silicon.
+
+## Architectural Takeaway
+
+Phase 3 transitions the upload system from single-shot optimized uploads to a streaming-capable deferred transfer pipeline.
+
+The backend now supports:
+- persistent staging arenas
+- device-local buffer pooling
+- submission-safe memory reuse
+- deferred fence-based retirement
+- sustained throughput benchmarking
+
+Phase 3 introduces explicit deferred upload lifecycle control via `submitBatchDeferred`, `completeDeferredBatch`, and fence-backed retirement.
+
+## Comparison with Phase 2
+
+| Metric | Phase 2 | Phase 3 |
+| --- | --- | --- |
+| Upload path | blocking optimized | deferred + batched |
+| Staging reuse | yes | yes |
+| Device buffer pooling | basic | guarded + tracked |
+| Deferred lifecycle APIs | no | yes |
+| Sustained throughput harness | none | implemented |
+| Crash under sustained load | present | fixed |
+| Sustained throughput | not measured | **3.7-7.0 GB/s** |
+
+## Current Conclusion
+
+The DynamisGPU backend now provides:
+- a stable deferred upload pipeline
+- sustained Vulkan upload throughput approaching **7 GB/s**
+- robust memory-lifetime safety under heavy batching
+
+The remaining performance frontier is no longer basic upload mechanics but:
+- overlapping uploads with other GPU work
+- multi-frame streaming behavior
+- large-scene asset residency strategies
