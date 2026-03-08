@@ -5,6 +5,8 @@ import org.lwjgl.vulkan.VK;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -32,7 +34,7 @@ public final class VulkanLoaderBootstrap {
     String selected = System.getProperty("dynamisgpu.vk.loader");
     if (lowerOs.contains("mac")) {
       if (selected == null || selected.isBlank()) {
-        selected = selectMacLoaderPath();
+        selected = selectMacLoaderPathFromSdkOrSystem();
       }
       if (selected != null) {
         Configuration.VULKAN_LIBRARY_NAME.set(selected);
@@ -50,6 +52,16 @@ public final class VulkanLoaderBootstrap {
               + enableDebug
               + " selectedLoader="
               + selected
+              + " VULKAN_SDK="
+              + System.getenv("VULKAN_SDK")
+              + " VK_DRIVER_FILES="
+              + System.getenv("VK_DRIVER_FILES")
+              + " VK_ICD_FILENAMES="
+              + System.getenv("VK_ICD_FILENAMES")
+              + " VK_ADD_LAYER_PATH="
+              + System.getenv("VK_ADD_LAYER_PATH")
+              + " DYLD_LIBRARY_PATH="
+              + System.getenv("DYLD_LIBRARY_PATH")
               + " org.lwjgl.vulkan.libname="
               + System.getProperty("org.lwjgl.vulkan.libname")
               + " java.library.path="
@@ -66,13 +78,18 @@ public final class VulkanLoaderBootstrap {
       System.err.println(
           "[VulkanLoaderBootstrap] configuredLoader="
               + (System.getProperty("org.lwjgl.vulkan.libname") == null
-                  ? selectMacLoaderPath()
+                  ? selectMacLoaderPathFromSdkOrSystem()
                   : System.getProperty("org.lwjgl.vulkan.libname")));
       System.err.println(
           "[VulkanLoaderBootstrap] java.library.path=" + System.getProperty("java.library.path"));
       System.err.println(
           "[VulkanLoaderBootstrap] org.lwjgl.librarypath="
               + System.getProperty("org.lwjgl.librarypath"));
+      System.err.println("[VulkanLoaderBootstrap] VULKAN_SDK=" + System.getenv("VULKAN_SDK"));
+      System.err.println("[VulkanLoaderBootstrap] VK_DRIVER_FILES=" + System.getenv("VK_DRIVER_FILES"));
+      System.err.println("[VulkanLoaderBootstrap] VK_ICD_FILENAMES=" + System.getenv("VK_ICD_FILENAMES"));
+      System.err.println("[VulkanLoaderBootstrap] VK_ADD_LAYER_PATH=" + System.getenv("VK_ADD_LAYER_PATH"));
+      System.err.println("[VulkanLoaderBootstrap] DYLD_LIBRARY_PATH=" + System.getenv("DYLD_LIBRARY_PATH"));
       if (lowerOs.contains("mac")) {
         System.err.println(
             "[VulkanLoaderBootstrap] hint: set DYLD_LIBRARY_PATH to Vulkan loader location, e.g. /usr/local/lib");
@@ -86,7 +103,7 @@ public final class VulkanLoaderBootstrap {
     if (!osName.contains("mac")) {
       return null;
     }
-    return selectMacLoaderPath();
+    return selectMacLoaderPathFromSdkOrSystem();
   }
 
   private static boolean resolveDebugRequested() {
@@ -98,12 +115,20 @@ public final class VulkanLoaderBootstrap {
     return env != null && Boolean.parseBoolean(env);
   }
 
-  private static String selectMacLoaderPath() {
-    if (Files.isRegularFile(Path.of(MACOS_PRIMARY_LOADER))) {
-      return MACOS_PRIMARY_LOADER;
+  private static String selectMacLoaderPathFromSdkOrSystem() {
+    List<String> candidates = new ArrayList<>();
+    String vulkanSdk = System.getenv("VULKAN_SDK");
+    if (vulkanSdk != null && !vulkanSdk.isBlank()) {
+      candidates.add(Path.of(vulkanSdk, "lib", "libvulkan.1.dylib").toString());
+      candidates.add(Path.of(vulkanSdk, "lib", "libvulkan.dylib").toString());
     }
-    if (Files.isRegularFile(Path.of(MACOS_SECONDARY_LOADER))) {
-      return MACOS_SECONDARY_LOADER;
+    candidates.add(MACOS_PRIMARY_LOADER);
+    candidates.add(MACOS_SECONDARY_LOADER);
+
+    for (String candidate : candidates) {
+      if (Files.isRegularFile(Path.of(candidate))) {
+        return candidate;
+      }
     }
     return null;
   }

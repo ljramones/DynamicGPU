@@ -69,6 +69,21 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
+Minimal SDK-only runtime selection (macOS):
+
+```bash
+source "$HOME/VulkanSDK/1.4.341.0/setup-env.sh"
+export VK_DRIVER_FILES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+export VK_ADD_LAYER_PATH="$VULKAN_SDK/share/vulkan/explicit_layer.d"
+export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib"
+
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.VulkanProbeMain \
+  -Dexec.args="--debug" \
+  -Dexec.classpathScope=runtime
+```
+
 ## Run Vulkan Parity Probe
 
 ```bash
