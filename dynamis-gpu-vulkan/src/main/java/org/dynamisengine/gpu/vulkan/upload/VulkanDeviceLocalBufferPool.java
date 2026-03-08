@@ -55,6 +55,14 @@ final class VulkanDeviceLocalBufferPool implements AutoCloseable {
       alloc = new PooledAlloc(created.buffer(), created.memory(), bucketSize);
       allAllocations.add(alloc);
     }
+    if (alloc.inUse) {
+      throw new IllegalStateException(
+          "Pooled allocation reuse before retirement buffer="
+              + alloc.buffer
+              + " size="
+              + alloc.sizeBytes);
+    }
+    alloc.inUse = true;
     return new Lease(this, key, alloc, requestedSizeBytes);
   }
 
@@ -79,6 +87,11 @@ final class VulkanDeviceLocalBufferPool implements AutoCloseable {
     if (closed.get()) {
       return;
     }
+    if (!alloc.inUse) {
+      throw new IllegalStateException(
+          "Pooled allocation double-release buffer=" + alloc.buffer + " size=" + alloc.sizeBytes);
+    }
+    alloc.inUse = false;
     freeByKey.computeIfAbsent(key, unused -> new ArrayDeque<>()).offerFirst(alloc);
   }
 
@@ -144,11 +157,13 @@ final class VulkanDeviceLocalBufferPool implements AutoCloseable {
     private final long buffer;
     private final long memory;
     private final int sizeBytes;
+    private boolean inUse;
 
     private PooledAlloc(long buffer, long memory, int sizeBytes) {
       this.buffer = buffer;
       this.memory = memory;
       this.sizeBytes = sizeBytes;
+      this.inUse = false;
     }
   }
 }

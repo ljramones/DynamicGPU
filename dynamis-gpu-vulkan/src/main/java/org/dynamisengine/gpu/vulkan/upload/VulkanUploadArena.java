@@ -3,6 +3,7 @@ package org.dynamisengine.gpu.vulkan.upload;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
 import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
@@ -36,6 +37,8 @@ final class VulkanUploadArena implements AutoCloseable {
   private ByteBuffer mapped;
   private int capacityBytes;
   private int headBytes;
+  private final AtomicBoolean submissionInFlight = new AtomicBoolean(false);
+  private final AtomicLong inFlightSubmissionId = new AtomicLong(-1L);
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   VulkanUploadArena(VkDevice device, VkPhysicalDevice physicalDevice, int initialCapacityBytes)
@@ -49,12 +52,26 @@ final class VulkanUploadArena implements AutoCloseable {
 
   Slice stage(MemoryStack stack, ByteBuffer source, int alignment) throws GpuException {
     ensureOpen();
+    if (submissionInFlight.get()) {
+      throw new IllegalStateException(
+          "VulkanUploadArena is in-flight for submissionId=" + inFlightSubmissionId.get());
+    }
     Objects.requireNonNull(stack, "stack");
     Objects.requireNonNull(source, "source");
     int size = source.remaining();
     int effectiveAlignment = Math.max(DEFAULT_ALIGNMENT, alignment);
     int startOffset = alignUp(headBytes, effectiveAlignment);
-    ensureCapacity(stack, startOffset + size);
+    if (startOffset + size > capacityBytes) {
+      throw new IllegalStateException(
+          "VulkanUploadArena capacity exceeded during submission build: required="
+              + (startOffset + size)
+              + " capacity="
+              + capacityBytes
+              + " head="
+              + headBytes
+              + " size="
+              + size);
+    }
     int endOffset = startOffset + size;
     memCopy(memAddress(source), memAddress(mapped) + startOffset, size);
     headBytes = endOffset;
@@ -63,6 +80,56 @@ final class VulkanUploadArena implements AutoCloseable {
 
   void reset() {
     ensureOpen();
+    if (submissionInFlight.get()) {
+      throw new IllegalStateException(
+          "VulkanUploadArena reset attempted while submission is in-flight: "
+              + inFlightSubmissionId.get());
+    }
+    headBytes = 0;
+  }
+
+  void markSubmissionInFlight(long submissionId) {
+    ensureOpen();
+    if (!submissionInFlight.compareAndSet(false, true)) {
+      throw new IllegalStateException(
+          "VulkanUploadArena already in-flight for submissionId=" + inFlightSubmissionId.get());
+    }
+    inFlightSubmissionId.set(submissionId);
+  }
+
+  void reserveForBatch(MemoryStack stack, int requiredBytes) throws GpuException {
+    ensureOpen();
+    if (submissionInFlight.get()) {
+      throw new IllegalStateException(
+          "VulkanUploadArena reserve attempted while submission is in-flight: "
+              + inFlightSubmissionId.get());
+    }
+    if (requiredBytes <= capacityBytes) {
+      return;
+    }
+    int expanded = roundUpToPowerOfTwo(requiredBytes);
+    recreateBackingAllocation(stack, expanded);
+    headBytes = 0;
+  }
+
+  void retireSubmission(long submissionId) {
+    ensureOpen();
+    if (!submissionInFlight.get()) {
+      throw new IllegalStateException(
+          "VulkanUploadArena retire called with no in-flight submission (submissionId="
+              + submissionId
+              + ")");
+    }
+    long current = inFlightSubmissionId.get();
+    if (current != submissionId) {
+      throw new IllegalStateException(
+          "VulkanUploadArena retire mismatch expected submissionId="
+              + current
+              + " got="
+              + submissionId);
+    }
+    submissionInFlight.set(false);
+    inFlightSubmissionId.set(-1L);
     headBytes = 0;
   }
 
@@ -72,15 +139,6 @@ final class VulkanUploadArena implements AutoCloseable {
       return;
     }
     destroyBackingAllocation();
-  }
-
-  private void ensureCapacity(MemoryStack stack, int requiredBytes) throws GpuException {
-    if (requiredBytes <= capacityBytes) {
-      return;
-    }
-    int expanded = roundUpToPowerOfTwo(requiredBytes);
-    recreateBackingAllocation(stack, expanded);
-    headBytes = 0;
   }
 
   private void recreateBackingAllocation(MemoryStack stack, int newCapacityBytes) throws GpuException {

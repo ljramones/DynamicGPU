@@ -56,12 +56,28 @@ public final class MeshForgeVulkanSustainedMain {
                 context.graphicsQueue(),
                 VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED)) {
 
+      printResult(runRepeatedScenario("dragon_repeat_10", blockingExecutor, dragonPlan, 10));
+      printResult(runRepeatedScenario("dragon_repeat_25", blockingExecutor, dragonPlan, 25));
+      printResult(runRepeatedScenario("dragon_repeat_50", blockingExecutor, dragonPlan, 50));
       printResult(runRepeatedScenario("dragon_repeat_100", blockingExecutor, dragonPlan, 100));
+      printResult(runRepeatedScenario("lucy_repeat_100", blockingExecutor, lucyPlan, 100));
+      printResult(runRepeatedScenario("lucy_repeat_250", blockingExecutor, lucyPlan, 250));
+      printResult(runRepeatedScenario("lucy_repeat_500", blockingExecutor, lucyPlan, 500));
       printResult(runRepeatedScenario("lucy_repeat_1000", blockingExecutor, lucyPlan, 1000));
       printResult(runBatchScenario("dragon_batch_10_blocking", blockingExecutor, dragonPlan, 10, false));
+      printResult(runBatchScenario("dragon_batch_2_blocking", blockingExecutor, dragonPlan, 2, false));
+      printResult(runBatchScenario("dragon_batch_5_blocking", blockingExecutor, dragonPlan, 5, false));
       printResult(runBatchScenario("dragon_batch_10_deferred", deferredExecutor, dragonPlan, 10, true));
+      printResult(runBatchScenario("dragon_batch_2_deferred", deferredExecutor, dragonPlan, 2, true));
+      printResult(runBatchScenario("dragon_batch_5_deferred", deferredExecutor, dragonPlan, 5, true));
       printResult(runBatchScenario("lucy_batch_100_blocking", blockingExecutor, lucyPlan, 100, false));
+      printResult(runBatchScenario("lucy_batch_10_blocking", blockingExecutor, lucyPlan, 10, false));
+      printResult(runBatchScenario("lucy_batch_25_blocking", blockingExecutor, lucyPlan, 25, false));
+      printResult(runBatchScenario("lucy_batch_50_blocking", blockingExecutor, lucyPlan, 50, false));
       printResult(runBatchScenario("lucy_batch_100_deferred", deferredExecutor, lucyPlan, 100, true));
+      printResult(runBatchScenario("lucy_batch_10_deferred", deferredExecutor, lucyPlan, 10, true));
+      printResult(runBatchScenario("lucy_batch_25_deferred", deferredExecutor, lucyPlan, 25, true));
+      printResult(runBatchScenario("lucy_batch_50_deferred", deferredExecutor, lucyPlan, 50, true));
 
       printResult(runSyntheticScenario("synthetic_25mb_deferred", deferredExecutor, 25 * 1024 * 1024));
       printResult(runSyntheticScenario("synthetic_50mb_deferred", deferredExecutor, 50 * 1024 * 1024));
