@@ -19,11 +19,18 @@ public final class MeshForgeVulkanIngestionMain {
   public static void main(String[] args) throws Exception {
     int argOffset = 0;
     boolean debug = false;
+    VulkanGpuUploadExecutor.UploadPathMode uploadMode = VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED;
     if (args.length > 0 && "--debug".equals(args[0])) {
       debug = true;
       argOffset = 1;
     }
+    if (args.length > argOffset && args[argOffset].startsWith("--upload-mode=")) {
+      String modeValue = args[argOffset].substring("--upload-mode=".length()).trim().toUpperCase();
+      uploadMode = VulkanGpuUploadExecutor.UploadPathMode.valueOf(modeValue);
+      argOffset++;
+    }
     VulkanLoaderBootstrap.bootstrap(debug);
+    System.out.println("uploadMode=" + uploadMode);
 
     Path fixtureRoot =
         args.length > argOffset
@@ -38,6 +45,7 @@ public final class MeshForgeVulkanIngestionMain {
     harnessCacheDirectory.toFile().deleteOnExit();
 
     MeshForgeIngestionHarnessRunner fullRunner = null;
+    VulkanGpuUploadExecutor executor = null;
     MeshForgeIngestionHarnessRunner preuploadRunner =
         new MeshForgeIngestionHarnessRunner(loader, plan -> {
           throw new UnsupportedOperationException("upload unavailable in preupload-only mode");
@@ -47,12 +55,13 @@ public final class MeshForgeVulkanIngestionMain {
     VulkanHarnessContext context = null;
     try {
       context = VulkanHarnessContext.create();
-      VulkanGpuUploadExecutor executor =
+      executor =
           new VulkanGpuUploadExecutor(
               context.device(),
               context.physicalDevice(),
               context.commandPool(),
-              context.graphicsQueue());
+              context.graphicsQueue(),
+              uploadMode);
       fullRunner =
           new MeshForgeIngestionHarnessRunner(
               loader, executor, new DefaultGeometryUploadValidation(), harnessCacheDirectory);
@@ -87,6 +96,9 @@ public final class MeshForgeVulkanIngestionMain {
         System.out.println(MeshForgeIngestionReportFormatter.toLine(report));
       }
     } finally {
+      if (executor != null) {
+        executor.close();
+      }
       if (context != null) {
         context.close();
       }

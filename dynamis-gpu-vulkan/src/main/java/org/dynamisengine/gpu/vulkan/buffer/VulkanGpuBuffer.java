@@ -22,6 +22,7 @@ public final class VulkanGpuBuffer implements GpuBuffer {
   private final long sizeBytes;
   private final GpuBufferUsage usage;
   private final GpuMemoryLocation memoryLocation;
+  private final Runnable closeAction;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   public VulkanGpuBuffer(
@@ -31,7 +32,21 @@ public final class VulkanGpuBuffer implements GpuBuffer {
       long sizeBytes,
       GpuBufferUsage usage,
       GpuMemoryLocation memoryLocation) {
+    this(device, bufferHandle, memoryHandle, sizeBytes, usage, memoryLocation, null);
+  }
+
+  public VulkanGpuBuffer(
+      VkDevice device,
+      long bufferHandle,
+      long memoryHandle,
+      long sizeBytes,
+      GpuBufferUsage usage,
+      GpuMemoryLocation memoryLocation,
+      Runnable closeAction) {
     this.device = Objects.requireNonNull(device, "device");
+    if (bufferHandle == VK_NULL_HANDLE) {
+      throw new IllegalArgumentException("bufferHandle must not be VK_NULL_HANDLE");
+    }
     if (memoryHandle == VK_NULL_HANDLE) {
       throw new IllegalArgumentException("memoryHandle must not be VK_NULL_HANDLE");
     }
@@ -43,6 +58,7 @@ public final class VulkanGpuBuffer implements GpuBuffer {
     this.sizeBytes = sizeBytes;
     this.usage = Objects.requireNonNull(usage, "usage");
     this.memoryLocation = Objects.requireNonNull(memoryLocation, "memoryLocation");
+    this.closeAction = closeAction != null ? closeAction : this::destroyDedicatedAllocation;
   }
 
   @Override
@@ -70,11 +86,15 @@ public final class VulkanGpuBuffer implements GpuBuffer {
     if (!closed.compareAndSet(false, true)) {
       return;
     }
-    vkDestroyBuffer(device, handle.value(), null);
-    vkFreeMemory(device, memoryHandle, null);
+    closeAction.run();
   }
 
   public boolean isClosed() {
     return closed.get();
+  }
+
+  private void destroyDedicatedAllocation() {
+    vkDestroyBuffer(device, handle.value(), null);
+    vkFreeMemory(device, memoryHandle, null);
   }
 }
