@@ -19,4 +19,8 @@ public record MeshForgeIngestionRunReport(
     RuntimeGeometryLoader.Source source,
     MeshForgeIngestionTiming timing,
     ValidationSummary validation,
+    String uploadMode,
+    String completionMode,
+    long uploadedBytes,
+    Double uploadBandwidthGbps,
     String detail) {}

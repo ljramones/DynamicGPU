@@ -1,9 +1,11 @@
 package org.dynamisengine.gpu.vulkan.upload;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 import org.dynamisengine.gpu.api.buffer.GpuBufferUsage;
 import org.dynamisengine.gpu.api.buffer.GpuMemoryLocation;
@@ -21,6 +23,7 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferAllocateInfo;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkDevice;
+import org.lwjgl.vulkan.VkFenceCreateInfo;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSubmitInfo;
@@ -31,21 +34,28 @@ import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 import static org.lwjgl.vulkan.VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 import static org.lwjgl.vulkan.VK10.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+import static org.lwjgl.vulkan.VK10.VK_FENCE_CREATE_SIGNALED_BIT;
 import static org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 import static org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 import static org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+import static org.lwjgl.vulkan.VK10.VK_NOT_READY;
 import static org.lwjgl.vulkan.VK10.VK_NULL_HANDLE;
 import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_SUBMIT_INFO;
 import static org.lwjgl.vulkan.VK10.VK_SUCCESS;
 import static org.lwjgl.vulkan.VK10.vkAllocateCommandBuffers;
 import static org.lwjgl.vulkan.VK10.vkBeginCommandBuffer;
 import static org.lwjgl.vulkan.VK10.vkCmdCopyBuffer;
+import static org.lwjgl.vulkan.VK10.vkCreateFence;
+import static org.lwjgl.vulkan.VK10.vkDestroyFence;
 import static org.lwjgl.vulkan.VK10.vkEndCommandBuffer;
 import static org.lwjgl.vulkan.VK10.vkFreeCommandBuffers;
+import static org.lwjgl.vulkan.VK10.vkGetFenceStatus;
 import static org.lwjgl.vulkan.VK10.vkQueueSubmit;
 import static org.lwjgl.vulkan.VK10.vkQueueWaitIdle;
+import static org.lwjgl.vulkan.VK10.vkWaitForFences;
 
 /**
  * Vulkan implementation of {@link GpuUploadExecutor} for runtime geometry payloads.
@@ -53,8 +63,11 @@ import static org.lwjgl.vulkan.VK10.vkQueueWaitIdle;
 public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoCloseable {
   public enum UploadPathMode {
     SIMPLE,
-    OPTIMIZED
+    OPTIMIZED,
+    OPTIMIZED_DEFERRED
   }
+
+  private static final long DEFAULT_FENCE_WAIT_NANOS = 5_000_000_000L;
 
   private final VkDevice device;
   private final VkPhysicalDevice physicalDevice;
@@ -64,6 +77,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private final VulkanUploadArena uploadArena;
   private final VulkanDeviceLocalBufferPool deviceBufferPool;
   private final BiFunction<String, Integer, GpuException> vkFailure;
+  private final ArrayDeque<PendingSubmission> pendingSubmissions = new ArrayDeque<>();
+  private final AtomicLong nextSubmissionId = new AtomicLong(1L);
 
   public VulkanGpuUploadExecutor(
       VkDevice device,
@@ -91,22 +106,24 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
         (op, code) ->
             new GpuException(
                 GpuErrorCode.BACKEND_INIT_FAILED, op + " failed with code " + code, false);
-    this.uploadArena = mode == UploadPathMode.OPTIMIZED ? createUploadArena(device, physicalDevice) : null;
+    boolean optimizedMode = mode != UploadPathMode.SIMPLE;
+    this.uploadArena = optimizedMode ? createUploadArena(device, physicalDevice) : null;
     this.deviceBufferPool =
-        mode == UploadPathMode.OPTIMIZED
+        optimizedMode
             ? new VulkanDeviceLocalBufferPool(device, physicalDevice)
             : null;
   }
 
   @Override
-  public GpuMeshResource upload(GpuGeometryUploadPlan plan) throws GpuException {
+  public synchronized GpuMeshResource upload(GpuGeometryUploadPlan plan) throws GpuException {
     if (mode == UploadPathMode.SIMPLE) {
       return uploadSimple(plan);
     }
     return uploadBatch(List.of(plan)).get(0);
   }
 
-  public List<GpuMeshResource> uploadBatch(List<GpuGeometryUploadPlan> plans) throws GpuException {
+  public synchronized List<GpuMeshResource> uploadBatch(List<GpuGeometryUploadPlan> plans)
+      throws GpuException {
     if (mode == UploadPathMode.SIMPLE) {
       ArrayList<GpuMeshResource> resources = new ArrayList<>(plans.size());
       for (GpuGeometryUploadPlan plan : plans) {
@@ -114,44 +131,45 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       }
       return List.copyOf(resources);
     }
-    return uploadBatchOptimized(plans);
+    DeferredUploadBatch pending = submitBatchDeferred(plans);
+    return completeDeferredBatch(pending, DEFAULT_FENCE_WAIT_NANOS);
   }
 
-  @Override
-  public void close() {
-    if (deviceBufferPool != null) {
-      deviceBufferPool.close();
-    }
-    if (uploadArena != null) {
-      uploadArena.close();
-    }
-  }
-
-  private List<GpuMeshResource> uploadBatchOptimized(List<GpuGeometryUploadPlan> plans)
+  public synchronized DeferredUploadBatch submitBatchDeferred(List<GpuGeometryUploadPlan> plans)
       throws GpuException {
     Objects.requireNonNull(plans, "plans");
     if (plans.isEmpty()) {
-      return List.of();
+      throw new IllegalArgumentException("plans must not be empty");
     }
+    if (mode == UploadPathMode.SIMPLE) {
+      throw new IllegalStateException("Deferred submit is unavailable in SIMPLE mode");
+    }
+    if (!pendingSubmissions.isEmpty()) {
+      throw new IllegalStateException(
+          "Deferred upload already in flight; call completeDeferredBatch or drainDeferredSubmissions first");
+    }
+
     ArrayList<PreparedPlan> preparedPlans = new ArrayList<>(plans.size());
+    long totalBytes = 0L;
     try (MemoryStack stack = MemoryStack.stackPush()) {
       uploadArena.reset();
       for (GpuGeometryUploadPlan plan : plans) {
         preparedPlans.add(preparePlanForBatch(stack, plan));
+        totalBytes += plan.vertexData().remaining();
+        if (plan.indexData() != null) {
+          totalBytes += plan.indexData().remaining();
+        }
       }
-      submitCopies(stack, preparedPlans);
-      ArrayList<GpuMeshResource> resources = new ArrayList<>(preparedPlans.size());
-      for (PreparedPlan prepared : preparedPlans) {
-        GpuMeshResource resource =
-            new GpuMeshResource(
-                prepared.vertexBuffer,
-                prepared.indexBuffer,
-                prepared.plan.vertexLayout(),
-                prepared.plan.indexType(),
-                prepared.plan.submeshes());
-        resources.add(resource);
-      }
-      return List.copyOf(resources);
+      SubmissionHandles handles = submitCopies(stack, preparedPlans, false);
+      PendingSubmission pending =
+          new PendingSubmission(
+              nextSubmissionId.getAndIncrement(),
+              handles.commandBufferHandle(),
+              handles.fenceHandle(),
+              List.copyOf(preparedPlans),
+              totalBytes);
+      pendingSubmissions.addLast(pending);
+      return new DeferredUploadBatch(pending.submissionId, pending.planCount(), pending.totalBytes);
     } catch (Throwable t) {
       for (PreparedPlan prepared : preparedPlans) {
         closeQuietly(prepared.indexBuffer);
@@ -162,9 +180,143 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       }
       throw new GpuException(
           GpuErrorCode.BACKEND_INIT_FAILED,
-          "Optimized upload batch failed: " + t.getMessage(),
+          "Deferred upload submit failed: " + t.getMessage(),
           t,
           false);
+    }
+  }
+
+  public synchronized List<GpuMeshResource> completeDeferredBatch(
+      DeferredUploadBatch batch, long timeoutNanos) throws GpuException {
+    Objects.requireNonNull(batch, "batch");
+    if (pendingSubmissions.isEmpty()) {
+      throw new IllegalStateException("No deferred upload submission is pending");
+    }
+    PendingSubmission pending = pendingSubmissions.peekFirst();
+    if (pending.submissionId != batch.submissionId()) {
+      throw new IllegalArgumentException(
+          "batch submissionId="
+              + batch.submissionId()
+              + " does not match pending submissionId="
+              + pending.submissionId);
+    }
+    pendingSubmissions.removeFirst();
+    return retireSubmission(pending, true, timeoutNanos);
+  }
+
+  public synchronized List<GpuMeshResource> tryCollectDeferredBatch() throws GpuException {
+    if (pendingSubmissions.isEmpty()) {
+      return List.of();
+    }
+    PendingSubmission pending = pendingSubmissions.peekFirst();
+    int status = fenceStatus(pending.fenceHandle);
+    if (status == VK_NOT_READY) {
+      return List.of();
+    }
+    if (status != VK_SUCCESS) {
+      throw vkFailure.apply("vkGetFenceStatus(upload-batch)", status);
+    }
+    pendingSubmissions.removeFirst();
+    return retireSubmission(pending, false, 0L);
+  }
+
+  public synchronized List<GpuMeshResource> drainDeferredSubmissions() throws GpuException {
+    ArrayList<GpuMeshResource> resources = new ArrayList<>();
+    while (!pendingSubmissions.isEmpty()) {
+      PendingSubmission pending = pendingSubmissions.removeFirst();
+      resources.addAll(retireSubmission(pending, true, DEFAULT_FENCE_WAIT_NANOS));
+    }
+    return List.copyOf(resources);
+  }
+
+  public synchronized int pendingSubmissionCount() {
+    return pendingSubmissions.size();
+  }
+
+  public UploadPathMode mode() {
+    return mode;
+  }
+
+  @Override
+  public synchronized void close() {
+    RuntimeException closeFailure = null;
+    while (!pendingSubmissions.isEmpty()) {
+      PendingSubmission pending = pendingSubmissions.removeFirst();
+      try {
+        waitFenceOrThrow(pending.fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
+      } catch (GpuException e) {
+        if (closeFailure == null) {
+          closeFailure = new RuntimeException(e);
+        }
+      }
+      destroyFenceQuietly(pending.fenceHandle);
+      freeCommandBufferQuietly(pending.commandBufferHandle);
+      for (PreparedPlan preparedPlan : pending.preparedPlans) {
+        closeQuietly(preparedPlan.indexBuffer);
+        closeQuietly(preparedPlan.vertexBuffer);
+      }
+    }
+    if (deviceBufferPool != null) {
+      deviceBufferPool.close();
+    }
+    if (uploadArena != null) {
+      uploadArena.close();
+    }
+    if (closeFailure != null) {
+      throw closeFailure;
+    }
+  }
+
+  private List<GpuMeshResource> retireSubmission(
+      PendingSubmission pending, boolean waitForCompletion, long timeoutNanos) throws GpuException {
+    try {
+      if (waitForCompletion) {
+        waitFenceOrThrow(pending.fenceHandle, timeoutNanos);
+      }
+      ArrayList<GpuMeshResource> resources = new ArrayList<>(pending.preparedPlans.size());
+      for (PreparedPlan prepared : pending.preparedPlans) {
+        resources.add(
+            new GpuMeshResource(
+                prepared.vertexBuffer,
+                prepared.indexBuffer,
+                prepared.plan.vertexLayout(),
+                prepared.plan.indexType(),
+                prepared.plan.submeshes()));
+      }
+      return List.copyOf(resources);
+    } finally {
+      destroyFenceQuietly(pending.fenceHandle);
+      freeCommandBufferQuietly(pending.commandBufferHandle);
+      uploadArena.reset();
+    }
+  }
+
+  private void waitFenceOrThrow(long fenceHandle, long timeoutNanos) throws GpuException {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      int waitResult =
+          vkWaitForFences(device, stack.longs(fenceHandle), true, Math.max(1L, timeoutNanos));
+      if (waitResult != VK_SUCCESS) {
+        throw vkFailure.apply("vkWaitForFences(upload-batch)", waitResult);
+      }
+    }
+  }
+
+  private int fenceStatus(long fenceHandle) {
+    return vkGetFenceStatus(device, fenceHandle);
+  }
+
+  private void destroyFenceQuietly(long fenceHandle) {
+    if (fenceHandle != VK_NULL_HANDLE) {
+      vkDestroyFence(device, fenceHandle, null);
+    }
+  }
+
+  private void freeCommandBufferQuietly(long commandBufferHandle) {
+    if (commandBufferHandle == VK_NULL_HANDLE) {
+      return;
+    }
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      vkFreeCommandBuffers(device, commandPool, stack.pointers(commandBufferHandle));
     }
   }
 
@@ -264,7 +416,13 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
               GpuBufferUsage.INDEX,
               GpuMemoryLocation.DEVICE_LOCAL,
               indexLease.releaseAction());
-      indexCopy = new CopyOp(indexSlice.stagingBuffer(), indexSlice.offsetBytes(), indexLease.bufferHandle(), 0, indexSlice.sizeBytes());
+      indexCopy =
+          new CopyOp(
+              indexSlice.stagingBuffer(),
+              indexSlice.offsetBytes(),
+              indexLease.bufferHandle(),
+              0,
+              indexSlice.sizeBytes());
     }
 
     return new PreparedPlan(
@@ -280,7 +438,9 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
         indexCopy);
   }
 
-  private void submitCopies(MemoryStack stack, List<PreparedPlan> preparedPlans) throws GpuException {
+  private SubmissionHandles submitCopies(
+      MemoryStack stack, List<PreparedPlan> preparedPlans, boolean waitForCompletion)
+      throws GpuException {
     VkCommandBufferAllocateInfo allocInfo =
         VkCommandBufferAllocateInfo.calloc(stack)
             .sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
@@ -295,41 +455,63 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
           "vkAllocateCommandBuffers(upload-batch) failed: " + allocResult,
           false);
     }
-    VkCommandBuffer commandBuffer = new VkCommandBuffer(pCommandBuffer.get(0), device);
-    try {
-      VkCommandBufferBeginInfo beginInfo =
-          VkCommandBufferBeginInfo.calloc(stack)
-              .sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
-              .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-      int beginResult = vkBeginCommandBuffer(commandBuffer, beginInfo);
-      if (beginResult != VK_SUCCESS) {
-        throw vkFailure.apply("vkBeginCommandBuffer(upload-batch)", beginResult);
-      }
-      for (PreparedPlan preparedPlan : preparedPlans) {
-        recordCopy(stack, commandBuffer, preparedPlan.vertexCopy);
-        if (preparedPlan.indexCopy != null) {
-          recordCopy(stack, commandBuffer, preparedPlan.indexCopy);
-        }
-      }
-      int endResult = vkEndCommandBuffer(commandBuffer);
-      if (endResult != VK_SUCCESS) {
-        throw vkFailure.apply("vkEndCommandBuffer(upload-batch)", endResult);
-      }
-      VkSubmitInfo submitInfo =
-          VkSubmitInfo.calloc(stack)
-              .sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
-              .pCommandBuffers(stack.pointers(commandBuffer.address()));
-      int submitResult = vkQueueSubmit(graphicsQueue, submitInfo, VK_NULL_HANDLE);
-      if (submitResult != VK_SUCCESS) {
-        throw vkFailure.apply("vkQueueSubmit(upload-batch)", submitResult);
-      }
-      int waitResult = vkQueueWaitIdle(graphicsQueue);
-      if (waitResult != VK_SUCCESS) {
-        throw vkFailure.apply("vkQueueWaitIdle(upload-batch)", waitResult);
-      }
-    } finally {
-      vkFreeCommandBuffers(device, commandPool, stack.pointers(commandBuffer.address()));
+    long commandBufferHandle = pCommandBuffer.get(0);
+    VkCommandBuffer commandBuffer = new VkCommandBuffer(commandBufferHandle, device);
+
+    VkCommandBufferBeginInfo beginInfo =
+        VkCommandBufferBeginInfo.calloc(stack)
+            .sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
+            .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    int beginResult = vkBeginCommandBuffer(commandBuffer, beginInfo);
+    if (beginResult != VK_SUCCESS) {
+      freeCommandBufferQuietly(commandBufferHandle);
+      throw vkFailure.apply("vkBeginCommandBuffer(upload-batch)", beginResult);
     }
+
+    for (PreparedPlan preparedPlan : preparedPlans) {
+      recordCopy(stack, commandBuffer, preparedPlan.vertexCopy);
+      if (preparedPlan.indexCopy != null) {
+        recordCopy(stack, commandBuffer, preparedPlan.indexCopy);
+      }
+    }
+    int endResult = vkEndCommandBuffer(commandBuffer);
+    if (endResult != VK_SUCCESS) {
+      freeCommandBufferQuietly(commandBufferHandle);
+      throw vkFailure.apply("vkEndCommandBuffer(upload-batch)", endResult);
+    }
+
+    long fenceHandle = createFence(stack, false);
+    VkSubmitInfo submitInfo =
+        VkSubmitInfo.calloc(stack)
+            .sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
+            .pCommandBuffers(stack.pointers(commandBuffer.address()));
+    int submitResult = vkQueueSubmit(graphicsQueue, submitInfo, fenceHandle);
+    if (submitResult != VK_SUCCESS) {
+      destroyFenceQuietly(fenceHandle);
+      freeCommandBufferQuietly(commandBufferHandle);
+      throw vkFailure.apply("vkQueueSubmit(upload-batch)", submitResult);
+    }
+
+    if (waitForCompletion) {
+      waitFenceOrThrow(fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
+      destroyFenceQuietly(fenceHandle);
+      freeCommandBufferQuietly(commandBufferHandle);
+      return new SubmissionHandles(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    }
+    return new SubmissionHandles(commandBufferHandle, fenceHandle);
+  }
+
+  private long createFence(MemoryStack stack, boolean signaled) throws GpuException {
+    VkFenceCreateInfo fenceInfo =
+        VkFenceCreateInfo.calloc(stack)
+            .sType(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)
+            .flags(signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0);
+    var pFence = stack.longs(VK_NULL_HANDLE);
+    int createResult = vkCreateFence(device, fenceInfo, null, pFence);
+    if (createResult != VK_SUCCESS || pFence.get(0) == VK_NULL_HANDLE) {
+      throw vkFailure.apply("vkCreateFence(upload-batch)", createResult);
+    }
+    return pFence.get(0);
   }
 
   private static void recordCopy(MemoryStack stack, VkCommandBuffer commandBuffer, CopyOp copy) {
@@ -381,6 +563,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     }
   }
 
+  public record DeferredUploadBatch(long submissionId, int planCount, long totalBytes) {}
+
   private record PreparedPlan(
       GpuGeometryUploadPlan plan,
       VulkanGpuBuffer vertexBuffer,
@@ -390,4 +574,17 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
 
   private record CopyOp(
       long srcBuffer, long srcOffsetBytes, long dstBuffer, long dstOffsetBytes, long sizeBytes) {}
+
+  private record PendingSubmission(
+      long submissionId,
+      long commandBufferHandle,
+      long fenceHandle,
+      List<PreparedPlan> preparedPlans,
+      long totalBytes) {
+    int planCount() {
+      return preparedPlans.size();
+    }
+  }
+
+  private record SubmissionHandles(long commandBufferHandle, long fenceHandle) {}
 }

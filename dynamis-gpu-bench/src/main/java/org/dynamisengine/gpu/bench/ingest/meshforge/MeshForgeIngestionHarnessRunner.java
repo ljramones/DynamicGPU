@@ -19,10 +19,12 @@ public final class MeshForgeIngestionHarnessRunner {
   private final GpuUploadExecutor uploadExecutor;
   private final GeometryUploadValidation validation;
   private final Path cacheDirectory;
+  private final String uploadMode;
+  private final String completionMode;
 
   public MeshForgeIngestionHarnessRunner(
       RuntimeGeometryLoader loader, GpuUploadExecutor uploadExecutor, GeometryUploadValidation validation) {
-    this(loader, uploadExecutor, validation, null);
+    this(loader, uploadExecutor, validation, null, "UNKNOWN", "BLOCKING");
   }
 
   public MeshForgeIngestionHarnessRunner(
@@ -30,10 +32,22 @@ public final class MeshForgeIngestionHarnessRunner {
       GpuUploadExecutor uploadExecutor,
       GeometryUploadValidation validation,
       Path cacheDirectory) {
+    this(loader, uploadExecutor, validation, cacheDirectory, "UNKNOWN", "BLOCKING");
+  }
+
+  public MeshForgeIngestionHarnessRunner(
+      RuntimeGeometryLoader loader,
+      GpuUploadExecutor uploadExecutor,
+      GeometryUploadValidation validation,
+      Path cacheDirectory,
+      String uploadMode,
+      String completionMode) {
     this.loader = Objects.requireNonNull(loader, "loader");
     this.uploadExecutor = Objects.requireNonNull(uploadExecutor, "uploadExecutor");
     this.validation = Objects.requireNonNull(validation, "validation");
     this.cacheDirectory = cacheDirectory;
+    this.uploadMode = Objects.requireNonNull(uploadMode, "uploadMode");
+    this.completionMode = Objects.requireNonNull(completionMode, "completionMode");
   }
 
   public MeshForgeIngestionRunReport run(String fixtureName, Path sourceMesh)
@@ -60,6 +74,8 @@ public final class MeshForgeIngestionHarnessRunner {
     }
     long uploadEnd = System.nanoTime();
     long totalEnd = System.nanoTime();
+    long uploadedBytes = totalPlanBytes(plan);
+    Double uploadGbps = toUploadGbps(uploadedBytes, uploadEnd - uploadStart);
 
     return new MeshForgeIngestionRunReport(
         fixtureName,
@@ -71,6 +87,10 @@ public final class MeshForgeIngestionHarnessRunner {
             uploadEnd - uploadStart,
             totalEnd - totalStart),
         summary,
+        uploadMode,
+        completionMode,
+        uploadedBytes,
+        uploadGbps,
         null);
   }
 
@@ -93,6 +113,7 @@ public final class MeshForgeIngestionHarnessRunner {
     ValidationSummary summary = validation.validatePlan(plan);
     long bridgeEnd = System.nanoTime();
     long totalEnd = System.nanoTime();
+    long uploadedBytes = totalPlanBytes(plan);
 
     return new MeshForgeIngestionRunReport(
         fixtureName,
@@ -104,6 +125,10 @@ public final class MeshForgeIngestionHarnessRunner {
             -1L,
             totalEnd - totalStart),
         summary,
+        uploadMode,
+        completionMode,
+        uploadedBytes,
+        null,
         blockedReason);
   }
 
@@ -113,5 +138,21 @@ public final class MeshForgeIngestionHarnessRunner {
     }
     Path cacheFile = cacheDirectory.resolve(sourceMesh.getFileName().toString() + ".mfgc");
     return loader.load(sourceMesh, cacheFile, false);
+  }
+
+  private static long totalPlanBytes(GpuGeometryUploadPlan plan) {
+    long total = plan.vertexData().remaining();
+    if (plan.indexData() != null) {
+      total += plan.indexData().remaining();
+    }
+    return total;
+  }
+
+  private static Double toUploadGbps(long uploadedBytes, long nanos) {
+    if (uploadedBytes <= 0L || nanos <= 0L) {
+      return null;
+    }
+    double seconds = nanos / 1_000_000_000.0;
+    return (uploadedBytes / seconds) / 1_000_000_000.0;
   }
 }

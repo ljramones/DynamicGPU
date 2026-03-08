@@ -59,6 +59,16 @@ mvn -q -pl dynamis-gpu-bench exec:java \
 Switch mode for comparison:
 - `--upload-mode=simple`
 - `--upload-mode=optimized`
+- `--upload-mode=optimized_deferred`
+
+## Run Sustained Upload Benchmarks (Phase 3)
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="../MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
 
 ## Run Vulkan Probe
 

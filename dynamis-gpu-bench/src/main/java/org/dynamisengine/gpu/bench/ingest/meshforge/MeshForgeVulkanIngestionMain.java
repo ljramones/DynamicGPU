@@ -46,10 +46,14 @@ public final class MeshForgeVulkanIngestionMain {
 
     MeshForgeIngestionHarnessRunner fullRunner = null;
     VulkanGpuUploadExecutor executor = null;
+    String completionMode =
+        uploadMode == VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED
+            ? "DEFERRED"
+            : "BLOCKING";
     MeshForgeIngestionHarnessRunner preuploadRunner =
         new MeshForgeIngestionHarnessRunner(loader, plan -> {
           throw new UnsupportedOperationException("upload unavailable in preupload-only mode");
-        }, new DefaultGeometryUploadValidation(), harnessCacheDirectory);
+        }, new DefaultGeometryUploadValidation(), harnessCacheDirectory, uploadMode.name(), completionMode);
 
     String uploadBlockedReason = null;
     VulkanHarnessContext context = null;
@@ -64,7 +68,12 @@ public final class MeshForgeVulkanIngestionMain {
               uploadMode);
       fullRunner =
           new MeshForgeIngestionHarnessRunner(
-              loader, executor, new DefaultGeometryUploadValidation(), harnessCacheDirectory);
+              loader,
+              executor,
+              new DefaultGeometryUploadValidation(),
+              harnessCacheDirectory,
+              uploadMode.name(),
+              completionMode);
     } catch (Throwable t) {
       uploadBlockedReason = summarizeThrowable(t);
       System.err.println("[MeshForgeVulkanIngestionMain] upload path blocked: " + uploadBlockedReason);
@@ -90,6 +99,10 @@ public final class MeshForgeVulkanIngestionMain {
               MeshForgeIngestionStatus.FAILURE,
               null,
               new MeshForgeIngestionTiming(0L, 0L, -1L, 0L),
+              null,
+              uploadMode.name(),
+              completionMode,
+              0L,
               null,
               summarizeThrowable(fixtureFailure));
         }
