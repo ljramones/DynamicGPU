@@ -122,6 +122,13 @@ Remaining optimization work will focus on:
 
 Not rewriting LWJGL.
 
+Latest measured outcome (Phase 3.5/3.6):
+
+- Phase 3.5 eliminated direct-buffer prep churn in the sustained upload hot path.
+- Phase 3.6 did not materially reduce deferred prep/bookkeeping sample share.
+- No dominant LWJGL Java-side helper hotspot was observed.
+- Decision remains: keep LWJGL unchanged and target higher-level overlap/streaming behavior next.
+
 ---
 
 ## Summary

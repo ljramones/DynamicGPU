@@ -34,9 +34,10 @@ RuntimeGeometryLoader
 -> GpuMeshResource
 ```
 
-`VulkanGpuUploadExecutor` supports two internal modes:
+`VulkanGpuUploadExecutor` supports three internal modes:
 - `SIMPLE`: baseline, per-upload staging/allocation path
 - `OPTIMIZED`: Phase 2 path with reusable upload arena, batched copy submit, and initial device-local allocation reuse
+- `OPTIMIZED_DEFERRED`: Phase 3 deferred submission + fence-retirement path for sustained throughput scenarios
 
 ## macOS Vulkan Setup (MoltenVK)
 Known-good environment pattern:
@@ -115,3 +116,5 @@ vulkaninfo | head -40
 - [Baseline ingestion note](docs/dynamisgpu-ingestion-baseline.md)
 - [Phase 2 upload optimization note](docs/dynamisgpu-phase2-upload-optimization.md)
 - [Phase 3 deferred upload note](docs/dynamisgpu-phase3-deferred-upload.md)
+- [Phase 3 profiling workflow + decisions](docs/dynamisgpu-phase3-profiling-plan.md)
+- [LWJGL optimization decision matrix](docs/lwjgl-optimization-decision-matrix.md)

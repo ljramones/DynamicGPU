@@ -160,3 +160,12 @@ The remaining performance frontier is no longer basic upload mechanics but:
 - overlapping uploads with other GPU work
 - multi-frame streaming behavior
 - large-scene asset residency strategies
+
+## Phase 3.5 / 3.6 Outcome
+
+- Phase 3.5 removed direct-buffer prep churn from the sustained hot path (`allocateDirect`/copy-helper top-of-stack share reduced from `47.83%` to `0.00%` in the same JFR workflow).
+- Phase 3.6 targeted deferred prep/bookkeeping (`submitBatchDeferred` / `preparePlanForBatch`) and did **not** materially reduce their inclusive sample presence.
+- Current evidence does **not** justify LWJGL patching, LWJGL forking, or FFM replacement for this branch.
+- Phase 3 optimization branch is closed; next work should focus on overlap/streaming behavior rather than additional Java-side prep micro-tuning.
+
+See [Phase 3 profiling workflow + measured deltas](dynamisgpu-phase3-profiling-plan.md).

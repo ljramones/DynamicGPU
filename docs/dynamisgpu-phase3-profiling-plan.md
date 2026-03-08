@@ -183,3 +183,12 @@ Measured delta table (Phase 3.5 -> Phase 3.6):
 Conclusion:
 - Phase 3.6 did **not** materially reduce the targeted Java-side submit/prep inclusive shares.
 - With direct-buffer churn already removed in Phase 3.5 and no LWJGL-internal hotspot evidence, further Java-side prep micro-optimization is likely low-yield relative to runtime/native transfer behavior.
+
+## 13. Final Branch Decision
+
+- Phase 3 Java-side micro-optimization branch is closed.
+- Locked decisions for this milestone:
+  - no LWJGL fork
+  - no LWJGL patch
+  - no FFM replacement experiment
+- Recommended next performance frontier: transfer overlap, multi-frame upload behavior, and streaming/residency strategy.
