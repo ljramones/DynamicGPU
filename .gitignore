@@ -15,3 +15,7 @@ out/
 # OS files
 .DS_Store
 Thumbs.db
+
+# JVM crash artifacts
+hs_err_pid*.log
+replay_pid*.log
