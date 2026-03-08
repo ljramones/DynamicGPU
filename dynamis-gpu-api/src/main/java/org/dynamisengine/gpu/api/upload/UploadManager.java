@@ -38,9 +38,31 @@ public interface UploadManager extends AutoCloseable {
   UploadTelemetry telemetry();
 
   /**
+   * @return compact diagnostic snapshot suitable for logs and benchmark traces
+   */
+  default String debugSnapshot() {
+    UploadTelemetry telemetry = telemetry();
+    return "inflight="
+        + telemetry.inflightCount()
+        + ", backlog="
+        + telemetry.backlogDepth()
+        + ", inflightBytes="
+        + telemetry.inflightBytes()
+        + ", completedUploads="
+        + telemetry.completedUploads()
+        + ", throughputGbps="
+        + String.format(java.util.Locale.ROOT, "%.3f", telemetry.throughputGbps())
+        + ", avgTtfuMs="
+        + String.format(java.util.Locale.ROOT, "%.3f", telemetry.averageTtfuMillis())
+        + ", p95TtfuMs="
+        + String.format(java.util.Locale.ROOT, "%.3f", telemetry.p95TtfuMillis())
+        + ", avgCompletionLatencyMs="
+        + String.format(java.util.Locale.ROOT, "%.3f", telemetry.averageCompletionLatencyMillis());
+  }
+
+  /**
    * Releases manager resources and rejects future submissions.
    */
   @Override
   void close();
 }
-

@@ -93,6 +93,27 @@ class DefaultUploadManagerTest {
     }
   }
 
+  @Test
+  void debugSnapshotContainsTriangleFields() throws Exception {
+    TrackingUploadExecutor executor = new TrackingUploadExecutor(10);
+    GpuGeometryUploadPlan plan = samplePlan();
+    try (DefaultUploadManager manager = new DefaultUploadManager(executor, 2, 8)) {
+      UploadTicket ticket = manager.submit(plan);
+      GpuMeshResource resource = ticket.await();
+      resource.close();
+      manager.drain();
+
+      String snapshot = manager.debugSnapshot();
+      assertTrue(snapshot.contains("inflight="));
+      assertTrue(snapshot.contains("backlog="));
+      assertTrue(snapshot.contains("inflightBytes="));
+      assertTrue(snapshot.contains("throughputGbps="));
+      assertTrue(snapshot.contains("avgTtfuMs="));
+      assertTrue(snapshot.contains("p95TtfuMs="));
+      assertTrue(snapshot.contains("avgCompletionLatencyMs="));
+    }
+  }
+
   private static GpuGeometryUploadPlan samplePlan() {
     ByteBuffer vertex = ByteBuffer.allocate(12);
     vertex.put(new byte[] {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
@@ -213,4 +234,3 @@ class DefaultUploadManagerTest {
     }
   }
 }
-
