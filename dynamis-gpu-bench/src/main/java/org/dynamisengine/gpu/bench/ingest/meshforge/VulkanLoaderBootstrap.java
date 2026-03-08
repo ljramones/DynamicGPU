@@ -29,9 +29,11 @@ public final class VulkanLoaderBootstrap {
 
     String osName = System.getProperty("os.name", "unknown");
     String lowerOs = osName.toLowerCase(Locale.ROOT);
-    String selected = null;
+    String selected = System.getProperty("dynamisgpu.vk.loader");
     if (lowerOs.contains("mac")) {
-      selected = selectMacLoaderPath();
+      if (selected == null || selected.isBlank()) {
+        selected = selectMacLoaderPath();
+      }
       if (selected != null) {
         Configuration.VULKAN_LIBRARY_NAME.set(selected);
       }

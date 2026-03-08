@@ -69,6 +69,23 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
+## Run Vulkan Parity Probe
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.VulkanParityProbeMain \
+  -Dexec.args="--debug" \
+  -Dexec.classpathScope=runtime
+```
+
+Useful side-by-side checks:
+
+```bash
+env | grep '^VK_'
+env | grep '^DYLD'
+vulkaninfo | head -40
+```
+
 ## Docs
 - [Baseline ingestion note](docs/dynamisgpu-ingestion-baseline.md)
 - [Phase 2 upload optimization note](docs/dynamisgpu-phase2-upload-optimization.md)
