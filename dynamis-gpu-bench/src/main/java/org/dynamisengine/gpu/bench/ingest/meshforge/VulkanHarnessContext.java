@@ -77,40 +77,15 @@ public final class VulkanHarnessContext implements AutoCloseable {
 
   public static VulkanHarnessContext create() throws GpuException {
     try (MemoryStack stack = MemoryStack.stackPush()) {
-      VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
-          .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
-          .pApplicationName(stack.UTF8("DynamisGPU Ingestion Harness"))
-          .pEngineName(stack.UTF8("DynamisEngine"))
-          .apiVersion(REQUESTED_APP_API_VERSION);
-
-      List<String> requestedInstanceExtensions = requiredInstanceExtensions();
-      PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
-      boolean portabilityEnumerationEnabled =
-          requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
-      VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
-          .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
-          .pApplicationInfo(appInfo)
-          .ppEnabledExtensionNames(instanceExtensions);
-      if (portabilityEnumerationEnabled) {
-        instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
-      }
-
-      var pInstance = stack.mallocPointer(1);
-      int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
-      if (instanceResult != VK_SUCCESS) {
-        throw new GpuException(
-            GpuErrorCode.BACKEND_INIT_FAILED,
-            "stage=instance_create result="
-                + instanceResult
-                + " requestedInstanceExtensions="
-                + requestedInstanceExtensions,
-            false);
-      }
-      VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+      InstanceSession instanceSession = createInstanceSession(stack, "DynamisGPU Ingestion Harness");
+      VkInstance instance = instanceSession.instance();
 
       DeviceSelection selection =
           pickPhysicalDevice(
-              instance, stack, requestedInstanceExtensions, portabilityEnumerationEnabled);
+              instance,
+              stack,
+              instanceSession.requestedInstanceExtensions(),
+              instanceSession.portabilityEnumerationEnabled());
       VkPhysicalDevice physicalDevice = selection.physicalDevice();
       int queueFamilyIndex = selection.graphicsQueueFamilyIndex();
 
@@ -177,28 +152,15 @@ public final class VulkanHarnessContext implements AutoCloseable {
 
   public static VulkanProbeReport probe() throws GpuException {
     try (MemoryStack stack = MemoryStack.stackPush()) {
-      VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
-          .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
-          .pApplicationName(stack.UTF8("DynamisGPU Vulkan Probe"))
-          .pEngineName(stack.UTF8("DynamisEngine"))
-          .apiVersion(REQUESTED_APP_API_VERSION);
-
-      List<String> requestedInstanceExtensions = requiredInstanceExtensions();
-      boolean portabilityEnumerationEnabled =
-          requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
-      PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
-      VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
-          .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
-          .pApplicationInfo(appInfo)
-          .ppEnabledExtensionNames(instanceExtensions);
-      if (portabilityEnumerationEnabled) {
-        instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
-      }
-
-      var pInstance = stack.mallocPointer(1);
-      int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
-      if (instanceResult != VK_SUCCESS) {
+      InstanceSession instanceSession;
+      try {
+        instanceSession = createInstanceSession(stack, "DynamisGPU Vulkan Probe");
+      } catch (GpuException e) {
         InstanceVersionQuery versionQuery = queryInstanceVersion(stack);
+        int instanceResult = extractInstanceCreateResultCode(e);
+        List<String> requestedInstanceExtensions = requiredInstanceExtensions();
+        boolean portabilityEnumerationEnabled =
+            requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
         return new VulkanProbeReport(
             "INSTANCE_CREATE_FAILED",
             instanceResult,
@@ -212,8 +174,7 @@ public final class VulkanHarnessContext implements AutoCloseable {
             versionQuery.apiVersion(),
             -1);
       }
-
-      VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+      VkInstance instance = instanceSession.instance();
       try {
         InstanceVersionQuery versionQuery = queryInstanceVersion(stack);
         int capabilityApiVersion = VK.getInstanceVersionSupported();
@@ -223,8 +184,8 @@ public final class VulkanHarnessContext implements AutoCloseable {
           return new VulkanProbeReport(
               "PHYSICAL_DEVICE_ENUMERATION_FAILED",
               enumResult,
-              requestedInstanceExtensions,
-              portabilityEnumerationEnabled,
+              instanceSession.requestedInstanceExtensions(),
+              instanceSession.portabilityEnumerationEnabled(),
               List.of(),
               "vkEnumeratePhysicalDevices(count) returned " + enumResult,
               VK_HEADER_VERSION_COMPLETE_DERIVED,
@@ -240,8 +201,8 @@ public final class VulkanHarnessContext implements AutoCloseable {
           return new VulkanProbeReport(
               "PHYSICAL_DEVICE_ENUMERATION_LIST_FAILED",
               enumListResult,
-              requestedInstanceExtensions,
-              portabilityEnumerationEnabled,
+              instanceSession.requestedInstanceExtensions(),
+              instanceSession.portabilityEnumerationEnabled(),
               List.of(),
               "vkEnumeratePhysicalDevices(list) returned " + enumListResult,
               VK_HEADER_VERSION_COMPLETE_DERIVED,
@@ -279,13 +240,13 @@ public final class VulkanHarnessContext implements AutoCloseable {
         }
 
         return new VulkanProbeReport(
-            "SUCCESS",
-            VK_SUCCESS,
-            requestedInstanceExtensions,
-            portabilityEnumerationEnabled,
-            summaries,
-            null,
-            VK_HEADER_VERSION_COMPLETE_DERIVED,
+              "SUCCESS",
+              VK_SUCCESS,
+              instanceSession.requestedInstanceExtensions(),
+              instanceSession.portabilityEnumerationEnabled(),
+              summaries,
+              null,
+              VK_HEADER_VERSION_COMPLETE_DERIVED,
             REQUESTED_APP_API_VERSION,
             versionQuery.resultCode(),
             versionQuery.apiVersion(),
@@ -518,6 +479,70 @@ public final class VulkanHarnessContext implements AutoCloseable {
       List<String> discoveredDeviceNames,
       List<String> discoveredDeviceSummaries) {}
 
+  private static InstanceSession createInstanceSession(MemoryStack stack, String applicationName)
+      throws GpuException {
+    VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
+        .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
+        .pApplicationName(stack.UTF8(applicationName))
+        .pEngineName(stack.UTF8("DynamisEngine"))
+        .apiVersion(REQUESTED_APP_API_VERSION);
+
+    List<String> requestedInstanceExtensions = requiredInstanceExtensions();
+    boolean portabilityEnumerationEnabled =
+        requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
+    PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
+    VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
+        .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
+        .pApplicationInfo(appInfo)
+        .ppEnabledExtensionNames(instanceExtensions);
+    if (portabilityEnumerationEnabled) {
+      instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
+    }
+
+    var pInstance = stack.mallocPointer(1);
+    int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
+    if (instanceResult != VK_SUCCESS) {
+      throw new GpuException(
+          GpuErrorCode.BACKEND_INIT_FAILED,
+          "stage=instance_create result="
+              + instanceResult
+              + " requestedInstanceExtensions="
+              + requestedInstanceExtensions,
+          false);
+    }
+    VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+    return new InstanceSession(
+        instance, List.copyOf(requestedInstanceExtensions), portabilityEnumerationEnabled);
+  }
+
+  private static int extractInstanceCreateResultCode(GpuException exception) {
+    String message = exception.getMessage();
+    if (message == null) {
+      return -1;
+    }
+    int marker = message.indexOf("result=");
+    if (marker < 0) {
+      return -1;
+    }
+    int start = marker + "result=".length();
+    int end = start;
+    while (end < message.length()) {
+      char c = message.charAt(end);
+      if (!(c == '-' || Character.isDigit(c))) {
+        break;
+      }
+      end++;
+    }
+    if (end == start) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(message.substring(start, end));
+    } catch (NumberFormatException ignored) {
+      return -1;
+    }
+  }
+
   public record VulkanProbeReport(
       String stage,
       int resultCode,
@@ -542,4 +567,9 @@ public final class VulkanHarnessContext implements AutoCloseable {
   }
 
   private record InstanceVersionQuery(int resultCode, int apiVersion) {}
+
+  private record InstanceSession(
+      VkInstance instance,
+      List<String> requestedInstanceExtensions,
+      boolean portabilityEnumerationEnabled) {}
 }
