@@ -3,6 +3,7 @@ package org.dynamisengine.gpu.bench.ingest.meshforge;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.List;
 import org.dynamisengine.gpu.api.layout.IndexType;
@@ -25,6 +26,11 @@ public final class MeshForgeVulkanSustainedMain {
 
   public static void main(String[] args) throws Exception {
     boolean debug = containsArg(args, "--debug");
+    boolean phase4Overlap = containsArg(args, "--phase4-4a1");
+    int maxInflight = parseIntOption(args, "--max-inflight", 1);
+    if (maxInflight < 1) {
+      throw new IllegalArgumentException("--max-inflight must be >= 1");
+    }
     Path fixtureRoot =
         args.length > 0 && !args[0].startsWith("--")
             ? Path.of(args[0])
@@ -56,6 +62,37 @@ public final class MeshForgeVulkanSustainedMain {
                 context.commandPool(),
                 context.graphicsQueue(),
                 VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED)) {
+      if (phase4Overlap) {
+        List<VulkanGpuUploadExecutor> overlapExecutors = new ArrayList<>(maxInflight);
+        try {
+          for (int i = 0; i < maxInflight; i++) {
+            overlapExecutors.add(
+                new VulkanGpuUploadExecutor(
+                    context.device(),
+                    context.physicalDevice(),
+                    context.commandPool(),
+                    context.graphicsQueue(),
+                    VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED));
+          }
+          printResult(
+              runOverlapScenario(
+                  "dragon_batch_10_overlap", overlapExecutors, dragonPlan, 10, 100, maxInflight));
+          printResult(
+              runOverlapScenario(
+                  "lucy_batch_100_overlap", overlapExecutors, lucyPlan, 100, 100, maxInflight));
+          printResult(
+              runOverlapScenario(
+                  "synthetic_100mb_overlap",
+                  overlapExecutors,
+                  syntheticPlan(100 * 1024 * 1024),
+                  1,
+                  30,
+                  maxInflight));
+        } finally {
+          closeExecutors(overlapExecutors);
+        }
+        return;
+      }
 
       printResult(runRepeatedScenario("dragon_repeat_10", blockingExecutor, dragonPlan, 10));
       printResult(runRepeatedScenario("dragon_repeat_25", blockingExecutor, dragonPlan, 25));
@@ -170,6 +207,85 @@ public final class MeshForgeVulkanSustainedMain {
     return runBatchScenario(name, executor, synthetic, 1, true);
   }
 
+  private static ScenarioResult runOverlapScenario(
+      String name,
+      List<VulkanGpuUploadExecutor> executors,
+      GpuGeometryUploadPlan template,
+      int batchCount,
+      int iterations,
+      int maxInflight)
+      throws Exception {
+    if (executors.isEmpty()) {
+      throw new IllegalArgumentException("executors must not be empty");
+    }
+    List<GpuGeometryUploadPlan> plans = Collections.nCopies(batchCount, template);
+    long bytesPerSubmit = totalPlanBytes(template) * batchCount;
+    long totalBytes = bytesPerSubmit * iterations;
+    long totalSubmitNanos = 0L;
+    long totalCompletionNanos = 0L;
+    long totalLatencyNanos = 0L;
+    int maxInflightSeen = 0;
+    int completed = 0;
+    ArrayDeque<PendingTicket> inflight = new ArrayDeque<>();
+    int submitIndex = 0;
+    String mode = executors.get(0).mode().name();
+
+    long wallStart = System.nanoTime();
+    for (int i = 0; i < iterations; i++) {
+      VulkanGpuUploadExecutor executor = executors.get(submitIndex % executors.size());
+      submitIndex++;
+      long submitStart = System.nanoTime();
+      VulkanGpuUploadExecutor.DeferredUploadBatch batch = executor.submitBatchDeferred(plans);
+      long submitEnd = System.nanoTime();
+      totalSubmitNanos += submitEnd - submitStart;
+      inflight.addLast(new PendingTicket(executor, batch, submitEnd));
+      maxInflightSeen = Math.max(maxInflightSeen, inflight.size());
+
+      while (inflight.size() >= maxInflight) {
+        totalCompletionNanos += completeOldestDeferred(inflight);
+        PendingTicket completedBatch = inflight.removeFirst();
+        long completionEnd = System.nanoTime();
+        totalLatencyNanos += completionEnd - completedBatch.submitEndNanos();
+        completed++;
+      }
+    }
+    while (!inflight.isEmpty()) {
+      totalCompletionNanos += completeOldestDeferred(inflight);
+      PendingTicket completedBatch = inflight.removeFirst();
+      long completionEnd = System.nanoTime();
+      totalLatencyNanos += completionEnd - completedBatch.submitEndNanos();
+      completed++;
+    }
+    long wallEnd = System.nanoTime();
+    long totalNanos = wallEnd - wallStart;
+    return new ScenarioResult(
+        name + "_inflight" + maxInflight,
+        mode,
+        "DEFERRED_OVERLAP",
+        iterations,
+        iterations * batchCount,
+        totalBytes,
+        totalSubmitNanos,
+        totalCompletionNanos,
+        totalNanos,
+        toGbps(totalBytes, totalNanos),
+        maxInflightSeen,
+        completed == 0 ? 0.0 : nanosToMillis(totalLatencyNanos / completed));
+  }
+
+  private static long completeOldestDeferred(ArrayDeque<PendingTicket> inflight) throws Exception {
+    PendingTicket oldest = inflight.peekFirst();
+    if (oldest == null) {
+      return 0L;
+    }
+    long completionStart = System.nanoTime();
+    List<GpuMeshResource> resources =
+        oldest.executor().completeDeferredBatch(oldest.batch(), 5_000_000_000L);
+    long completionEnd = System.nanoTime();
+    closeAll(resources);
+    return completionEnd - completionStart;
+  }
+
   private static void printResult(ScenarioResult result) {
     System.out.println(
         "scenario="
@@ -191,7 +307,11 @@ public final class MeshForgeVulkanSustainedMain {
             + " totalMs="
             + nanosToMillis(result.totalNanos())
             + " uploadGbps="
-            + String.format(java.util.Locale.ROOT, "%.3f", result.gbps()));
+            + String.format(java.util.Locale.ROOT, "%.3f", result.gbps())
+            + " maxInflightSeen="
+            + result.maxInflightSeen()
+            + " avgCompletionLatencyMs="
+            + String.format(java.util.Locale.ROOT, "%.3f", result.avgCompletionLatencyMs()));
   }
 
   private static GpuGeometryUploadPlan loadPlan(RuntimeGeometryLoader loader, Path meshPath)
@@ -259,6 +379,24 @@ public final class MeshForgeVulkanSustainedMain {
     }
   }
 
+  private static void closeExecutors(List<VulkanGpuUploadExecutor> executors) {
+    RuntimeException first = null;
+    for (VulkanGpuUploadExecutor executor : executors) {
+      try {
+        executor.close();
+      } catch (RuntimeException e) {
+        if (first == null) {
+          first = e;
+        } else {
+          first.addSuppressed(e);
+        }
+      }
+    }
+    if (first != null) {
+      throw first;
+    }
+  }
+
   private static double toGbps(long bytes, long nanos) {
     if (bytes <= 0L || nanos <= 0L) {
       return 0.0;
@@ -289,6 +427,16 @@ public final class MeshForgeVulkanSustainedMain {
     return false;
   }
 
+  private static int parseIntOption(String[] args, String option, int defaultValue) {
+    String prefix = option + "=";
+    for (String arg : args) {
+      if (arg.startsWith(prefix)) {
+        return Integer.parseInt(arg.substring(prefix.length()));
+      }
+    }
+    return defaultValue;
+  }
+
   private record ScenarioResult(
       String name,
       String mode,
@@ -299,5 +447,26 @@ public final class MeshForgeVulkanSustainedMain {
       long submitNanos,
       long completionNanos,
       long totalNanos,
-      double gbps) {}
+      double gbps,
+      int maxInflightSeen,
+      double avgCompletionLatencyMs) {
+    private ScenarioResult(
+        String name,
+        String mode,
+        String completion,
+        int submits,
+        int uploads,
+        long uploadedBytes,
+        long submitNanos,
+        long completionNanos,
+        long totalNanos,
+        double gbps) {
+      this(name, mode, completion, submits, uploads, uploadedBytes, submitNanos, completionNanos, totalNanos, gbps, 0, 0.0);
+    }
+  }
+
+  private record PendingTicket(
+      VulkanGpuUploadExecutor executor,
+      VulkanGpuUploadExecutor.DeferredUploadBatch batch,
+      long submitEndNanos) {}
 }

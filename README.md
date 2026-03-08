@@ -71,6 +71,15 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
+Run Phase 4 overlap experiment 4A.1 with configurable in-flight depth:
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase4-4a1 --max-inflight=2 /Users/larrymitchell/Dynamis/MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
 ## Run Vulkan Probe
 
 ```bash

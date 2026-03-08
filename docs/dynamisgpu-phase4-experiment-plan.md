@@ -2,6 +2,8 @@
 
 ## 1. Purpose
 
+Phase 4 shifts focus from reducing upload cost to **hiding upload cost through overlap and streaming-oriented behavior**.
+
 Phase 4 focuses on engine-level upload behavior:
 
 - upload overlap
@@ -138,3 +140,29 @@ Goal:
 - Keep public APIs stable during Phase 4 experiments.
 - Keep upload semantics unchanged while varying overlap/in-flight policy.
 - Prefer benchmark-first changes; avoid architecture expansion until measurements indicate direction.
+
+## 10. 4A.1 Initial Results (Apple M4 Max / MoltenVK)
+
+Command pattern:
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase4-4a1 --max-inflight=<N> /Users/larrymitchell/Dynamis/MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
+Measured results:
+
+| Scenario | Inflight=1 GB/s | Inflight=2 GB/s | Inflight=3 GB/s | Latency trend |
+| --- | ---: | ---: | ---: | --- |
+| `dragon_batch_10_overlap` | 18.749 | 24.280 | 24.033 | increases (`0.877ms` -> `1.973ms` -> `3.857ms`) |
+| `lucy_batch_100_overlap` | 22.739 | 26.830 | 26.199 | increases (`1.368ms` -> `5.010ms` -> `9.933ms`) |
+| `synthetic_100mb_overlap` | 21.032 | 22.905 | 22.013 | increases (`1.379ms` -> `4.247ms` -> `8.442ms`) |
+
+Interpretation:
+
+- Throughput improves substantially from inflight depth `1 -> 2`.
+- Depth `2 -> 3` is flat/slightly regressive on throughput.
+- Completion latency rises meaningfully with inflight depth.
+- Current best operating point for these scenarios appears near `max-inflight=2`.
