@@ -132,3 +132,31 @@ First action table:
 - This initial profile is short (`~1s`) and sample-based; treat it as directional.
 - `hot-methods` is top-of-stack sampled time; inclusive stack-presence values are separate and should not be summed with top-of-stack percentages.
 - Repeat this workflow after any upload-path change before deciding on LWJGL patching or FFM experiments.
+
+## 11. Phase 3.5 Rerun (Bounded Direct-Buffer Reuse Pass)
+
+Change scope:
+- Removed sustained-harness plan cloning direct-buffer churn (reuse template plans for repeated/batch scenarios).
+- Added executor-side reusable direct-copy staging (`toReusableDirectCopy`) for upload prep.
+- No public API changes.
+
+Rerun recording:
+- `/tmp/dgpu-phase3-sustained-phase35.jfr`
+- `jdk.ExecutionSample` count: `25`
+
+Measured deltas versus 2026-03-08 baseline:
+
+| Metric | Baseline | Phase 3.5 | Delta |
+| --- | ---: | ---: | ---: |
+| `ByteBuffer.allocateDirect` (hot-methods top-of-stack) | `32.61%` | `0.00%` | `-32.61pp` |
+| `VulkanGpuUploadExecutor.toDirectCopy` (hot-methods top-of-stack) | `8.70%` | `0.00%` | `-8.70pp` |
+| `MeshForgeVulkanSustainedMain.copyToDirect` (hot-methods top-of-stack) | `6.52%` | `0.00%` | `-6.52pp` |
+| Combined direct-buffer/copy helper churn (top-of-stack) | `47.83%` | `0.00%` | `-47.83pp` |
+| `submitBatchDeferred` (inclusive presence) | `19.57%` | `28.00%` | `+8.43pp` |
+| `preparePlanForBatch` (inclusive presence) | `19.57%` | `24.00%` | `+4.43pp` |
+| `toReusableDirectCopy` (inclusive presence) | `0.00%` | `8.00%` | `+8.00pp` |
+
+Updated action read:
+- Direct-buffer helper churn target is materially reduced; initial Phase 3.5 goal is met.
+- Deferred bookkeeping is now relatively more visible and remains the next wrap/cache target.
+- No new evidence justifies LWJGL patching or FFM replacement.

@@ -3,6 +3,7 @@ package org.dynamisengine.gpu.bench.ingest.meshforge;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import org.dynamisengine.gpu.api.layout.IndexType;
 import org.dynamisengine.gpu.api.layout.SubmeshRange;
@@ -93,7 +94,7 @@ public final class MeshForgeVulkanSustainedMain {
     long totalBytes = totalPlanBytes(template) * count;
     long start = System.nanoTime();
     for (int i = 0; i < count; i++) {
-      try (GpuMeshResource resource = executor.upload(clonePlan(template))) {
+      try (GpuMeshResource resource = executor.upload(template)) {
         // Resource scope closes each iteration by design.
       }
     }
@@ -119,7 +120,7 @@ public final class MeshForgeVulkanSustainedMain {
       int batchCount,
       boolean deferredCompletion)
       throws Exception {
-    List<GpuGeometryUploadPlan> plans = clonePlanList(template, batchCount);
+    List<GpuGeometryUploadPlan> plans = Collections.nCopies(batchCount, template);
     long totalBytes = totalPlanBytes(template) * batchCount;
     if (!deferredCompletion) {
       long start = System.nanoTime();
@@ -202,29 +203,6 @@ public final class MeshForgeVulkanSustainedMain {
     cache.toFile().deleteOnExit();
     RuntimeGeometryLoader.Result loaded = loader.load(meshPath, cache, false);
     return MeshForgeRuntimePlanAdapter.toApiPlan(loaded.payload());
-  }
-
-  private static GpuGeometryUploadPlan clonePlan(GpuGeometryUploadPlan source) {
-    ByteBuffer vertex = copyToDirect(source.vertexData());
-    ByteBuffer index = source.indexData() == null ? null : copyToDirect(source.indexData());
-    return new GpuGeometryUploadPlan(
-        vertex, index, source.vertexLayout(), source.indexType(), source.submeshes());
-  }
-
-  private static List<GpuGeometryUploadPlan> clonePlanList(GpuGeometryUploadPlan source, int count) {
-    ArrayList<GpuGeometryUploadPlan> plans = new ArrayList<>(count);
-    for (int i = 0; i < count; i++) {
-      plans.add(clonePlan(source));
-    }
-    return List.copyOf(plans);
-  }
-
-  private static ByteBuffer copyToDirect(ByteBuffer source) {
-    ByteBuffer duplicate = source.duplicate();
-    ByteBuffer direct = ByteBuffer.allocateDirect(duplicate.remaining());
-    direct.put(duplicate);
-    direct.flip();
-    return direct;
   }
 
   private static GpuGeometryUploadPlan syntheticPlan(int totalBytes) {

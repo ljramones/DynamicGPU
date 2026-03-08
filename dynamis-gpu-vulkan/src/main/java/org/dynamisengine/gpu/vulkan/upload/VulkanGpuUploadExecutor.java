@@ -84,6 +84,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private final BiFunction<String, Integer, GpuException> vkFailure;
   private final ArrayDeque<PendingSubmission> pendingSubmissions = new ArrayDeque<>();
   private final AtomicLong nextSubmissionId = new AtomicLong(1L);
+  private ByteBuffer reusableDirectCopyBuffer;
 
   public VulkanGpuUploadExecutor(
       VkDevice device,
@@ -356,7 +357,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     VulkanGpuBuffer vertexBuffer = null;
     VulkanGpuBuffer indexBuffer = null;
     try (MemoryStack stack = MemoryStack.stackPush()) {
-      ByteBuffer vertexBytes = toDirectCopy(plan.vertexData());
+      ByteBuffer vertexBytes = toReusableDirectCopy(plan.vertexData());
       VulkanBufferAlloc vertexAlloc =
           VulkanMemoryOps.createDeviceLocalBufferWithStaging(
               device,
@@ -377,7 +378,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
               GpuMemoryLocation.DEVICE_LOCAL);
 
       if (plan.indexData() != null) {
-        ByteBuffer indexBytes = toDirectCopy(plan.indexData());
+        ByteBuffer indexBytes = toReusableDirectCopy(plan.indexData());
         VulkanBufferAlloc indexAlloc =
             VulkanMemoryOps.createDeviceLocalBufferWithStaging(
                 device,
@@ -414,7 +415,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private PreparedPlan preparePlanForBatch(MemoryStack stack, GpuGeometryUploadPlan plan)
       throws GpuException {
     Objects.requireNonNull(plan, "plan");
-    ByteBuffer vertexBytes = toDirectCopy(plan.vertexData());
+    ByteBuffer vertexBytes = toReusableDirectCopy(plan.vertexData());
     int vertexUsage = toVkBufferUsage(GpuBufferUsage.VERTEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     VulkanDeviceLocalBufferPool.Lease vertexLease =
         deviceBufferPool.acquire(stack, vertexBytes.remaining(), vertexUsage);
@@ -432,7 +433,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     VulkanGpuBuffer indexBuffer = null;
     CopyOp indexCopy = null;
     if (plan.indexData() != null) {
-      ByteBuffer indexBytes = toDirectCopy(plan.indexData());
+      ByteBuffer indexBytes = toReusableDirectCopy(plan.indexData());
       int indexUsage = toVkBufferUsage(GpuBufferUsage.INDEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
       VulkanDeviceLocalBufferPool.Lease indexLease =
           deviceBufferPool.acquire(stack, indexBytes.remaining(), indexUsage);
@@ -642,6 +643,27 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     direct.put(duplicate);
     direct.flip();
     return direct;
+  }
+
+  private ByteBuffer toReusableDirectCopy(ByteBuffer source) {
+    ByteBuffer duplicate = source.duplicate();
+    int requiredBytes = duplicate.remaining();
+    ensureReusableDirectCopyCapacity(requiredBytes);
+    ByteBuffer reusable = reusableDirectCopyBuffer;
+    reusable.clear();
+    reusable.limit(requiredBytes);
+    reusable.put(duplicate);
+    reusable.flip();
+    return reusable;
+  }
+
+  private void ensureReusableDirectCopyCapacity(int requiredBytes) {
+    if (requiredBytes < 0) {
+      throw new IllegalArgumentException("requiredBytes must be >= 0");
+    }
+    if (reusableDirectCopyBuffer == null || reusableDirectCopyBuffer.capacity() < requiredBytes) {
+      reusableDirectCopyBuffer = ByteBuffer.allocateDirect(requiredBytes);
+    }
   }
 
   private static void closeQuietly(VulkanGpuBuffer buffer) {
