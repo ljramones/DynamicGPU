@@ -566,13 +566,17 @@ public final class VulkanHarnessContext implements AutoCloseable {
     List<String> baseExtensions = requiredInstanceExtensions();
     List<String> baseLayers = requiredInstanceLayers();
     List<String> withoutDebugUtils = stripExtension(baseExtensions, "VK_EXT_debug_utils");
+    List<String> portabilityOnly = portabilityOnlyExtensions(baseExtensions);
     List<String> withoutValidationLayers = stripValidationLayers(baseLayers);
     int apiVersion = REQUESTED_APP_API_VERSION;
+    int apiVersion10 = VK10.VK_MAKE_API_VERSION(0, 1, 0, 0);
 
-    List<InstanceCreateAttempt> attempts = new ArrayList<>(3);
+    List<InstanceCreateAttempt> attempts = new ArrayList<>(5);
     attempts.add(new InstanceCreateAttempt("A", apiVersion, baseExtensions, baseLayers));
     attempts.add(new InstanceCreateAttempt("B", apiVersion, withoutDebugUtils, baseLayers));
     attempts.add(new InstanceCreateAttempt("C", apiVersion, withoutDebugUtils, withoutValidationLayers));
+    attempts.add(new InstanceCreateAttempt("D", apiVersion10, withoutDebugUtils, withoutValidationLayers));
+    attempts.add(new InstanceCreateAttempt("E", apiVersion10, portabilityOnly, List.of()));
     return attempts;
   }
 
@@ -616,6 +620,16 @@ public final class VulkanHarnessContext implements AutoCloseable {
       }
     }
     return stripped;
+  }
+
+  private static List<String> portabilityOnlyExtensions(List<String> source) {
+    List<String> filtered = new ArrayList<>(1);
+    for (String value : source) {
+      if ("VK_KHR_portability_enumeration".equals(value)) {
+        filtered.add(value);
+      }
+    }
+    return filtered;
   }
 
   private static void logInstanceAttempt(InstanceCreateAttempt attempt) {
