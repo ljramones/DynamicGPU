@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.lwjgl.vulkan.KHRPortabilityEnumeration.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 import static org.lwjgl.vulkan.VK10.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -481,38 +482,56 @@ public final class VulkanHarnessContext implements AutoCloseable {
 
   private static InstanceSession createInstanceSession(MemoryStack stack, String applicationName)
       throws GpuException {
-    VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
-        .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
-        .pApplicationName(stack.UTF8(applicationName))
-        .pEngineName(stack.UTF8("DynamisEngine"))
-        .apiVersion(REQUESTED_APP_API_VERSION);
+    List<InstanceCreateAttempt> attempts = buildInstanceCreateAttempts();
+    List<String> attemptResults = new ArrayList<>(attempts.size());
+    for (InstanceCreateAttempt attempt : attempts) {
+      VkApplicationInfo appInfo = VkApplicationInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_APPLICATION_INFO)
+          .pApplicationName(stack.UTF8(applicationName))
+          .pEngineName(stack.UTF8("DynamisEngine"))
+          .apiVersion(attempt.apiVersion());
 
-    List<String> requestedInstanceExtensions = requiredInstanceExtensions();
-    boolean portabilityEnumerationEnabled =
-        requestedInstanceExtensions.contains("VK_KHR_portability_enumeration");
-    PointerBuffer instanceExtensions = pointerBufferOfUtf8(stack, requestedInstanceExtensions);
-    VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
-        .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
-        .pApplicationInfo(appInfo)
-        .ppEnabledExtensionNames(instanceExtensions);
-    if (portabilityEnumerationEnabled) {
-      instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
+      VkInstanceCreateInfo instanceInfo = VkInstanceCreateInfo.calloc(stack)
+          .sType(VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO)
+          .pApplicationInfo(appInfo);
+      if (!attempt.extensions().isEmpty()) {
+        instanceInfo.ppEnabledExtensionNames(pointerBufferOfUtf8(stack, attempt.extensions()));
+      }
+      if (!attempt.layers().isEmpty()) {
+        instanceInfo.ppEnabledLayerNames(pointerBufferOfUtf8(stack, attempt.layers()));
+      }
+      if (attempt.portabilityEnumerationEnabled()) {
+        instanceInfo.flags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR);
+      }
+      logInstanceAttempt(attempt);
+
+      var pInstance = stack.mallocPointer(1);
+      int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
+      attemptResults.add(attempt.label() + "=" + instanceResult);
+      if (instanceResult == VK_SUCCESS) {
+        VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
+        return new InstanceSession(
+            instance,
+            List.copyOf(attempt.extensions()),
+            attempt.portabilityEnumerationEnabled(),
+            List.copyOf(attempt.layers()),
+            attempt.apiVersion(),
+            attempt.label(),
+            List.copyOf(attemptResults));
+      }
     }
 
-    var pInstance = stack.mallocPointer(1);
-    int instanceResult = vkCreateInstance(instanceInfo, null, pInstance);
-    if (instanceResult != VK_SUCCESS) {
-      throw new GpuException(
-          GpuErrorCode.BACKEND_INIT_FAILED,
-          "stage=instance_create result="
-              + instanceResult
-              + " requestedInstanceExtensions="
-              + requestedInstanceExtensions,
-          false);
-    }
-    VkInstance instance = new VkInstance(pInstance.get(0), instanceInfo);
-    return new InstanceSession(
-        instance, List.copyOf(requestedInstanceExtensions), portabilityEnumerationEnabled);
+    throw new GpuException(
+        GpuErrorCode.BACKEND_INIT_FAILED,
+        "stage=instance_create result="
+            + extractFinalResult(attemptResults)
+            + " requestedInstanceExtensions="
+            + attempts.get(0).extensions()
+            + " requestedInstanceLayers="
+            + attempts.get(0).layers()
+            + " attemptResults="
+            + attemptResults,
+        false);
   }
 
   private static int extractInstanceCreateResultCode(GpuException exception) {
@@ -540,6 +559,128 @@ public final class VulkanHarnessContext implements AutoCloseable {
       return Integer.parseInt(message.substring(start, end));
     } catch (NumberFormatException ignored) {
       return -1;
+    }
+  }
+
+  private static List<InstanceCreateAttempt> buildInstanceCreateAttempts() {
+    List<String> baseExtensions = requiredInstanceExtensions();
+    List<String> baseLayers = requiredInstanceLayers();
+    List<String> withoutDebugUtils = stripExtension(baseExtensions, "VK_EXT_debug_utils");
+    List<String> withoutValidationLayers = stripValidationLayers(baseLayers);
+    int apiVersion = REQUESTED_APP_API_VERSION;
+
+    List<InstanceCreateAttempt> attempts = new ArrayList<>(3);
+    attempts.add(new InstanceCreateAttempt("A", apiVersion, baseExtensions, baseLayers));
+    attempts.add(new InstanceCreateAttempt("B", apiVersion, withoutDebugUtils, baseLayers));
+    attempts.add(new InstanceCreateAttempt("C", apiVersion, withoutDebugUtils, withoutValidationLayers));
+    return attempts;
+  }
+
+  private static List<String> requiredInstanceLayers() {
+    List<String> requested = new ArrayList<>();
+    if (isDebugRuntimeEnabled() && hasInstanceLayer("VK_LAYER_KHRONOS_validation")) {
+      requested.add("VK_LAYER_KHRONOS_validation");
+    }
+    return requested;
+  }
+
+  private static boolean isDebugRuntimeEnabled() {
+    String lwjglDebug = System.getProperty("org.lwjgl.util.Debug");
+    if (lwjglDebug != null && Boolean.parseBoolean(lwjglDebug)) {
+      return true;
+    }
+    String explicit = System.getProperty("dynamisgpu.vk.debug");
+    if (explicit != null && Boolean.parseBoolean(explicit)) {
+      return true;
+    }
+    String env = System.getenv("DYNAMISGPU_VK_DEBUG");
+    return env != null && Boolean.parseBoolean(env);
+  }
+
+  private static List<String> stripExtension(List<String> source, String extension) {
+    List<String> stripped = new ArrayList<>(source.size());
+    for (String value : source) {
+      if (!extension.equals(value)) {
+        stripped.add(value);
+      }
+    }
+    return stripped;
+  }
+
+  private static List<String> stripValidationLayers(List<String> source) {
+    List<String> stripped = new ArrayList<>(source.size());
+    for (String value : source) {
+      String lower = value.toLowerCase(Locale.ROOT);
+      if (!lower.contains("validation") && !lower.contains("debug")) {
+        stripped.add(value);
+      }
+    }
+    return stripped;
+  }
+
+  private static void logInstanceAttempt(InstanceCreateAttempt attempt) {
+    int flags = attempt.portabilityEnumerationEnabled() ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
+    System.out.println(
+        "[VulkanHarnessContext] instanceAttempt="
+            + attempt.label()
+            + " apiVersion="
+            + apiVersionToString(attempt.apiVersion())
+            + " extensions="
+            + attempt.extensions()
+            + " layers="
+            + attempt.layers()
+            + " flags="
+            + flags);
+  }
+
+  private static String apiVersionToString(int apiVersion) {
+    return "variant="
+        + VK10.VK_API_VERSION_VARIANT(apiVersion)
+        + ",major="
+        + VK10.VK_API_VERSION_MAJOR(apiVersion)
+        + ",minor="
+        + VK10.VK_API_VERSION_MINOR(apiVersion)
+        + ",patch="
+        + VK10.VK_API_VERSION_PATCH(apiVersion)
+        + " ("
+        + apiVersion
+        + ")";
+  }
+
+  private static int extractFinalResult(List<String> attemptResults) {
+    if (attemptResults.isEmpty()) {
+      return -1;
+    }
+    String last = attemptResults.get(attemptResults.size() - 1);
+    int idx = last.indexOf('=');
+    if (idx < 0 || idx + 1 >= last.length()) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(last.substring(idx + 1));
+    } catch (NumberFormatException ignored) {
+      return -1;
+    }
+  }
+
+  private static boolean hasInstanceLayer(String layerName) {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      IntBuffer pCount = stack.ints(0);
+      int countResult = VK10.vkEnumerateInstanceLayerProperties(pCount, null);
+      if (countResult != VK_SUCCESS || pCount.get(0) <= 0) {
+        return false;
+      }
+      var layers = org.lwjgl.vulkan.VkLayerProperties.calloc(pCount.get(0), stack);
+      int enumResult = VK10.vkEnumerateInstanceLayerProperties(pCount, layers);
+      if (enumResult != VK_SUCCESS) {
+        return false;
+      }
+      for (int i = 0; i < layers.capacity(); i++) {
+        if (layerName.equals(layers.get(i).layerNameString())) {
+          return true;
+        }
+      }
+      return false;
     }
   }
 
@@ -571,5 +712,19 @@ public final class VulkanHarnessContext implements AutoCloseable {
   private record InstanceSession(
       VkInstance instance,
       List<String> requestedInstanceExtensions,
-      boolean portabilityEnumerationEnabled) {}
+      boolean portabilityEnumerationEnabled,
+      List<String> requestedInstanceLayers,
+      int apiVersion,
+      String successfulAttemptLabel,
+      List<String> attemptResults) {}
+
+  private record InstanceCreateAttempt(
+      String label,
+      int apiVersion,
+      List<String> extensions,
+      List<String> layers) {
+    boolean portabilityEnumerationEnabled() {
+      return extensions.contains("VK_KHR_portability_enumeration");
+    }
+  }
 }
