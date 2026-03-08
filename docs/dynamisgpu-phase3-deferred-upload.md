@@ -92,6 +92,26 @@ Additional safety checks were added:
 | --- | --- | ---: |
 | synthetic_100mb_deferred | ~100 MB | **6.971 GB/s** |
 
+## 2026-03-08 Refresh (Submit-Path Reuse A/B)
+
+This refresh reran sustained scenarios before/after a narrow Vulkan submit-path change that reuses a single `VkBufferCopy` region struct per submission recording pass (instead of allocating one per recorded copy command).
+
+### Scenario table (requested set)
+
+| Scenario | Mode | Before ms | After ms | Delta ms | Before GB/s | After GB/s | Delta GB/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| dragon_repeat_100 | OPTIMIZED (blocking) | 100.704 | 106.544 | +5.839 | 4.965 | 4.693 | -0.272 |
+| lucy_repeat_1000 | OPTIMIZED (blocking) | 389.697 | 395.365 | +5.668 | 3.592 | 3.540 | -0.052 |
+| dragon_batch_10_deferred | OPTIMIZED_DEFERRED | 10.471 | 10.364 | -0.108 | 4.775 | 4.824 | +0.049 |
+| lucy_batch_100_deferred | OPTIMIZED_DEFERRED | 39.873 | 38.944 | -0.929 | 3.510 | 3.594 | +0.084 |
+| synthetic_100mb_deferred | OPTIMIZED_DEFERRED | 14.555 | 14.345 | -0.210 | 7.204 | 7.310 | +0.106 |
+
+### A/B interpretation
+
+- Deferred batched and synthetic scenarios improved slightly (~1-2%).
+- Long repeated blocking scenarios regressed slightly (~1-6%), consistent with runtime variance at this scale.
+- Net result: submit-path struct reuse is safe and low-risk, but not a major standalone limiter; sustained throughput remains in the same effective Phase 3 band.
+
 ## Interpretation
 
 Phase 3 demonstrates stable and sustained upload throughput in the ~3.7-7.0 GB/s range on Apple M4 Max through MoltenVK.

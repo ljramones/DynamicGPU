@@ -498,10 +498,11 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       throw vkFailure.apply("vkBeginCommandBuffer(upload-batch)", beginResult);
     }
 
+    VkBufferCopy.Buffer copyRegion = VkBufferCopy.calloc(1, stack);
     for (PreparedPlan preparedPlan : preparedPlans) {
-      recordCopy(stack, commandBuffer, preparedPlan.vertexCopy);
+      recordCopy(commandBuffer, copyRegion, preparedPlan.vertexCopy);
       if (preparedPlan.indexCopy != null) {
-        recordCopy(stack, commandBuffer, preparedPlan.indexCopy);
+        recordCopy(commandBuffer, copyRegion, preparedPlan.indexCopy);
       }
     }
     int endResult = vkEndCommandBuffer(commandBuffer);
@@ -544,10 +545,14 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     return pFence.get(0);
   }
 
-  private static void recordCopy(MemoryStack stack, VkCommandBuffer commandBuffer, CopyOp copy) {
-    VkBufferCopy.Buffer region = VkBufferCopy.calloc(1, stack);
-    region.get(0).srcOffset(copy.srcOffsetBytes).dstOffset(copy.dstOffsetBytes).size(copy.sizeBytes);
-    vkCmdCopyBuffer(commandBuffer, copy.srcBuffer, copy.dstBuffer, region);
+  private static void recordCopy(
+      VkCommandBuffer commandBuffer, VkBufferCopy.Buffer copyRegion, CopyOp copy) {
+    copyRegion
+        .get(0)
+        .srcOffset(copy.srcOffsetBytes)
+        .dstOffset(copy.dstOffsetBytes)
+        .size(copy.sizeBytes);
+    vkCmdCopyBuffer(commandBuffer, copy.srcBuffer, copy.dstBuffer, copyRegion);
   }
 
   private static void validateCopyOps(List<PreparedPlan> preparedPlans, long submissionId) {
