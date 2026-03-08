@@ -28,8 +28,17 @@ public final class MeshForgeVulkanSustainedMain {
     boolean debug = containsArg(args, "--debug");
     boolean phase4Overlap = containsArg(args, "--phase4-4a1");
     int maxInflight = parseIntOption(args, "--max-inflight", 1);
+    int arrivalJitterMs = parseIntOption(args, "--arrival-jitter-ms", 0);
+    int microburstSize = parseIntOption(args, "--microburst-size", 10);
+    ArrivalPattern arrivalPattern = parseArrivalPattern(args);
     if (maxInflight < 1) {
       throw new IllegalArgumentException("--max-inflight must be >= 1");
+    }
+    if (arrivalJitterMs < 0) {
+      throw new IllegalArgumentException("--arrival-jitter-ms must be >= 0");
+    }
+    if (microburstSize < 1) {
+      throw new IllegalArgumentException("--microburst-size must be >= 1");
     }
     Path fixtureRoot =
         args.length > 0 && !args[0].startsWith("--")
@@ -76,10 +85,26 @@ public final class MeshForgeVulkanSustainedMain {
           }
           printResult(
               runOverlapScenario(
-                  "dragon_batch_10_overlap", overlapExecutors, dragonPlan, 10, 100, maxInflight));
+                  "dragon_batch_10_overlap",
+                  overlapExecutors,
+                  dragonPlan,
+                  10,
+                  100,
+                  maxInflight,
+                  arrivalPattern,
+                  arrivalJitterMs,
+                  microburstSize));
           printResult(
               runOverlapScenario(
-                  "lucy_batch_100_overlap", overlapExecutors, lucyPlan, 100, 100, maxInflight));
+                  "lucy_batch_100_overlap",
+                  overlapExecutors,
+                  lucyPlan,
+                  100,
+                  100,
+                  maxInflight,
+                  arrivalPattern,
+                  arrivalJitterMs,
+                  microburstSize));
           printResult(
               runOverlapScenario(
                   "synthetic_100mb_overlap",
@@ -87,7 +112,10 @@ public final class MeshForgeVulkanSustainedMain {
                   syntheticPlan(100 * 1024 * 1024),
                   1,
                   30,
-                  maxInflight));
+                  maxInflight,
+                  arrivalPattern,
+                  arrivalJitterMs,
+                  microburstSize));
         } finally {
           closeExecutors(overlapExecutors);
         }
@@ -213,7 +241,10 @@ public final class MeshForgeVulkanSustainedMain {
       GpuGeometryUploadPlan template,
       int batchCount,
       int iterations,
-      int maxInflight)
+      int maxInflight,
+      ArrivalPattern arrivalPattern,
+      int arrivalJitterMs,
+      int microburstSize)
       throws Exception {
     if (executors.isEmpty()) {
       throw new IllegalArgumentException("executors must not be empty");
@@ -232,6 +263,7 @@ public final class MeshForgeVulkanSustainedMain {
 
     long wallStart = System.nanoTime();
     for (int i = 0; i < iterations; i++) {
+      applyArrivalDelay(i, arrivalPattern, arrivalJitterMs, microburstSize);
       VulkanGpuUploadExecutor executor = executors.get(submitIndex % executors.size());
       submitIndex++;
       long submitStart = System.nanoTime();
@@ -437,6 +469,45 @@ public final class MeshForgeVulkanSustainedMain {
     return defaultValue;
   }
 
+  private static ArrivalPattern parseArrivalPattern(String[] args) {
+    String pattern = parseStringOption(args, "--arrival-pattern", "burst");
+    return switch (pattern) {
+      case "burst" -> ArrivalPattern.BURST;
+      case "staggered" -> ArrivalPattern.STAGGERED;
+      case "microburst" -> ArrivalPattern.MICROBURST;
+      default -> throw new IllegalArgumentException("--arrival-pattern must be burst|staggered|microburst");
+    };
+  }
+
+  private static String parseStringOption(String[] args, String option, String defaultValue) {
+    String prefix = option + "=";
+    for (String arg : args) {
+      if (arg.startsWith(prefix)) {
+        return arg.substring(prefix.length());
+      }
+    }
+    return defaultValue;
+  }
+
+  private static void applyArrivalDelay(
+      int iteration, ArrivalPattern arrivalPattern, int arrivalJitterMs, int microburstSize)
+      throws InterruptedException {
+    if (arrivalJitterMs <= 0) {
+      return;
+    }
+    switch (arrivalPattern) {
+      case BURST -> {
+        // No delay.
+      }
+      case STAGGERED -> Thread.sleep(arrivalJitterMs);
+      case MICROBURST -> {
+        if (iteration > 0 && (iteration % microburstSize) == 0) {
+          Thread.sleep(arrivalJitterMs);
+        }
+      }
+    }
+  }
+
   private record ScenarioResult(
       String name,
       String mode,
@@ -469,4 +540,10 @@ public final class MeshForgeVulkanSustainedMain {
       VulkanGpuUploadExecutor executor,
       VulkanGpuUploadExecutor.DeferredUploadBatch batch,
       long submitEndNanos) {}
+
+  private enum ArrivalPattern {
+    BURST,
+    STAGGERED,
+    MICROBURST
+  }
 }

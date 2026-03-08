@@ -101,6 +101,12 @@ Use one reporting shape across all experiments:
 - staging high-water mark
 - device-local pool high-water mark
 
+GPU Upload Triangle for interpretation:
+
+- Throughput (GB/s)
+- Time-to-first-usable (TTFU / completion latency)
+- In-flight pressure (submissions/bytes)
+
 ## 6. Success Criteria
 
 Phase 4 is successful if at least one is demonstrated with measured evidence:
@@ -140,6 +146,10 @@ Goal:
 - Keep public APIs stable during Phase 4 experiments.
 - Keep upload semantics unchanged while varying overlap/in-flight policy.
 - Prefer benchmark-first changes; avoid architecture expansion until measurements indicate direction.
+- Model non-ideal request arrival with harness knobs:
+  - `--arrival-pattern=burst|staggered|microburst`
+  - `--arrival-jitter-ms=<ms>`
+  - `--microburst-size=<N>` (when `microburst` is selected)
 
 ## 10. 4A.1 Initial Results (Apple M4 Max / MoltenVK)
 
@@ -166,3 +176,21 @@ Interpretation:
 - Depth `2 -> 3` is flat/slightly regressive on throughput.
 - Completion latency rises meaningfully with inflight depth.
 - Current best operating point for these scenarios appears near `max-inflight=2`.
+
+## 11. Arrival Jitter Smoke Run
+
+Command:
+
+```bash
+mvn -q -pl dynamis-gpu-bench exec:java \
+  -Dexec.mainClass=org.dynamisengine.gpu.bench.ingest.meshforge.MeshForgeVulkanSustainedMain \
+  -Dexec.args="--phase4-4a1 --max-inflight=2 --arrival-pattern=staggered --arrival-jitter-ms=1 /Users/larrymitchell/Dynamis/MeshForge/fixtures/baseline" \
+  -Dexec.classpathScope=runtime
+```
+
+Observed direction vs burst (`max-inflight=2`):
+
+- throughput decreased (e.g., `dragon_batch_10_overlap`: `24.280 -> 15.567 GB/s`)
+- completion latency increased (e.g., `dragon_batch_10_overlap`: `1.973ms -> 3.122ms`)
+
+This confirms the harness now exposes non-ideal arrival behavior and provides a realistic next step for push-vs-pull scheduling experiments.

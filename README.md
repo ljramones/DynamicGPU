@@ -127,4 +127,5 @@ vulkaninfo | head -40
 - [Phase 3 deferred upload note](docs/dynamisgpu-phase3-deferred-upload.md)
 - [Phase 3 profiling workflow + decisions](docs/dynamisgpu-phase3-profiling-plan.md)
 - [Phase 4 overlap + streaming experiment plan](docs/dynamisgpu-phase4-experiment-plan.md)
+- [Phase 4B pull-scheduler plan](docs/dynamisgpu-phase4b-pull-scheduler-plan.md)
 - [LWJGL optimization decision matrix](docs/lwjgl-optimization-decision-matrix.md)
