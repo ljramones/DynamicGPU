@@ -6,6 +6,7 @@ package org.dynamisengine.gpu.api.buffer;
 public enum GpuBufferUsage {
   VERTEX,
   INDEX,
+  STORAGE,
   TRANSFER_SRC,
   TRANSFER_DST
 }
