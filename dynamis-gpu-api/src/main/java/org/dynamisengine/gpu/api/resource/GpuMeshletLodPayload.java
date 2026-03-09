@@ -60,7 +60,7 @@ public final class GpuMeshletLodPayload {
               + intCount);
     }
 
-    ByteBuffer src = sourceBytes.duplicate();
+    ByteBuffer src = sourceBytes.duplicate().order(sourceBytes.order());
     ByteBuffer copy = ByteBuffer.allocate(src.remaining()).order(ByteOrder.LITTLE_ENDIAN);
     if (src.order() == ByteOrder.LITTLE_ENDIAN) {
       copy.put(src);
