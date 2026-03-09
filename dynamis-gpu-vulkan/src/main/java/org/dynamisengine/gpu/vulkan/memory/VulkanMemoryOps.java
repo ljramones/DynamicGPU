@@ -11,6 +11,7 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkBufferCreateInfo;
+import org.lwjgl.vulkan.VkBufferDeviceAddressInfo;
 import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkCommandBufferAllocateInfo;
@@ -19,11 +20,13 @@ import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkImageCreateInfo;
 import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkMemoryAllocateInfo;
+import org.lwjgl.vulkan.VkMemoryAllocateFlagsInfo;
 import org.lwjgl.vulkan.VkMemoryRequirements;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties;
 import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSubmitInfo;
+import org.lwjgl.vulkan.VK12;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.memAddress;
@@ -63,6 +66,7 @@ import static org.lwjgl.vulkan.VK10.vkMapMemory;
 import static org.lwjgl.vulkan.VK10.vkQueueSubmit;
 import static org.lwjgl.vulkan.VK10.vkQueueWaitIdle;
 import static org.lwjgl.vulkan.VK10.vkUnmapMemory;
+import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
 
 /**
  * Static Vulkan memory helper methods for buffer/image creation and transfer operations.
@@ -81,6 +85,23 @@ public final class VulkanMemoryOps {
             int sizeBytes,
             int usage,
             int memoryProperties
+    ) throws GpuException {
+        return createBuffer(device, physicalDevice, stack, sizeBytes, usage, memoryProperties, 0);
+    }
+
+    /**
+     * Creates a Vulkan buffer and backing memory allocation, then binds them together.
+     *
+     * <p>Use allocation flags for features such as buffer device address support.
+     */
+    public static VulkanBufferAlloc createBuffer(
+            VkDevice device,
+            VkPhysicalDevice physicalDevice,
+            MemoryStack stack,
+            int sizeBytes,
+            int usage,
+            int memoryProperties,
+            int memoryAllocateFlags
     ) throws GpuException {
         VkBufferCreateInfo bufferInfo = VkBufferCreateInfo.calloc(stack)
                 .sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
@@ -101,6 +122,12 @@ public final class VulkanMemoryOps {
                 .sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
                 .allocationSize(memReq.size())
                 .memoryTypeIndex(findMemoryType(physicalDevice, memReq.memoryTypeBits(), memoryProperties));
+        if (memoryAllocateFlags != 0) {
+            VkMemoryAllocateFlagsInfo flagsInfo = VkMemoryAllocateFlagsInfo.calloc(stack)
+                    .sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)
+                    .flags(memoryAllocateFlags);
+            allocInfo.pNext(flagsInfo.address());
+        }
 
         var pMemory = stack.longs(VK_NULL_HANDLE);
         int allocResult = vkAllocateMemory(device, allocInfo, null, pMemory);
@@ -159,6 +186,71 @@ public final class VulkanMemoryOps {
             if (staging.memory() != VK_NULL_HANDLE) {
                 vkFreeMemory(device, staging.memory(), null);
             }
+        }
+    }
+
+    /**
+     * Uploads source bytes through a staging buffer into a device-local buffer with
+     * shader-device-address-capable memory allocation.
+     */
+    public static VulkanBufferAlloc createDeviceAddressBufferWithStaging(
+            VkDevice device,
+            VkPhysicalDevice physicalDevice,
+            long commandPool,
+            VkQueue graphicsQueue,
+            MemoryStack stack,
+            ByteBuffer source,
+            int usage,
+            BiFunction<String, Integer, GpuException> vkFailure
+    ) throws GpuException {
+        int sizeBytes = source.remaining();
+        VulkanBufferAlloc staging = createBuffer(
+                device,
+                physicalDevice,
+                stack,
+                sizeBytes,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+        VulkanBufferAlloc deviceLocal = createBuffer(
+                device,
+                physicalDevice,
+                stack,
+                sizeBytes,
+                usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK12.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                VK12.VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT
+        );
+        try {
+            uploadToMemory(device, staging.memory(), source, vkFailure);
+            copyBuffer(device, commandPool, graphicsQueue, staging.buffer(), deviceLocal.buffer(), sizeBytes, vkFailure);
+            return deviceLocal;
+        } finally {
+            if (staging.buffer() != VK_NULL_HANDLE) {
+                vkDestroyBuffer(device, staging.buffer(), null);
+            }
+            if (staging.memory() != VK_NULL_HANDLE) {
+                vkFreeMemory(device, staging.memory(), null);
+            }
+        }
+    }
+
+    /**
+     * Queries the Vulkan device address for a buffer created with device-address-capable usage and
+     * allocation flags.
+     */
+    public static long getBufferDeviceAddress(VkDevice device, long bufferHandle) {
+        if (device == null) {
+            throw new NullPointerException("device");
+        }
+        if (bufferHandle == VK_NULL_HANDLE) {
+            throw new IllegalArgumentException("bufferHandle must not be VK_NULL_HANDLE");
+        }
+        try (MemoryStack stack = stackPush()) {
+            VkBufferDeviceAddressInfo info = VkBufferDeviceAddressInfo.calloc(stack)
+                    .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO)
+                    .buffer(bufferHandle);
+            return VK12.vkGetBufferDeviceAddress(device, info);
         }
     }
 
