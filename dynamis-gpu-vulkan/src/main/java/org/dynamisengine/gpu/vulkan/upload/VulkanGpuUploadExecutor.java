@@ -31,6 +31,7 @@ import org.lwjgl.vulkan.VkQueue;
 import org.lwjgl.vulkan.VkSubmitInfo;
 
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -637,6 +638,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     return switch (usage) {
       case VERTEX -> VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
       case INDEX -> VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+      case INDIRECT -> VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
       case STORAGE -> VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
       case TRANSFER_SRC -> VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
       case TRANSFER_DST -> VK_BUFFER_USAGE_TRANSFER_DST_BIT;
