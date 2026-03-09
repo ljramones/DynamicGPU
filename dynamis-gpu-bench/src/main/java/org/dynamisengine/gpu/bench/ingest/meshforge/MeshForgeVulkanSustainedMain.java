@@ -446,56 +446,62 @@ public final class MeshForgeVulkanSustainedMain {
       int arrivalJitterMs,
       int microburstSize)
       throws Exception {
+    long bytesPerBatch = totalPlanBytes(template) * batchCount;
     long uploads = (long) iterations * batchCount;
-    long totalBytes = totalPlanBytes(template) * uploads;
+    long totalBytes = bytesPerBatch * iterations;
     long totalSubmitNanos = 0L;
-    long totalCompletionNanos = 0L;
+    CompletionStats completionStats = new CompletionStats(iterations);
     int maxBacklog = Math.max(64, maxInflight * batchCount * 8);
     GpuUploadExecutor stripedExecutor = new StripedUploadExecutor(executors);
-    ArrayDeque<UploadTicket> pendingTickets = new ArrayDeque<>();
-    long completedUploads = 0L;
+    ArrayDeque<PendingBatchTicket> pendingBatches = new ArrayDeque<>();
+    int maxBatchInflightSeen = 0;
+    long maxInflightBytes = 0L;
+    int maxBacklogDepth = 0;
+    int completedUploads = 0;
     long wallStart = System.nanoTime();
-    UploadTelemetry telemetry;
     String debugSnapshot;
 
     try (UploadManager manager = new DefaultUploadManager(stripedExecutor, maxInflight, maxBacklog)) {
       for (int i = 0; i < iterations; i++) {
         applyArrivalDelay(i, arrivalPattern, arrivalJitterMs, microburstSize);
+
+        while (pendingBatches.size() >= maxInflight) {
+          Completion completion = completeOldestManagerBatch(pendingBatches);
+          completionStats.record(completion);
+          completedUploads += batchCount;
+        }
+
+        long requestNanos = System.nanoTime();
+        ArrayList<UploadTicket> batchTickets = new ArrayList<>(batchCount);
         for (int j = 0; j < batchCount; j++) {
           while (true) {
             try {
               long submitStart = System.nanoTime();
-              pendingTickets.addLast(manager.submit(template));
+              batchTickets.add(manager.submit(template));
               long submitEnd = System.nanoTime();
               totalSubmitNanos += (submitEnd - submitStart);
               break;
             } catch (IllegalStateException backlogFull) {
-              UploadTicket oldest = pendingTickets.pollFirst();
-              if (oldest == null) {
-                throw backlogFull;
-              }
-              long completeStart = System.nanoTime();
-              GpuMeshResource resource = oldest.await();
-              long completeEnd = System.nanoTime();
-              totalCompletionNanos += (completeEnd - completeStart);
-              resource.close();
-              completedUploads++;
+              Completion completion = completeOldestManagerBatch(pendingBatches);
+              completionStats.record(completion);
+              completedUploads += batchCount;
             }
           }
         }
+        pendingBatches.addLast(
+            new PendingBatchTicket(batchTickets, System.nanoTime(), requestNanos, bytesPerBatch));
+        maxBatchInflightSeen = Math.max(maxBatchInflightSeen, pendingBatches.size());
+        maxInflightBytes = Math.max(maxInflightBytes, pendingBatches.size() * bytesPerBatch);
+        maxBacklogDepth = Math.max(maxBacklogDepth, manager.backlogSize());
       }
 
-      while (!pendingTickets.isEmpty()) {
-        UploadTicket ticket = pendingTickets.removeFirst();
-        long completeStart = System.nanoTime();
-        GpuMeshResource resource = ticket.await();
-        long completeEnd = System.nanoTime();
-        totalCompletionNanos += (completeEnd - completeStart);
-        resource.close();
-        completedUploads++;
+      while (!pendingBatches.isEmpty()) {
+        Completion completion = completeOldestManagerBatch(pendingBatches);
+        completionStats.record(completion);
+        completedUploads += batchCount;
+        maxBacklogDepth = Math.max(maxBacklogDepth, manager.backlogSize());
       }
       manager.drain();
-      telemetry = manager.telemetry();
       debugSnapshot = manager.debugSnapshot();
     }
     long wallEnd = System.nanoTime();
@@ -513,18 +519,37 @@ public final class MeshForgeVulkanSustainedMain {
         executors.get(0).mode().name(),
         "MANAGER_PULL",
         iterations,
-        (int) completedUploads,
+        completedUploads,
         totalBytes,
         totalSubmitNanos,
-        totalCompletionNanos,
+        completionStats.totalCompletionNanos,
         totalNanos,
         toGbps(totalBytes, totalNanos),
-        telemetry.maxInflightSubmissions(),
-        telemetry.averageCompletionLatencyMillis(),
-        telemetry.averageTtfuMillis(),
-        telemetry.p95TtfuMillis(),
-        telemetry.maxBacklogDepth(),
-        telemetry.maxInflightBytes());
+        maxBatchInflightSeen,
+        completedUploads == 0 ? 0.0 : nanosToMillis(completionStats.totalLatencyNanos / completedUploads),
+        completedUploads == 0 ? 0.0 : nanosToMillis(average(completionStats.ttfuNanos)),
+        completedUploads == 0 ? 0.0 : nanosToMillis(percentile95(completionStats.ttfuNanos)),
+        maxBacklogDepth,
+        maxInflightBytes);
+  }
+
+  private static Completion completeOldestManagerBatch(ArrayDeque<PendingBatchTicket> pendingBatches)
+      throws Exception {
+    PendingBatchTicket oldest = pendingBatches.peekFirst();
+    if (oldest == null) {
+      return new Completion(0L, 0L, 0L);
+    }
+    long completeStart = System.nanoTime();
+    for (UploadTicket ticket : oldest.tickets()) {
+      GpuMeshResource resource = ticket.await();
+      resource.close();
+    }
+    long completeEnd = System.nanoTime();
+    pendingBatches.removeFirst();
+    return new Completion(
+        completeEnd - completeStart,
+        completeEnd - oldest.submitEndNanos(),
+        completeEnd - oldest.requestNanos());
   }
 
   private static ScenarioResult runOverlapScenario(
@@ -1023,6 +1048,9 @@ public final class MeshForgeVulkanSustainedMain {
       long bytes) {}
 
   private record UploadRequest(long requestNanos, long bytes) {}
+
+  private record PendingBatchTicket(
+      List<UploadTicket> tickets, long submitEndNanos, long requestNanos, long bytes) {}
 
   private record Completion(long completionDurationNanos, long completionLatencyNanos, long ttfuNanos) {}
 
