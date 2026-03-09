@@ -45,6 +45,30 @@ Phase 5 introduces a minimal upload scheduling boundary in `dynamis-gpu-api`:
 - `UploadTelemetry`
 - `DefaultUploadManager` (bounded backlog + pull dispatch with target in-flight control)
 
+### Upload Architecture
+
+DynamisGPU uses a pull-based upload scheduler with a bounded backlog and a target in-flight depth of `2`.
+
+```text
+MeshForge
+   ↓
+GpuGeometryUploadPlan
+   ↓
+UploadManager
+   ↓
+TransferScheduler
+   ↓
+VulkanGpuUploadExecutor
+   ↓
+GPU
+```
+
+This architecture was validated in Phase 4/5 benchmark experiments and is implemented via the UploadManager subsystem.
+
+See:
+
+- `docs/dynamisgpu-phase5-upload-manager-plan.md`
+
 ## macOS Vulkan Setup (MoltenVK)
 Known-good environment pattern:
 

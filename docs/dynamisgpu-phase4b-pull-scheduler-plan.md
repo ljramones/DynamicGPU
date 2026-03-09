@@ -133,3 +133,13 @@ mvn -q -pl dynamis-gpu-bench exec:java \
 Decision:
 
 - Pull scheduling is justified in this workload shape: it improved throughput and reduced avg/p95 TTFU while halving observed in-flight bytes.
+
+## 11. Phase 4B Outcome
+
+The pull scheduler was confirmed as the correct upload policy and became the foundation for the Phase 5 UploadManager boundary.
+
+The Phase 5 implementation preserved the pull model and validated it under bounded backlog control and real benchmark workloads.
+
+See:
+
+- `docs/dynamisgpu-phase5-upload-manager-plan.md`

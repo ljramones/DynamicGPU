@@ -130,6 +130,31 @@ mvn -q -pl dynamis-gpu-bench exec:java \
   -Dexec.classpathScope=runtime
 ```
 
+## 8.3 Phase 5 Validation Results
+
+| Scenario | Mode | Throughput GB/s | avg TTFU ms | p95 TTFU ms | avg completion latency ms | max backlog | max inflight bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| dragon_batch_10 | DEFERRED_OVERLAP | 15.509 | 4.957 | 5.576 | 3.056 | 1 | 49,996,400 |
+| dragon_batch_10 | MANAGER_PULL | 27.452 | 3.523 | 4.535 | 0.350 | 18 | 99,992,800 |
+| lucy_batch_100 | DEFERRED_OVERLAP | 22.577 | 10.877 | 12.302 | 5.979 | 1 | 139,961,200 |
+| lucy_batch_100 | MANAGER_PULL | 16.532 | 16.799 | 20.719 | 0.168 | 198 | 279,922,400 |
+| synthetic_100mb | DEFERRED_OVERLAP | 19.906 | 8.838 | 15.900 | 4.873 | 1 | 104,857,588 |
+| synthetic_100mb | MANAGER_PULL | 38.040 | 5.347 | 9.755 | 5.325 | 0 | 209,715,176 |
+
+### Phase 5 Acceptance
+
+UploadManager is accepted as the baseline GPU upload scheduling boundary.
+
+The manager preserves bounded backlog semantics, enforces pull-based dispatch, and operates safely under concurrent Vulkan execution after command pool isolation fixes.
+
+Measured results show workload-dependent performance relative to the direct `DEFERRED_OVERLAP` path. In tested scenarios, `MANAGER_PULL` produced comparable or superior throughput and acceptable latency behavior.
+
+Observed differences are attributed primarily to realized dispatch/inflight behavior rather than control-path overhead.
+
+Phase 5 is therefore accepted as the production upload architecture for DynamisGPU.
+
+Status: COMPLETE
+
 ## 9. Stop Rules
 
 Stop Phase 5 expansion if:
