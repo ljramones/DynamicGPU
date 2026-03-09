@@ -41,6 +41,35 @@ public final class MeshletBoundsPayloadIngestion {
     return payload;
   }
 
+  /**
+   * Ingests optional compressed bounds payload form and restores canonical uncompressed bytes at
+   * the ingestion boundary.
+   */
+  public static GpuMeshletBoundsPayload ingestCompressed(
+      int meshletCount,
+      int boundsOffsetFloats,
+      int boundsStrideFloats,
+      int boundsFloatCount,
+      int expectedBoundsFloatCount,
+      CompressedRuntimePayload compressedPayload) {
+    Objects.requireNonNull(compressedPayload, "compressedPayload");
+    ByteBuffer boundsBytes = compressedPayload.toUncompressedByteBuffer();
+    if (compressedPayload.uncompressedByteSize() != boundsBytes.remaining()) {
+      throw new IllegalArgumentException(
+          "compressed bounds uncompressed byte size mismatch: declared="
+              + compressedPayload.uncompressedByteSize()
+              + " actual="
+              + boundsBytes.remaining());
+    }
+    return ingest(
+        meshletCount,
+        boundsOffsetFloats,
+        boundsStrideFloats,
+        boundsFloatCount,
+        expectedBoundsFloatCount,
+        boundsBytes);
+  }
+
   public static GpuMeshletBoundsResource toResource(
       GpuBuffer buffer, GpuMeshletBoundsPayload payload) {
     Objects.requireNonNull(buffer, "buffer");

@@ -39,6 +39,35 @@ public final class MeshletStreamingPayloadIngestion {
     return payload;
   }
 
+  /**
+   * Ingests optional compressed stream-unit payload form and restores canonical uncompressed bytes
+   * at the ingestion boundary.
+   */
+  public static GpuMeshletStreamingPayload ingestCompressed(
+      int streamUnitCount,
+      int streamUnitsOffsetInts,
+      int streamUnitsStrideInts,
+      int streamUnitsIntCount,
+      int expectedStreamUnitsIntCount,
+      CompressedRuntimePayload compressedPayload) {
+    Objects.requireNonNull(compressedPayload, "compressedPayload");
+    ByteBuffer streamUnitsBytes = compressedPayload.toUncompressedByteBuffer();
+    if (compressedPayload.uncompressedByteSize() != streamUnitsBytes.remaining()) {
+      throw new IllegalArgumentException(
+          "compressed stream units uncompressed byte size mismatch: declared="
+              + compressedPayload.uncompressedByteSize()
+              + " actual="
+              + streamUnitsBytes.remaining());
+    }
+    return ingest(
+        streamUnitCount,
+        streamUnitsOffsetInts,
+        streamUnitsStrideInts,
+        streamUnitsIntCount,
+        expectedStreamUnitsIntCount,
+        streamUnitsBytes);
+  }
+
   public static GpuMeshletStreamingResource toResource(GpuBuffer buffer, GpuMeshletStreamingPayload payload) {
     Objects.requireNonNull(buffer, "buffer");
     Objects.requireNonNull(payload, "payload");

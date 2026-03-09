@@ -2,6 +2,7 @@ package org.dynamisengine.gpu.api.resource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -65,6 +66,67 @@ class MeshletBoundsPayloadIngestionTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> MeshletBoundsPayloadIngestion.toResource(new TestBuffer(77L, 16), payload));
+  }
+
+  @Test
+  void ingestsCompressedPayloadWithNoneMode() {
+    ByteBuffer bytes = ByteBuffer.allocate(48).order(ByteOrder.LITTLE_ENDIAN);
+    for (int i = 0; i < 12; i++) {
+      bytes.putFloat(i + 1f);
+    }
+    bytes.flip();
+    byte[] canonical = toByteArray(bytes);
+    CompressedRuntimePayload compressed =
+        new CompressedRuntimePayload(RuntimePayloadCompressionMode.NONE, canonical.length, canonical);
+
+    GpuMeshletBoundsPayload payload =
+        MeshletBoundsPayloadIngestion.ingestCompressed(2, 0, 6, 12, 12, compressed);
+    assertEquals(2, payload.meshletCount());
+    assertEquals(48, payload.boundsByteSize());
+    assertEquals(12, payload.boundsFloatCount());
+  }
+
+  @Test
+  void ingestsCompressedPayloadWithDeflateMode() {
+    ByteBuffer bytes = ByteBuffer.allocate(48).order(ByteOrder.LITTLE_ENDIAN);
+    for (int i = 0; i < 12; i++) {
+      bytes.putFloat(i + 1f);
+    }
+    bytes.flip();
+    byte[] canonical = toByteArray(bytes);
+    byte[] deflated = RuntimePayloadCompression.compress(canonical, RuntimePayloadCompressionMode.DEFLATE);
+    CompressedRuntimePayload compressed =
+        new CompressedRuntimePayload(RuntimePayloadCompressionMode.DEFLATE, canonical.length, deflated);
+
+    GpuMeshletBoundsPayload payload =
+        MeshletBoundsPayloadIngestion.ingestCompressed(2, 0, 6, 12, 12, compressed);
+    assertEquals(2, payload.meshletCount());
+    assertEquals(48, payload.boundsByteSize());
+    assertTrue(deflated.length <= canonical.length);
+  }
+
+  @Test
+  void rejectsCompressedPayloadSizeMismatch() {
+    ByteBuffer bytes = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+    for (int i = 0; i < 6; i++) {
+      bytes.putFloat(i + 1f);
+    }
+    bytes.flip();
+    byte[] canonical = toByteArray(bytes);
+    byte[] deflated = RuntimePayloadCompression.compress(canonical, RuntimePayloadCompressionMode.DEFLATE);
+    CompressedRuntimePayload compressed =
+        new CompressedRuntimePayload(RuntimePayloadCompressionMode.DEFLATE, canonical.length + 4, deflated);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> MeshletBoundsPayloadIngestion.ingestCompressed(1, 0, 6, 6, 6, compressed));
+  }
+
+  private static byte[] toByteArray(ByteBuffer bytes) {
+    ByteBuffer view = bytes.asReadOnlyBuffer();
+    byte[] out = new byte[view.remaining()];
+    view.get(out);
+    return out;
   }
 
   private static final class TestBuffer implements GpuBuffer {
