@@ -448,7 +448,8 @@ public final class MeshForgeVulkanSustainedMain {
     long totalCompletionNanos = 0L;
     int maxBacklog = Math.max(64, maxInflight * batchCount * 8);
     GpuUploadExecutor stripedExecutor = new StripedUploadExecutor(executors);
-    List<UploadTicket> tickets = new ArrayList<>((int) Math.min(Integer.MAX_VALUE, uploads));
+    ArrayDeque<UploadTicket> pendingTickets = new ArrayDeque<>();
+    long completedUploads = 0L;
     long wallStart = System.nanoTime();
     UploadTelemetry telemetry;
     String debugSnapshot;
@@ -457,19 +458,37 @@ public final class MeshForgeVulkanSustainedMain {
       for (int i = 0; i < iterations; i++) {
         applyArrivalDelay(i, arrivalPattern, arrivalJitterMs, microburstSize);
         for (int j = 0; j < batchCount; j++) {
-          long submitStart = System.nanoTime();
-          tickets.add(manager.submit(template));
-          long submitEnd = System.nanoTime();
-          totalSubmitNanos += (submitEnd - submitStart);
+          while (true) {
+            try {
+              long submitStart = System.nanoTime();
+              pendingTickets.addLast(manager.submit(template));
+              long submitEnd = System.nanoTime();
+              totalSubmitNanos += (submitEnd - submitStart);
+              break;
+            } catch (IllegalStateException backlogFull) {
+              UploadTicket oldest = pendingTickets.pollFirst();
+              if (oldest == null) {
+                throw backlogFull;
+              }
+              long completeStart = System.nanoTime();
+              GpuMeshResource resource = oldest.await();
+              long completeEnd = System.nanoTime();
+              totalCompletionNanos += (completeEnd - completeStart);
+              resource.close();
+              completedUploads++;
+            }
+          }
         }
       }
 
-      for (UploadTicket ticket : tickets) {
+      while (!pendingTickets.isEmpty()) {
+        UploadTicket ticket = pendingTickets.removeFirst();
         long completeStart = System.nanoTime();
         GpuMeshResource resource = ticket.await();
         long completeEnd = System.nanoTime();
         totalCompletionNanos += (completeEnd - completeStart);
         resource.close();
+        completedUploads++;
       }
       manager.drain();
       telemetry = manager.telemetry();
@@ -490,7 +509,7 @@ public final class MeshForgeVulkanSustainedMain {
         executors.get(0).mode().name(),
         "MANAGER_PULL",
         iterations,
-        (int) uploads,
+        (int) completedUploads,
         totalBytes,
         totalSubmitNanos,
         totalCompletionNanos,
