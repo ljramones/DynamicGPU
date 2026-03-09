@@ -278,6 +278,35 @@ public final class VulkanHarnessContext implements AutoCloseable {
     return commandPool;
   }
 
+  public long createCommandPool() throws GpuException {
+    try (MemoryStack stack = MemoryStack.stackPush()) {
+      var pCommandPool = stack.longs(VK_NULL_HANDLE);
+      var poolInfo =
+          org.lwjgl.vulkan.VkCommandPoolCreateInfo.calloc(stack)
+              .sType(VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
+              .flags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT)
+              .queueFamilyIndex(graphicsQueueFamilyIndex);
+      int poolResult = vkCreateCommandPool(device, poolInfo, null, pCommandPool);
+      long created = pCommandPool.get(0);
+      if (poolResult != VK_SUCCESS || created == VK_NULL_HANDLE) {
+        throw new GpuException(
+            GpuErrorCode.BACKEND_INIT_FAILED,
+            "stage=command_pool_create result="
+                + poolResult
+                + " queueFamily="
+                + graphicsQueueFamilyIndex,
+            false);
+      }
+      return created;
+    }
+  }
+
+  public void destroyCommandPool(long pool) {
+    if (pool != VK_NULL_HANDLE && device != null) {
+      vkDestroyCommandPool(device, pool, null);
+    }
+  }
+
   @Override
   public void close() {
     if (device != null && commandPool != VK_NULL_HANDLE) {

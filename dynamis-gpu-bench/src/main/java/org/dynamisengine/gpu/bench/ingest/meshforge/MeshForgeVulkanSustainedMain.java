@@ -81,13 +81,16 @@ public final class MeshForgeVulkanSustainedMain {
                 VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED)) {
       if (phase4Overlap || phase4PushPull || phase5ManagerCompare) {
         List<VulkanGpuUploadExecutor> overlapExecutors = new ArrayList<>(maxInflight);
+        List<Long> overlapCommandPools = new ArrayList<>(maxInflight);
         try {
           for (int i = 0; i < maxInflight; i++) {
+            long commandPool = context.createCommandPool();
+            overlapCommandPools.add(commandPool);
             overlapExecutors.add(
                 new VulkanGpuUploadExecutor(
                     context.device(),
                     context.physicalDevice(),
-                    context.commandPool(),
+                    commandPool,
                     context.graphicsQueue(),
                     VulkanGpuUploadExecutor.UploadPathMode.OPTIMIZED_DEFERRED));
           }
@@ -149,6 +152,7 @@ public final class MeshForgeVulkanSustainedMain {
           }
         } finally {
           closeExecutors(overlapExecutors);
+          closeCommandPools(context, overlapCommandPools);
         }
         return;
       }
@@ -823,6 +827,24 @@ public final class MeshForgeVulkanSustainedMain {
     for (VulkanGpuUploadExecutor executor : executors) {
       try {
         executor.close();
+      } catch (RuntimeException e) {
+        if (first == null) {
+          first = e;
+        } else {
+          first.addSuppressed(e);
+        }
+      }
+    }
+    if (first != null) {
+      throw first;
+    }
+  }
+
+  private static void closeCommandPools(VulkanHarnessContext context, List<Long> commandPools) {
+    RuntimeException first = null;
+    for (Long commandPool : commandPools) {
+      try {
+        context.destroyCommandPool(commandPool);
       } catch (RuntimeException e) {
         if (first == null) {
           first = e;
