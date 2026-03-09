@@ -1,6 +1,7 @@
 package org.dynamisengine.gpu.api.resource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -27,6 +28,8 @@ class GpuRayTracingBlasResourceTest {
     assertEquals(2, resource.regionCount());
     assertEquals(5 * Integer.BYTES, resource.regionsStrideBytes());
     assertEquals(2 * 5 * Integer.BYTES, resource.regionsByteSize());
+    assertFalse(resource.hasAccelerationStructure());
+    assertEquals(0L, resource.accelerationStructureHandle());
 
     resource.close();
     resource.close();
@@ -82,4 +85,3 @@ class GpuRayTracingBlasResourceTest {
     }
   }
 }
-

@@ -1,24 +1,23 @@
 package org.dynamisengine.gpu.api.gpu;
 
 import java.util.Objects;
-import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryResource;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputResource;
 
 /**
- * Describes one BLAS build-preparation work unit.
+ * Describes one BLAS execution work unit.
  */
 public final class RayTracingBlasWork {
-  private final GpuRayTracingGeometryResource geometryResource;
+  private final GpuRayTracingBuildInputResource buildInputResource;
 
-  public RayTracingBlasWork(GpuRayTracingGeometryResource geometryResource) {
-    this.geometryResource = Objects.requireNonNull(geometryResource, "geometryResource");
+  public RayTracingBlasWork(GpuRayTracingBuildInputResource buildInputResource) {
+    this.buildInputResource = Objects.requireNonNull(buildInputResource, "buildInputResource");
   }
 
-  public static RayTracingBlasWork fromGeometryResource(GpuRayTracingGeometryResource geometryResource) {
-    return new RayTracingBlasWork(geometryResource);
+  public static RayTracingBlasWork fromBuildInputResource(GpuRayTracingBuildInputResource buildInputResource) {
+    return new RayTracingBlasWork(buildInputResource);
   }
 
-  public GpuRayTracingGeometryResource geometryResource() {
-    return geometryResource;
+  public GpuRayTracingBuildInputResource buildInputResource() {
+    return buildInputResource;
   }
 }
-

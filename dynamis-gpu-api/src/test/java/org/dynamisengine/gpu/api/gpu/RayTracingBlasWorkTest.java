@@ -9,31 +9,38 @@ import org.dynamisengine.gpu.api.buffer.GpuBuffer;
 import org.dynamisengine.gpu.api.buffer.GpuBufferHandle;
 import org.dynamisengine.gpu.api.buffer.GpuBufferUsage;
 import org.dynamisengine.gpu.api.buffer.GpuMemoryLocation;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputPayload;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputResource;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryPayload;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryResource;
 import org.junit.jupiter.api.Test;
 
 class RayTracingBlasWorkTest {
   @Test
-  void capturesGeometryResource() {
-    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
+  void capturesBuildInputResource() {
+    GpuRayTracingBuildInputResource buildInputResource = createBuildInputResource();
 
-    RayTracingBlasWork work = RayTracingBlasWork.fromGeometryResource(geometryResource);
+    RayTracingBlasWork work = RayTracingBlasWork.fromBuildInputResource(buildInputResource);
 
-    assertSame(geometryResource, work.geometryResource());
+    assertSame(buildInputResource, work.buildInputResource());
   }
 
   @Test
-  void rejectsNullGeometryResource() {
-    assertThrows(NullPointerException.class, () -> RayTracingBlasWork.fromGeometryResource(null));
+  void rejectsNullBuildInputResource() {
+    assertThrows(NullPointerException.class, () -> RayTracingBlasWork.fromBuildInputResource(null));
   }
 
-  private static GpuRayTracingGeometryResource createGeometryResource() {
+  private static GpuRayTracingBuildInputResource createBuildInputResource() {
     ByteBuffer bytes = ByteBuffer.allocate(5 * Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
     bytes.putInt(0).putInt(0).putInt(36).putInt(0).putInt(0).flip();
     GpuRayTracingGeometryPayload payload =
         GpuRayTracingGeometryPayload.fromLittleEndianBytes(1, 0, 5, bytes);
-    return new GpuRayTracingGeometryResource(new TestBuffer(8000L, payload.regionsByteSize()), payload);
+    GpuRayTracingGeometryResource geometryResource =
+        new GpuRayTracingGeometryResource(new TestBuffer(8000L, payload.regionsByteSize()), payload);
+    GpuRayTracingBuildInputPayload buildInputPayload =
+        GpuRayTracingBuildInputPayload.of(
+            geometryResource, new GpuBufferHandle(8001L), new GpuBufferHandle(8002L), 32, 1024, 0L, 0L);
+    return new GpuRayTracingBuildInputResource(buildInputPayload, 9001L, 9002L);
   }
 
   private static final class TestBuffer implements GpuBuffer {
@@ -69,4 +76,3 @@ class RayTracingBlasWorkTest {
     public void close() {}
   }
 }
-

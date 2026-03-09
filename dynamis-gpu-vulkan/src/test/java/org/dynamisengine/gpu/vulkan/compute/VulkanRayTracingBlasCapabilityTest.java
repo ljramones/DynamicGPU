@@ -10,61 +10,88 @@ import org.dynamisengine.gpu.api.buffer.GpuBuffer;
 import org.dynamisengine.gpu.api.buffer.GpuBufferHandle;
 import org.dynamisengine.gpu.api.buffer.GpuBufferUsage;
 import org.dynamisengine.gpu.api.buffer.GpuMemoryLocation;
+import org.dynamisengine.gpu.api.error.GpuErrorCode;
+import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.api.gpu.RayTracingBlasWork;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBlasPayload;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingBlasResource;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputPayload;
+import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputResource;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryPayload;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryResource;
 import org.junit.jupiter.api.Test;
 
 class VulkanRayTracingBlasCapabilityTest {
   @Test
-  void producesBlasBuildPrepResourceFromGeometryInput() throws Exception {
-    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
+  void executesBlasAndReturnsBuiltResourceFromBuildInput() throws Exception {
+    GpuRayTracingBuildInputResource buildInputResource = createBuildInputResource();
+    GpuRayTracingBlasPayload payload =
+        GpuRayTracingBlasPayload.forGeometryResource(buildInputResource.payload().geometryResource());
     VulkanRayTracingBlasCapability capability =
-        new VulkanRayTracingBlasCapability(src -> new TestBuffer(9100L, src.remaining()));
+        new VulkanRayTracingBlasCapability(
+            work ->
+                new GpuRayTracingBlasResource(
+                    new TestBuffer(9100L, payload.byteSize()),
+                    payload,
+                    buildInputResource.payload().geometryResource(),
+                    4444L,
+                    null));
 
     GpuRayTracingBlasResource result =
-        capability.execute(RayTracingBlasWork.fromGeometryResource(geometryResource));
+        capability.execute(RayTracingBlasWork.fromBuildInputResource(buildInputResource));
 
     assertEquals(9100L, result.bufferHandle().value());
-    assertEquals(geometryResource, result.sourceGeometryResource());
+    assertEquals(buildInputResource.payload().geometryResource(), result.sourceGeometryResource());
     assertEquals(2, result.regionCount());
     assertEquals(5 * Integer.BYTES, result.regionsStrideBytes());
     assertEquals(2 * 5 * Integer.BYTES, result.regionsByteSize());
+    assertEquals(4444L, result.accelerationStructureHandle());
   }
 
   @Test
-  void rejectsClosedGeometryResource() {
-    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
-    geometryResource.close();
+  void rejectsClosedBuildInputResource() {
+    GpuRayTracingBuildInputResource buildInputResource = createBuildInputResource();
+    buildInputResource.close();
     VulkanRayTracingBlasCapability capability =
-        new VulkanRayTracingBlasCapability(src -> new TestBuffer(9101L, src.remaining()));
+        new VulkanRayTracingBlasCapability(
+            work -> {
+              if (work.buildInputResource().isClosed()) {
+                throw new IllegalStateException("buildInputResource is already closed");
+              }
+              throw new GpuException(GpuErrorCode.BACKEND_INIT_FAILED, "unexpected path", false);
+            });
 
     assertThrows(
         IllegalStateException.class,
-        () -> capability.execute(RayTracingBlasWork.fromGeometryResource(geometryResource)));
+        () -> capability.execute(RayTracingBlasWork.fromBuildInputResource(buildInputResource)));
   }
 
   @Test
-  void rejectsUploadBufferSizeMismatch() {
-    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
+  void propagatesExecutorFailures() {
+    GpuRayTracingBuildInputResource buildInputResource = createBuildInputResource();
     VulkanRayTracingBlasCapability capability =
-        new VulkanRayTracingBlasCapability(src -> new TestBuffer(9102L, 8L));
+        new VulkanRayTracingBlasCapability(
+            work -> {
+              throw new GpuException(GpuErrorCode.BACKEND_INIT_FAILED, "expected", false);
+            });
 
-    assertThrows(
-        IllegalStateException.class,
-        () -> capability.execute(RayTracingBlasWork.fromGeometryResource(geometryResource)));
+    assertThrows(GpuException.class, () -> capability.execute(RayTracingBlasWork.fromBuildInputResource(buildInputResource)));
   }
 
-  private static GpuRayTracingGeometryResource createGeometryResource() {
+  private static GpuRayTracingBuildInputResource createBuildInputResource() {
     ByteBuffer bytes = ByteBuffer.allocate(2 * 5 * Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
     bytes
         .putInt(0).putInt(0).putInt(36).putInt(0).putInt(0)
         .putInt(1).putInt(36).putInt(42).putInt(0).putInt(1)
         .flip();
-    GpuRayTracingGeometryPayload payload =
+    GpuRayTracingGeometryPayload geometryPayload =
         GpuRayTracingGeometryPayload.fromLittleEndianBytes(2, 0, 5, bytes);
-    return new GpuRayTracingGeometryResource(new TestBuffer(9103L, payload.regionsByteSize()), payload);
+    GpuRayTracingGeometryResource geometryResource =
+        new GpuRayTracingGeometryResource(new TestBuffer(9103L, geometryPayload.regionsByteSize()), geometryPayload);
+    GpuRayTracingBuildInputPayload buildInputPayload =
+        GpuRayTracingBuildInputPayload.of(
+            geometryResource, new GpuBufferHandle(9104L), new GpuBufferHandle(9105L), 32, 2048, 0L, 0L);
+    return new GpuRayTracingBuildInputResource(buildInputPayload, 10001L, 10002L);
   }
 
   private static final class TestBuffer implements GpuBuffer {
@@ -103,4 +130,3 @@ class VulkanRayTracingBlasCapabilityTest {
     }
   }
 }
-

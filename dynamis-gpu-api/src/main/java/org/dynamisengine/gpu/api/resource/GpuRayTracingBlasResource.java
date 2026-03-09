@@ -12,15 +12,31 @@ public final class GpuRayTracingBlasResource implements AutoCloseable {
   private final GpuBuffer buffer;
   private final GpuRayTracingBlasPayload payload;
   private final GpuRayTracingGeometryResource sourceGeometryResource;
+  private final long accelerationStructureHandle;
+  private final Runnable closeAction;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   public GpuRayTracingBlasResource(
       GpuBuffer buffer,
       GpuRayTracingBlasPayload payload,
       GpuRayTracingGeometryResource sourceGeometryResource) {
+    this(buffer, payload, sourceGeometryResource, 0L, null);
+  }
+
+  public GpuRayTracingBlasResource(
+      GpuBuffer buffer,
+      GpuRayTracingBlasPayload payload,
+      GpuRayTracingGeometryResource sourceGeometryResource,
+      long accelerationStructureHandle,
+      Runnable closeAction) {
     this.buffer = Objects.requireNonNull(buffer, "buffer");
     this.payload = Objects.requireNonNull(payload, "payload");
     this.sourceGeometryResource = Objects.requireNonNull(sourceGeometryResource, "sourceGeometryResource");
+    if (accelerationStructureHandle < 0L) {
+      throw new IllegalArgumentException("accelerationStructureHandle must be >= 0");
+    }
+    this.accelerationStructureHandle = accelerationStructureHandle;
+    this.closeAction = closeAction != null ? closeAction : buffer::close;
   }
 
   public GpuBuffer buffer() {
@@ -51,6 +67,14 @@ public final class GpuRayTracingBlasResource implements AutoCloseable {
     return payload.regionsByteSize();
   }
 
+  public long accelerationStructureHandle() {
+    return accelerationStructureHandle;
+  }
+
+  public boolean hasAccelerationStructure() {
+    return accelerationStructureHandle > 0L;
+  }
+
   public boolean isClosed() {
     return closed.get();
   }
@@ -60,7 +84,6 @@ public final class GpuRayTracingBlasResource implements AutoCloseable {
     if (!closed.compareAndSet(false, true)) {
       return;
     }
-    buffer.close();
+    closeAction.run();
   }
 }
-
