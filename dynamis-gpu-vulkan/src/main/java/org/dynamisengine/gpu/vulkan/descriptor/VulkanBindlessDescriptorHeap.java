@@ -1,19 +1,13 @@
 package org.dynamisengine.gpu.vulkan.descriptor;
 
 import org.dynamisengine.gpu.api.BindlessHeapStats;
-import org.dynamisengine.gpu.api.error.GpuErrorCode;
 import org.dynamisengine.gpu.api.error.GpuException;
-import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.*;
 
 import java.util.ArrayDeque;
-import java.nio.IntBuffer;
 import java.util.logging.Logger;
 
-import static org.lwjgl.vulkan.EXTDescriptorIndexing.*;
 import static org.lwjgl.vulkan.VK10.*;
-import static org.lwjgl.vulkan.VK11.vkGetPhysicalDeviceFeatures2;
-import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
 /**
  * Vulkan descriptor-indexing heap that allocates typed handles and manages deferred retirement.
@@ -84,38 +78,44 @@ public final class VulkanBindlessDescriptorHeap {
             boolean requestedEnabled,
             int framesInFlight
     ) throws GpuException {
-        if (!requestedEnabled || device == null || physicalDevice == null) {
-            return disabled();
-        }
-        GateResult gate = checkDescriptorIndexingGate(physicalDevice);
-        if (!gate.passed()) {
-            LOG.warning("BINDLESS_DESCRIPTOR_INDEXING_UNAVAILABLE " + gate.reason());
-            return disabled();
-        }
-
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            long layout = createDescriptorSetLayout(device, stack);
-            long pool = createDescriptorPool(device, stack);
-            long set = allocateDescriptorSet(device, stack, pool, layout);
-            return new VulkanBindlessDescriptorHeap(
-                    device,
-                    true,
-                    layout,
-                    pool,
-                    set,
-                    Math.max(1, framesInFlight),
-                    TypeState.create(HeapType.JOINT_PALETTE),
-                    TypeState.create(HeapType.MORPH_DELTA),
-                    TypeState.create(HeapType.MORPH_WEIGHT),
-                    TypeState.create(HeapType.INSTANCE_DATA)
-            );
-        }
+        return VulkanBindlessHeapFactory.create(device, physicalDevice, requestedEnabled, framesInFlight);
     }
 
     /**
      * Returns a disabled no-op heap implementation.
      */
     public static VulkanBindlessDescriptorHeap disabled() {
+        return VulkanBindlessHeapFactory.disabled();
+    }
+
+    /**
+     * Package-private factory used by {@link VulkanBindlessHeapFactory}.
+     */
+    static VulkanBindlessDescriptorHeap createActive(
+            VkDevice device,
+            long layout,
+            long pool,
+            long set,
+            int framesInFlight
+    ) {
+        return new VulkanBindlessDescriptorHeap(
+                device,
+                true,
+                layout,
+                pool,
+                set,
+                Math.max(1, framesInFlight),
+                TypeState.create(HeapType.JOINT_PALETTE),
+                TypeState.create(HeapType.MORPH_DELTA),
+                TypeState.create(HeapType.MORPH_WEIGHT),
+                TypeState.create(HeapType.INSTANCE_DATA)
+        );
+    }
+
+    /**
+     * Package-private factory used by {@link VulkanBindlessHeapFactory}.
+     */
+    static VulkanBindlessDescriptorHeap createDisabled() {
         return new VulkanBindlessDescriptorHeap(
                 null,
                 false,
@@ -156,6 +156,13 @@ public final class VulkanBindlessDescriptorHeap {
      */
     public long descriptorSet() {
         return descriptorSet;
+    }
+
+    /**
+     * @return the Vulkan device associated with this heap
+     */
+    VkDevice device() {
+        return device;
     }
 
     /**
@@ -260,31 +267,7 @@ public final class VulkanBindlessDescriptorHeap {
      * @return true when update was accepted
      */
     public synchronized boolean updateJointPaletteDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
-        if (!active || handle == 0L || bufferHandle == VK_NULL_HANDLE || rangeBytes <= 0L) {
-            return false;
-        }
-        int slot = resolveSlot(handle, currentFrame);
-        if (slot < 0) {
-            return false;
-        }
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
-            bufferInfo.get(0)
-                    .buffer(bufferHandle)
-                    .offset(0L)
-                    .range(rangeBytes);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
-            write.get(0)
-                    .sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
-                    .dstSet(descriptorSet)
-                    .dstBinding(0)
-                    .dstArrayElement(slot)
-                    .descriptorCount(1)
-                    .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                    .pBufferInfo(bufferInfo);
-            vkUpdateDescriptorSets(device, write, null);
-            return true;
-        }
+        return VulkanDescriptorUpdater.updateJointPaletteDescriptor(this, handle, currentFrame, bufferHandle, rangeBytes);
     }
 
     /**
@@ -293,7 +276,7 @@ public final class VulkanBindlessDescriptorHeap {
      * @return true when update was accepted
      */
     public synchronized boolean updateMorphDeltaDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
-        return updateStorageBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 1);
+        return VulkanDescriptorUpdater.updateMorphDeltaDescriptor(this, handle, currentFrame, bufferHandle, rangeBytes);
     }
 
     /**
@@ -302,7 +285,7 @@ public final class VulkanBindlessDescriptorHeap {
      * @return true when update was accepted
      */
     public synchronized boolean updateMorphWeightDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
-        return updateUniformBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 2);
+        return VulkanDescriptorUpdater.updateMorphWeightDescriptor(this, handle, currentFrame, bufferHandle, rangeBytes);
     }
 
     /**
@@ -311,7 +294,7 @@ public final class VulkanBindlessDescriptorHeap {
      * @return true when update was accepted
      */
     public synchronized boolean updateInstanceDataDescriptor(long handle, long currentFrame, long bufferHandle, long rangeBytes) {
-        return updateStorageBufferDescriptor(handle, currentFrame, bufferHandle, rangeBytes, 3);
+        return VulkanDescriptorUpdater.updateInstanceDataDescriptor(this, handle, currentFrame, bufferHandle, rangeBytes);
     }
 
     /**
@@ -359,240 +342,14 @@ public final class VulkanBindlessDescriptorHeap {
         }
     }
 
-    private static long createDescriptorSetLayout(VkDevice device, MemoryStack stack) throws GpuException {
-        VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(5, stack);
-        bindings.get(0)
-                .binding(0)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(JOINT_CAPACITY)
-                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-        bindings.get(1)
-                .binding(1)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(MORPH_DELTA_CAPACITY)
-                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-        bindings.get(2)
-                .binding(2)
-                .descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                .descriptorCount(MORPH_WEIGHT_CAPACITY)
-                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-        bindings.get(3)
-                .binding(3)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(INSTANCE_CAPACITY)
-                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-        bindings.get(4)
-                .binding(4)
-                .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(DRAW_META_CAPACITY)
-                .stageFlags(VK_SHADER_STAGE_VERTEX_BIT);
-
-        IntBuffer bindingFlags = stack.mallocInt(5);
-        for (int i = 0; i < 5; i++) {
-            bindingFlags.put(i,
-                    VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT
-                            | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT
-            );
-        }
-
-        VkDescriptorSetLayoutBindingFlagsCreateInfoEXT flagsInfo = VkDescriptorSetLayoutBindingFlagsCreateInfoEXT.calloc(stack)
-                .sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT)
-                .pBindingFlags(bindingFlags);
-
-        VkDescriptorSetLayoutCreateInfo info = VkDescriptorSetLayoutCreateInfo.calloc(stack)
-                .sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
-                .flags(VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT)
-                .pBindings(bindings)
-                .pNext(flagsInfo.address());
-
-        var pLayout = stack.longs(VK_NULL_HANDLE);
-        int result = vkCreateDescriptorSetLayout(device, info, null, pLayout);
-        if (result != VK_SUCCESS || pLayout.get(0) == VK_NULL_HANDLE) {
-            throw new GpuException(
-                    GpuErrorCode.BACKEND_INIT_FAILED,
-                    "vkCreateDescriptorSetLayout(bindless) failed: " + result,
-                    false
-            );
-        }
-        return pLayout.get(0);
-    }
-
-    private boolean updateStorageBufferDescriptor(
-            long handle,
-            long currentFrame,
-            long bufferHandle,
-            long rangeBytes,
-            int binding
-    ) {
-        if (!active || handle == 0L || bufferHandle == VK_NULL_HANDLE || rangeBytes <= 0L) {
-            return false;
-        }
-        int slot = resolveSlot(handle, currentFrame);
-        if (slot < 0) {
-            return false;
-        }
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
-            bufferInfo.get(0)
-                    .buffer(bufferHandle)
-                    .offset(0L)
-                    .range(rangeBytes);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
-            write.get(0)
-                    .sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
-                    .dstSet(descriptorSet)
-                    .dstBinding(binding)
-                    .dstArrayElement(slot)
-                    .descriptorCount(1)
-                    .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                    .pBufferInfo(bufferInfo);
-            vkUpdateDescriptorSets(device, write, null);
-            return true;
-        }
-    }
-
-    private boolean updateUniformBufferDescriptor(
-            long handle,
-            long currentFrame,
-            long bufferHandle,
-            long rangeBytes,
-            int binding
-    ) {
-        if (!active || handle == 0L || bufferHandle == VK_NULL_HANDLE || rangeBytes <= 0L) {
-            return false;
-        }
-        int slot = resolveSlot(handle, currentFrame);
-        if (slot < 0) {
-            return false;
-        }
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorBufferInfo.Buffer bufferInfo = VkDescriptorBufferInfo.calloc(1, stack);
-            bufferInfo.get(0)
-                    .buffer(bufferHandle)
-                    .offset(0L)
-                    .range(rangeBytes);
-            VkWriteDescriptorSet.Buffer write = VkWriteDescriptorSet.calloc(1, stack);
-            write.get(0)
-                    .sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
-                    .dstSet(descriptorSet)
-                    .dstBinding(binding)
-                    .dstArrayElement(slot)
-                    .descriptorCount(1)
-                    .descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                    .pBufferInfo(bufferInfo);
-            vkUpdateDescriptorSets(device, write, null);
-            return true;
-        }
-    }
-
-    private static long createDescriptorPool(VkDevice device, MemoryStack stack) throws GpuException {
-        VkDescriptorPoolSize.Buffer sizes = VkDescriptorPoolSize.calloc(2, stack);
-        sizes.get(0)
-                .type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-                .descriptorCount(JOINT_CAPACITY + MORPH_DELTA_CAPACITY + INSTANCE_CAPACITY + DRAW_META_CAPACITY);
-        sizes.get(1)
-                .type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-                .descriptorCount(MORPH_WEIGHT_CAPACITY);
-
-        VkDescriptorPoolCreateInfo info = VkDescriptorPoolCreateInfo.calloc(stack)
-                .sType(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO)
-                .flags(VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT)
-                .maxSets(1)
-                .pPoolSizes(sizes);
-        var pPool = stack.longs(VK_NULL_HANDLE);
-        int result = vkCreateDescriptorPool(device, info, null, pPool);
-        if (result != VK_SUCCESS || pPool.get(0) == VK_NULL_HANDLE) {
-            throw new GpuException(
-                    GpuErrorCode.BACKEND_INIT_FAILED,
-                    "vkCreateDescriptorPool(bindless) failed: " + result,
-                    false
-            );
-        }
-        return pPool.get(0);
-    }
-
-    private static long allocateDescriptorSet(VkDevice device, MemoryStack stack, long descriptorPool, long descriptorSetLayout)
-            throws GpuException {
-        VkDescriptorSetAllocateInfo info = VkDescriptorSetAllocateInfo.calloc(stack)
-                .sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO)
-                .descriptorPool(descriptorPool)
-                .pSetLayouts(stack.longs(descriptorSetLayout));
-        var pSet = stack.longs(VK_NULL_HANDLE);
-        int result = vkAllocateDescriptorSets(device, info, pSet);
-        if (result != VK_SUCCESS || pSet.get(0) == VK_NULL_HANDLE) {
-            throw new GpuException(
-                    GpuErrorCode.BACKEND_INIT_FAILED,
-                    "vkAllocateDescriptorSets(bindless) failed: " + result,
-                    false
-            );
-        }
-        return pSet.get(0);
-    }
-
-    private static GateResult checkDescriptorIndexingGate(VkPhysicalDevice physicalDevice) {
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkPhysicalDeviceDescriptorIndexingFeaturesEXT indexing = VkPhysicalDeviceDescriptorIndexingFeaturesEXT.calloc(stack)
-                    .sType(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT);
-            VkPhysicalDeviceFeatures2 features2 = VkPhysicalDeviceFeatures2.calloc(stack)
-                    .sType(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)
-                    .pNext(indexing.address());
-            vkGetPhysicalDeviceFeatures2(physicalDevice, features2);
-
-            VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.calloc(stack);
-            vkGetPhysicalDeviceProperties(physicalDevice, props);
-
-            StringBuilder reason = new StringBuilder();
-            boolean ok = true;
-            ok &= checkFeature(indexing.runtimeDescriptorArray(), "runtimeDescriptorArray", reason);
-            ok &= checkFeature(indexing.descriptorBindingPartiallyBound(), "descriptorBindingPartiallyBound", reason);
-            ok &= checkFeature(indexing.descriptorBindingVariableDescriptorCount(), "descriptorBindingVariableDescriptorCount", reason);
-            ok &= checkFeature(indexing.descriptorBindingStorageBufferUpdateAfterBind(), "descriptorBindingStorageBufferUpdateAfterBind", reason);
-            ok &= checkFeature(indexing.shaderStorageBufferArrayNonUniformIndexing(), "shaderStorageBufferArrayNonUniformIndexing", reason);
-            ok &= checkFeature(indexing.shaderUniformBufferArrayNonUniformIndexing(), "shaderUniformBufferArrayNonUniformIndexing", reason);
-
-            VkPhysicalDeviceLimits limits = props.limits();
-            ok &= checkLimit(limits.maxBoundDescriptorSets(), 4, "maxBoundDescriptorSets", reason);
-            ok &= checkLimit(limits.maxPerStageDescriptorStorageBuffers(), 1024, "maxPerStageDescriptorStorageBuffers", reason);
-            ok &= checkLimit(limits.maxDescriptorSetStorageBuffers(), 2048, "maxDescriptorSetStorageBuffers", reason);
-            ok &= checkLimit(limits.maxPerStageDescriptorUniformBuffers(), 512, "maxPerStageDescriptorUniformBuffers", reason);
-            ok &= checkLimit(limits.maxDescriptorSetUniformBuffers(), 512, "maxDescriptorSetUniformBuffers", reason);
-
-            return new GateResult(ok, reason.toString());
-        }
-    }
-
-    private static boolean checkFeature(boolean enabled, String name, StringBuilder reason) {
-        if (enabled) {
-            return true;
-        }
-        appendReason(reason, "missingFeature=" + name);
-        return false;
-    }
-
-    private static boolean checkLimit(int actual, int required, String name, StringBuilder reason) {
-        if (actual >= required) {
-            return true;
-        }
-        appendReason(reason, "limitShortfall=" + name + "(" + actual + "<" + required + ")");
-        return false;
-    }
-
-    private static void appendReason(StringBuilder reason, String part) {
-        if (reason.isEmpty()) {
-            reason.append(part);
-        } else {
-            reason.append(", ").append(part);
-        }
-    }
-
-    private static long packHandle(HeapType type, int generation, int slot) {
+    static long packHandle(HeapType type, int generation, int slot) {
         long t = (long) (type.id & TYPE_MASK);
         long g = ((long) generation) & GEN_MASK;
         long s = ((long) slot) & SLOT_MASK;
         return (t << 56) | (g << 32) | s;
     }
 
-    private static HeapType unpackType(long handle) {
+    static HeapType unpackType(long handle) {
         int id = (int) ((handle >>> 56) & TYPE_MASK);
         for (HeapType type : HeapType.values()) {
             if (type.id == id) {
@@ -602,11 +359,11 @@ public final class VulkanBindlessDescriptorHeap {
         return null;
     }
 
-    private static int unpackGeneration(long handle) {
+    static int unpackGeneration(long handle) {
         return (int) ((handle >>> 32) & GEN_MASK);
     }
 
-    private static int unpackSlot(long handle) {
+    static int unpackSlot(long handle) {
         return (int) (handle & SLOT_MASK);
     }
 
@@ -658,7 +415,7 @@ public final class VulkanBindlessDescriptorHeap {
         MORPH_WEIGHT(2, MORPH_WEIGHT_CAPACITY),
         INSTANCE_DATA(3, INSTANCE_CAPACITY);
 
-        private final int id;
+        final int id;
         private final int capacity;
 
         HeapType(int id, int capacity) {
@@ -667,7 +424,7 @@ public final class VulkanBindlessDescriptorHeap {
         }
     }
 
-    private static final class TypeState {
+    static final class TypeState {
         final HeapType type;
         final int capacity;
         final int[] generations;
@@ -699,8 +456,5 @@ public final class VulkanBindlessDescriptorHeap {
     }
 
     private record Retirement(HeapType type, int slot, int generation, long retireFrame) {
-    }
-
-    private record GateResult(boolean passed, String reason) {
     }
 }

@@ -55,7 +55,7 @@ import org.dynamisengine.gpu.api.resource.GpuRayTracingTlasPayload;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingTlasResource;
 import org.dynamisengine.gpu.vulkan.buffer.VulkanGpuBuffer;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -157,7 +157,7 @@ public final class VulkanRayTracingTlasCapability implements RayTracingTlasCapab
       try (MemoryStack stack = MemoryStack.stackPush()) {
         ByteBuffer instanceBytes = buildInstanceByteBuffer(instances, stack);
         VulkanBufferAlloc instanceAlloc =
-            VulkanMemoryOps.createDeviceAddressBufferWithStaging(
+            VulkanBufferOps.createDeviceAddressBufferWithStaging(
                 device,
                 physicalDevice,
                 commandPool,
@@ -169,7 +169,7 @@ public final class VulkanRayTracingTlasCapability implements RayTracingTlasCapab
                     new GpuException(
                         GpuErrorCode.BACKEND_INIT_FAILED, op + " failed with code " + code, false));
         long instanceBufferDeviceAddress =
-            VulkanMemoryOps.getBufferDeviceAddress(device, instanceAlloc.buffer());
+            VulkanBufferOps.getBufferDeviceAddress(device, instanceAlloc.buffer());
         if (instanceBufferDeviceAddress == 0L) {
           vkDestroyBuffer(device, instanceAlloc.buffer(), null);
           vkFreeMemory(device, instanceAlloc.memory(), null);
@@ -238,7 +238,7 @@ public final class VulkanRayTracingTlasCapability implements RayTracingTlasCapab
         }
 
         VulkanBufferAlloc tlasStorageAlloc =
-            VulkanMemoryOps.createBuffer(
+            VulkanBufferOps.createBuffer(
                 device,
                 physicalDevice,
                 stack,
@@ -248,7 +248,7 @@ public final class VulkanRayTracingTlasCapability implements RayTracingTlasCapab
                 org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT);
         VulkanBufferAlloc scratchAlloc =
-            VulkanMemoryOps.createBuffer(
+            VulkanBufferOps.createBuffer(
                 device,
                 physicalDevice,
                 stack,
@@ -289,7 +289,7 @@ public final class VulkanRayTracingTlasCapability implements RayTracingTlasCapab
           }
           tlasHandleRef[0] = pTlas.get(0);
 
-          long scratchAddress = VulkanMemoryOps.getBufferDeviceAddress(device, scratchAlloc.buffer());
+          long scratchAddress = VulkanBufferOps.getBufferDeviceAddress(device, scratchAlloc.buffer());
           if (scratchAddress == 0L) {
             throw new GpuException(
                 GpuErrorCode.BACKEND_INIT_FAILED,

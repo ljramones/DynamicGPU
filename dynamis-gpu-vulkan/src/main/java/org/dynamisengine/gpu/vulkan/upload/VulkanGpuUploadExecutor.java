@@ -3,9 +3,7 @@ package org.dynamisengine.gpu.vulkan.upload;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
@@ -18,7 +16,7 @@ import org.dynamisengine.gpu.api.upload.GpuGeometryUploadPlan;
 import org.dynamisengine.gpu.api.upload.GpuUploadExecutor;
 import org.dynamisengine.gpu.vulkan.buffer.VulkanGpuBuffer;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
@@ -53,13 +51,8 @@ import static org.lwjgl.vulkan.VK10.vkAllocateCommandBuffers;
 import static org.lwjgl.vulkan.VK10.vkBeginCommandBuffer;
 import static org.lwjgl.vulkan.VK10.vkCmdCopyBuffer;
 import static org.lwjgl.vulkan.VK10.vkCreateFence;
-import static org.lwjgl.vulkan.VK10.vkDestroyFence;
 import static org.lwjgl.vulkan.VK10.vkEndCommandBuffer;
-import static org.lwjgl.vulkan.VK10.vkFreeCommandBuffers;
-import static org.lwjgl.vulkan.VK10.vkGetFenceStatus;
 import static org.lwjgl.vulkan.VK10.vkQueueSubmit;
-import static org.lwjgl.vulkan.VK10.vkQueueWaitIdle;
-import static org.lwjgl.vulkan.VK10.vkWaitForFences;
 
 /**
  * Vulkan implementation of {@link GpuUploadExecutor} for runtime geometry payloads.
@@ -87,8 +80,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   private final ArrayDeque<PendingSubmission> pendingSubmissions = new ArrayDeque<>();
   private final AtomicLong nextSubmissionId = new AtomicLong(1L);
   private ByteBuffer reusableDirectCopyBuffer;
-  private final Map<Long, List<Range>> srcRangesByBufferScratch = new HashMap<>();
-  private final Map<Long, List<Range>> dstRangesByBufferScratch = new HashMap<>();
+  private final VulkanUploadValidator validator;
+  private final VulkanUploadSyncOps syncOps;
 
   public VulkanGpuUploadExecutor(
       VkDevice device,
@@ -122,6 +115,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
         optimizedMode
             ? new VulkanDeviceLocalBufferPool(device, physicalDevice)
             : null;
+    this.validator = new VulkanUploadValidator(DEBUG_UPLOAD);
+    this.syncOps = new VulkanUploadSyncOps(device, commandPool, vkFailure, DEBUG_UPLOAD);
   }
 
   @Override
@@ -159,7 +154,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
           "Deferred upload already in flight; call completeDeferredBatch or drainDeferredSubmissions first");
     }
 
-    ArrayList<PreparedPlan> preparedPlans = new ArrayList<>(plans.size());
+    ArrayList<VulkanUploadValidator.PreparedPlan> preparedPlans = new ArrayList<>(plans.size());
     ArrayList<PlanSizing> planSizings = new ArrayList<>(plans.size());
     long totalBytes = 0L;
     long estimatedBytes = 0L;
@@ -182,7 +177,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       for (PlanSizing sizing : planSizings) {
         preparedPlans.add(preparePlanForBatch(stack, sizing));
       }
-      validateCopyOps(preparedPlans, submissionId, srcRangesByBufferScratch, dstRangesByBufferScratch);
+      validator.validateCopyOps(preparedPlans, submissionId);
       SubmissionHandles handles = submitCopies(stack, preparedPlans, false);
       uploadArena.markSubmissionInFlight(submissionId);
       PendingSubmission pending =
@@ -195,9 +190,9 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       pendingSubmissions.addLast(pending);
       return new DeferredUploadBatch(pending.submissionId, pending.planCount(), pending.totalBytes);
     } catch (Throwable t) {
-      for (PreparedPlan prepared : preparedPlans) {
-        closeQuietly(prepared.indexBuffer);
-        closeQuietly(prepared.vertexBuffer);
+      for (VulkanUploadValidator.PreparedPlan prepared : preparedPlans) {
+        closeQuietly(prepared.indexBuffer());
+        closeQuietly(prepared.vertexBuffer());
       }
       if (t instanceof GpuException gpuException) {
         throw gpuException;
@@ -233,7 +228,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       return List.of();
     }
     PendingSubmission pending = pendingSubmissions.peekFirst();
-    int status = fenceStatus(pending.fenceHandle);
+    int status = syncOps.fenceStatus(pending.fenceHandle);
     if (status == VK_NOT_READY) {
       return List.of();
     }
@@ -267,17 +262,17 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     while (!pendingSubmissions.isEmpty()) {
       PendingSubmission pending = pendingSubmissions.removeFirst();
       try {
-        waitFenceOrThrow(pending.fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
+        syncOps.waitFenceOrThrow(pending.fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
       } catch (GpuException e) {
         if (closeFailure == null) {
           closeFailure = new RuntimeException(e);
         }
       }
-      destroyFenceQuietly(pending.fenceHandle);
-      freeCommandBufferQuietly(pending.commandBufferHandle);
-      for (PreparedPlan preparedPlan : pending.preparedPlans) {
-        closeQuietly(preparedPlan.indexBuffer);
-        closeQuietly(preparedPlan.vertexBuffer);
+      syncOps.destroyFenceQuietly(pending.fenceHandle);
+      syncOps.freeCommandBufferQuietly(pending.commandBufferHandle);
+      for (VulkanUploadValidator.PreparedPlan preparedPlan : pending.preparedPlans) {
+        closeQuietly(preparedPlan.indexBuffer());
+        closeQuietly(preparedPlan.vertexBuffer());
       }
       uploadArena.retireSubmission(pending.submissionId);
     }
@@ -296,60 +291,23 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       PendingSubmission pending, boolean waitForCompletion, long timeoutNanos) throws GpuException {
     try {
       if (waitForCompletion) {
-        waitFenceOrThrow(pending.fenceHandle, timeoutNanos);
+        syncOps.waitFenceOrThrow(pending.fenceHandle, timeoutNanos);
       }
       ArrayList<GpuMeshResource> resources = new ArrayList<>(pending.preparedPlans.size());
-      for (PreparedPlan prepared : pending.preparedPlans) {
+      for (VulkanUploadValidator.PreparedPlan prepared : pending.preparedPlans) {
         resources.add(
             new GpuMeshResource(
-                prepared.vertexBuffer,
-                prepared.indexBuffer,
-                prepared.plan.vertexLayout(),
-                prepared.plan.indexType(),
-                prepared.plan.submeshes()));
+                prepared.vertexBuffer(),
+                prepared.indexBuffer(),
+                prepared.plan().vertexLayout(),
+                prepared.plan().indexType(),
+                prepared.plan().submeshes()));
       }
       return List.copyOf(resources);
     } finally {
-      destroyFenceQuietly(pending.fenceHandle);
-      freeCommandBufferQuietly(pending.commandBufferHandle);
+      syncOps.destroyFenceQuietly(pending.fenceHandle);
+      syncOps.freeCommandBufferQuietly(pending.commandBufferHandle);
       uploadArena.retireSubmission(pending.submissionId);
-    }
-  }
-
-  private void waitFenceOrThrow(long fenceHandle, long timeoutNanos) throws GpuException {
-    try (MemoryStack stack = MemoryStack.stackPush()) {
-      if (DEBUG_UPLOAD) {
-        int status = fenceStatus(fenceHandle);
-        System.out.println("[VulkanGpuUploadExecutor] fenceStatusBeforeWait=" + status + " fence=" + fenceHandle);
-      }
-      int waitResult =
-          vkWaitForFences(device, stack.longs(fenceHandle), true, Math.max(1L, timeoutNanos));
-      if (waitResult != VK_SUCCESS) {
-        throw vkFailure.apply("vkWaitForFences(upload-batch)", waitResult);
-      }
-      if (DEBUG_UPLOAD) {
-        int status = fenceStatus(fenceHandle);
-        System.out.println("[VulkanGpuUploadExecutor] fenceStatusAfterWait=" + status + " fence=" + fenceHandle);
-      }
-    }
-  }
-
-  private int fenceStatus(long fenceHandle) {
-    return vkGetFenceStatus(device, fenceHandle);
-  }
-
-  private void destroyFenceQuietly(long fenceHandle) {
-    if (fenceHandle != VK_NULL_HANDLE) {
-      vkDestroyFence(device, fenceHandle, null);
-    }
-  }
-
-  private void freeCommandBufferQuietly(long commandBufferHandle) {
-    if (commandBufferHandle == VK_NULL_HANDLE) {
-      return;
-    }
-    try (MemoryStack stack = MemoryStack.stackPush()) {
-      vkFreeCommandBuffers(device, commandPool, stack.pointers(commandBufferHandle));
     }
   }
 
@@ -361,7 +319,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     try (MemoryStack stack = MemoryStack.stackPush()) {
       ByteBuffer vertexBytes = toReusableDirectCopy(plan.vertexData());
       VulkanBufferAlloc vertexAlloc =
-          VulkanMemoryOps.createDeviceLocalBufferWithStaging(
+          VulkanBufferOps.createDeviceLocalBufferWithStaging(
               device,
               physicalDevice,
               commandPool,
@@ -382,7 +340,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
       if (plan.indexData() != null) {
         ByteBuffer indexBytes = toReusableDirectCopy(plan.indexData());
         VulkanBufferAlloc indexAlloc =
-            VulkanMemoryOps.createDeviceLocalBufferWithStaging(
+            VulkanBufferOps.createDeviceLocalBufferWithStaging(
                 device,
                 physicalDevice,
                 commandPool,
@@ -414,8 +372,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
     }
   }
 
-  private PreparedPlan preparePlanForBatch(MemoryStack stack, PlanSizing sizing)
-      throws GpuException {
+  private VulkanUploadValidator.PreparedPlan preparePlanForBatch(
+      MemoryStack stack, PlanSizing sizing) throws GpuException {
     GpuGeometryUploadPlan plan = sizing.plan;
     ByteBuffer vertexBytes = toReusableDirectCopy(plan.vertexData());
     int vertexUsage = toVkBufferUsage(GpuBufferUsage.VERTEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -433,7 +391,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
             vertexLease.releaseAction());
 
     VulkanGpuBuffer indexBuffer = null;
-    CopyOp indexCopy = null;
+    VulkanUploadValidator.CopyOp indexCopy = null;
     if (sizing.hasIndexData) {
       ByteBuffer indexBytes = toReusableDirectCopy(plan.indexData());
       int indexUsage = toVkBufferUsage(GpuBufferUsage.INDEX) | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -450,7 +408,7 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
               GpuMemoryLocation.DEVICE_LOCAL,
               indexLease.releaseAction());
       indexCopy =
-          new CopyOp(
+          new VulkanUploadValidator.CopyOp(
               indexSlice.stagingBuffer(),
               indexSlice.offsetBytes(),
               indexLease.bufferHandle(),
@@ -458,11 +416,11 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
               indexSlice.sizeBytes());
     }
 
-    return new PreparedPlan(
+    return new VulkanUploadValidator.PreparedPlan(
         plan,
         vertexBuffer,
         indexBuffer,
-        new CopyOp(
+        new VulkanUploadValidator.CopyOp(
             vertexSlice.stagingBuffer(),
             vertexSlice.offsetBytes(),
             vertexLease.bufferHandle(),
@@ -472,8 +430,8 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   }
 
   private SubmissionHandles submitCopies(
-      MemoryStack stack, List<PreparedPlan> preparedPlans, boolean waitForCompletion)
-      throws GpuException {
+      MemoryStack stack, List<VulkanUploadValidator.PreparedPlan> preparedPlans,
+      boolean waitForCompletion) throws GpuException {
     VkCommandBufferAllocateInfo allocInfo =
         VkCommandBufferAllocateInfo.calloc(stack)
             .sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
@@ -497,20 +455,20 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
             .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
     int beginResult = vkBeginCommandBuffer(commandBuffer, beginInfo);
     if (beginResult != VK_SUCCESS) {
-      freeCommandBufferQuietly(commandBufferHandle);
+      syncOps.freeCommandBufferQuietly(commandBufferHandle);
       throw vkFailure.apply("vkBeginCommandBuffer(upload-batch)", beginResult);
     }
 
     VkBufferCopy.Buffer copyRegion = VkBufferCopy.calloc(1, stack);
-    for (PreparedPlan preparedPlan : preparedPlans) {
-      recordCopy(commandBuffer, copyRegion, preparedPlan.vertexCopy);
-      if (preparedPlan.indexCopy != null) {
-        recordCopy(commandBuffer, copyRegion, preparedPlan.indexCopy);
+    for (VulkanUploadValidator.PreparedPlan preparedPlan : preparedPlans) {
+      recordCopy(commandBuffer, copyRegion, preparedPlan.vertexCopy());
+      if (preparedPlan.indexCopy() != null) {
+        recordCopy(commandBuffer, copyRegion, preparedPlan.indexCopy());
       }
     }
     int endResult = vkEndCommandBuffer(commandBuffer);
     if (endResult != VK_SUCCESS) {
-      freeCommandBufferQuietly(commandBufferHandle);
+      syncOps.freeCommandBufferQuietly(commandBufferHandle);
       throw vkFailure.apply("vkEndCommandBuffer(upload-batch)", endResult);
     }
 
@@ -521,15 +479,15 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
             .pCommandBuffers(stack.pointers(commandBuffer.address()));
     int submitResult = vkQueueSubmit(graphicsQueue, submitInfo, fenceHandle);
     if (submitResult != VK_SUCCESS) {
-      destroyFenceQuietly(fenceHandle);
-      freeCommandBufferQuietly(commandBufferHandle);
+      syncOps.destroyFenceQuietly(fenceHandle);
+      syncOps.freeCommandBufferQuietly(commandBufferHandle);
       throw vkFailure.apply("vkQueueSubmit(upload-batch)", submitResult);
     }
 
     if (waitForCompletion) {
-      waitFenceOrThrow(fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
-      destroyFenceQuietly(fenceHandle);
-      freeCommandBufferQuietly(commandBufferHandle);
+      syncOps.waitFenceOrThrow(fenceHandle, DEFAULT_FENCE_WAIT_NANOS);
+      syncOps.destroyFenceQuietly(fenceHandle);
+      syncOps.freeCommandBufferQuietly(commandBufferHandle);
       return new SubmissionHandles(VK_NULL_HANDLE, VK_NULL_HANDLE);
     }
     return new SubmissionHandles(commandBufferHandle, fenceHandle);
@@ -549,89 +507,14 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   }
 
   private static void recordCopy(
-      VkCommandBuffer commandBuffer, VkBufferCopy.Buffer copyRegion, CopyOp copy) {
+      VkCommandBuffer commandBuffer, VkBufferCopy.Buffer copyRegion,
+      VulkanUploadValidator.CopyOp copy) {
     copyRegion
         .get(0)
-        .srcOffset(copy.srcOffsetBytes)
-        .dstOffset(copy.dstOffsetBytes)
-        .size(copy.sizeBytes);
-    vkCmdCopyBuffer(commandBuffer, copy.srcBuffer, copy.dstBuffer, copyRegion);
-  }
-
-  private static void validateCopyOps(
-      List<PreparedPlan> preparedPlans,
-      long submissionId,
-      Map<Long, List<Range>> srcRangesByBuffer,
-      Map<Long, List<Range>> dstRangesByBuffer) {
-    clearRanges(srcRangesByBuffer);
-    clearRanges(dstRangesByBuffer);
-    for (PreparedPlan prepared : preparedPlans) {
-      validateCopy(prepared.vertexCopy, srcRangesByBuffer, dstRangesByBuffer, submissionId);
-      if (prepared.indexCopy != null) {
-        validateCopy(prepared.indexCopy, srcRangesByBuffer, dstRangesByBuffer, submissionId);
-      }
-    }
-  }
-
-  private static void clearRanges(Map<Long, List<Range>> rangesByBuffer) {
-    for (List<Range> ranges : rangesByBuffer.values()) {
-      ranges.clear();
-    }
-    rangesByBuffer.clear();
-  }
-
-  private static void validateCopy(
-      CopyOp copy,
-      Map<Long, List<Range>> srcRangesByBuffer,
-      Map<Long, List<Range>> dstRangesByBuffer,
-      long submissionId) {
-    if (copy.sizeBytes <= 0L) {
-      throw new IllegalStateException("Invalid copy sizeBytes=" + copy.sizeBytes + " submissionId=" + submissionId);
-    }
-    if (copy.srcBuffer == copy.dstBuffer) {
-      throw new IllegalStateException(
-          "Source and destination buffers are equal in copy submissionId=" + submissionId + " buffer=" + copy.srcBuffer);
-    }
-    Range srcRange = new Range(copy.srcOffsetBytes, copy.srcOffsetBytes + copy.sizeBytes);
-    Range dstRange = new Range(copy.dstOffsetBytes, copy.dstOffsetBytes + copy.sizeBytes);
-    ensureNoOverlap(srcRangesByBuffer.computeIfAbsent(copy.srcBuffer, unused -> new ArrayList<>()), srcRange, "src", submissionId, copy.srcBuffer);
-    ensureNoOverlap(dstRangesByBuffer.computeIfAbsent(copy.dstBuffer, unused -> new ArrayList<>()), dstRange, "dst", submissionId, copy.dstBuffer);
-    srcRangesByBuffer.get(copy.srcBuffer).add(srcRange);
-    dstRangesByBuffer.get(copy.dstBuffer).add(dstRange);
-    if (DEBUG_UPLOAD) {
-      System.out.println(
-          "[VulkanGpuUploadExecutor] copy submissionId="
-              + submissionId
-              + " srcBuffer="
-              + copy.srcBuffer
-              + " dstBuffer="
-              + copy.dstBuffer
-              + " srcOffset="
-              + copy.srcOffsetBytes
-              + " dstOffset="
-              + copy.dstOffsetBytes
-              + " size="
-              + copy.sizeBytes);
-    }
-  }
-
-  private static void ensureNoOverlap(
-      List<Range> existing, Range candidate, String kind, long submissionId, long bufferHandle) {
-    for (Range range : existing) {
-      if (candidate.overlaps(range)) {
-        throw new IllegalStateException(
-            "Detected "
-                + kind
-                + " overlap for submissionId="
-                + submissionId
-                + " buffer="
-                + bufferHandle
-                + " existing="
-                + range
-                + " candidate="
-                + candidate);
-      }
-    }
+        .srcOffset(copy.srcOffsetBytes())
+        .dstOffset(copy.dstOffsetBytes())
+        .size(copy.sizeBytes());
+    vkCmdCopyBuffer(commandBuffer, copy.srcBuffer(), copy.dstBuffer(), copyRegion);
   }
 
   static int toVkBufferUsage(GpuBufferUsage usage) {
@@ -702,21 +585,11 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
 
   public record DeferredUploadBatch(long submissionId, int planCount, long totalBytes) {}
 
-  private record PreparedPlan(
-      GpuGeometryUploadPlan plan,
-      VulkanGpuBuffer vertexBuffer,
-      VulkanGpuBuffer indexBuffer,
-      CopyOp vertexCopy,
-      CopyOp indexCopy) {}
-
-  private record CopyOp(
-      long srcBuffer, long srcOffsetBytes, long dstBuffer, long dstOffsetBytes, long sizeBytes) {}
-
   private record PendingSubmission(
       long submissionId,
       long commandBufferHandle,
       long fenceHandle,
-      List<PreparedPlan> preparedPlans,
+      List<VulkanUploadValidator.PreparedPlan> preparedPlans,
       long totalBytes) {
     int planCount() {
       return preparedPlans.size();
@@ -724,12 +597,6 @@ public final class VulkanGpuUploadExecutor implements GpuUploadExecutor, AutoClo
   }
 
   private record SubmissionHandles(long commandBufferHandle, long fenceHandle) {}
-
-  private record Range(long startInclusive, long endExclusive) {
-    private boolean overlaps(Range other) {
-      return this.startInclusive < other.endExclusive && other.startInclusive < this.endExclusive;
-    }
-  }
 
   private record PlanSizing(
       GpuGeometryUploadPlan plan,

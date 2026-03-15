@@ -6,7 +6,7 @@ import org.dynamisengine.gpu.api.error.GpuErrorCode;
 import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputPayload;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputResource;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.vulkan.VkDevice;
 
 /**
@@ -17,7 +17,7 @@ public final class VulkanRayTracingBuildInputResolver {
 
   public VulkanRayTracingBuildInputResolver(VkDevice device) {
     Objects.requireNonNull(device, "device");
-    this.deviceAddressResolver = bufferHandle -> VulkanMemoryOps.getBufferDeviceAddress(device, bufferHandle);
+    this.deviceAddressResolver = bufferHandle -> VulkanBufferOps.getBufferDeviceAddress(device, bufferHandle);
   }
 
   VulkanRayTracingBuildInputResolver(LongUnaryOperator deviceAddressResolver) {

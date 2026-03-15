@@ -56,7 +56,7 @@ import org.dynamisengine.gpu.api.resource.GpuRayTracingBuildInputResource;
 import org.dynamisengine.gpu.api.resource.GpuRayTracingGeometryPayload;
 import org.dynamisengine.gpu.vulkan.buffer.VulkanGpuBuffer;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkAccelerationStructureBuildGeometryInfoKHR;
@@ -195,7 +195,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
         }
 
         VulkanBufferAlloc asStorageAlloc =
-            VulkanMemoryOps.createBuffer(
+            VulkanBufferOps.createBuffer(
                 device,
                 physicalDevice,
                 stack,
@@ -205,7 +205,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
                 org.lwjgl.vulkan.VK10.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT);
         VulkanBufferAlloc scratchAlloc =
-            VulkanMemoryOps.createBuffer(
+            VulkanBufferOps.createBuffer(
                 device,
                 physicalDevice,
                 stack,
@@ -246,7 +246,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
           }
           asHandleRef[0] = pAs.get(0);
 
-          long scratchAddress = VulkanMemoryOps.getBufferDeviceAddress(device, scratchAlloc.buffer());
+          long scratchAddress = VulkanBufferOps.getBufferDeviceAddress(device, scratchAlloc.buffer());
           if (scratchAddress == 0L) {
             throw new GpuException(
                 GpuErrorCode.BACKEND_INIT_FAILED,

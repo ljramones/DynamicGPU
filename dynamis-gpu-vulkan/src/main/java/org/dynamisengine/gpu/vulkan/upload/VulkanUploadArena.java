@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkDevice;
@@ -154,7 +154,7 @@ final class VulkanUploadArena implements AutoCloseable {
 
   private void createBackingAllocation(MemoryStack stack, int newCapacityBytes) throws GpuException {
     allocation =
-        VulkanMemoryOps.createBuffer(
+        VulkanBufferOps.createBuffer(
             device,
             physicalDevice,
             stack,

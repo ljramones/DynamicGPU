@@ -15,7 +15,7 @@ import org.dynamisengine.gpu.api.resource.GpuTessellationResource;
 import org.dynamisengine.gpu.api.upload.GpuTessellationUploader;
 import org.dynamisengine.gpu.vulkan.buffer.VulkanGpuBuffer;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
@@ -48,7 +48,7 @@ public final class VulkanTessellationUploader implements GpuTessellationUploader
         payloadBytes -> {
           try (MemoryStack stack = MemoryStack.stackPush()) {
             VulkanBufferAlloc alloc =
-                VulkanMemoryOps.createDeviceLocalBufferWithStaging(
+                VulkanBufferOps.createDeviceLocalBufferWithStaging(
                     device,
                     physicalDevice,
                     commandPool,

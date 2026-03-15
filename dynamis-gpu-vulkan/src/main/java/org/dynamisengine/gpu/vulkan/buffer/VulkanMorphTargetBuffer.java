@@ -7,7 +7,7 @@ import java.util.function.BiFunction;
 import org.dynamisengine.gpu.api.error.GpuErrorCode;
 import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
@@ -67,7 +67,7 @@ public final class VulkanMorphTargetBuffer {
         FloatBuffer fb = source.asFloatBuffer();
         fb.put(packedDeltas);
         source.limit(packedDeltas.length * Float.BYTES);
-        VulkanBufferAlloc alloc = VulkanMemoryOps.createDeviceLocalBufferWithStaging(
+        VulkanBufferAlloc alloc = VulkanBufferOps.createDeviceLocalBufferWithStaging(
                 device,
                 physicalDevice,
                 commandPool,

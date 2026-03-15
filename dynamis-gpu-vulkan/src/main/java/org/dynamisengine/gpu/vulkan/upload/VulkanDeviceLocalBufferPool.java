@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.dynamisengine.gpu.api.error.GpuException;
 import org.dynamisengine.gpu.vulkan.memory.VulkanBufferAlloc;
-import org.dynamisengine.gpu.vulkan.memory.VulkanMemoryOps;
+import org.dynamisengine.gpu.vulkan.memory.VulkanBufferOps;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
@@ -44,7 +44,7 @@ final class VulkanDeviceLocalBufferPool implements AutoCloseable {
     PooledAlloc alloc = free.pollFirst();
     if (alloc == null) {
       VulkanBufferAlloc created =
-          VulkanMemoryOps.createBuffer(
+          VulkanBufferOps.createBuffer(
               device,
               physicalDevice,
               stack,
