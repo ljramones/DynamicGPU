@@ -1,0 +1,103 @@
+=== baseline-verify ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 43, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  12.565 s
+[INFO] Finished at: 2026-11-23T15:55:15-05:00
+=== baseline-vulkan ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 43, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  2.987 s
+[INFO] Finished at: 2026-11-23T15:59:38-05:00
+=== portable-verify ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.043 s -- in org.dynamisengine.gpu.test.compute.MockComputeTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[WARNING] Tests run: 13, Failures: 0, Errors: 0, Skipped: 13, Time elapsed: 0.001 s -- in org.dynamisengine.gpu.vulkan.compute.VulkanComputeTest
+[WARNING] Tests run: 56, Failures: 0, Errors: 0, Skipped: 13
+[WARNING] Tests run: 13, Failures: 0, Errors: 0, Skipped: 13, Time elapsed: 0.004 s -- in org.dynamisengine.gpu.metal.MetalComputeTest
+[WARNING] Tests run: 13, Failures: 0, Errors: 0, Skipped: 13
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  10.263 s
+[INFO] Finished at: 2026-11-23T16:17:20-05:00
+=== final-native ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.048 s -- in org.dynamisengine.gpu.test.compute.MockComputeTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.417 s -- in org.dynamisengine.gpu.vulkan.compute.VulkanComputeTest
+[INFO] Tests run: 56, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.401 s -- in org.dynamisengine.gpu.metal.MetalComputeTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  7.795 s
+[INFO] Finished at: 2026-11-23T16:19:42-05:00
+
+=== example-metal ===
+WARNING: Using incubator modules: jdk.incubator.vector
+kernel=vector-add version=1 executable=MSL_SOURCE
+backend=METAL device=Apple M4 Max id=metal:0:Apple M4 Max
+java=25.0.4 os=Mac OS X 27.0.1 arch=aarch64 elements=131 bytesPerBuffer=524 capabilities=GpuCapabilities[maxBufferBytes=86586540032, maxStorageRange=86586540032, storageOffsetAlignment=16, maxBufferBindings=30, maxParameterBytes=128, maxGroupSize=Dimensions[x=1024, y=1024, z=1024], maxGroupThreads=1024, maxGroupCount=Dimensions[x=2147483647, y=2147483647, z=2147483647], dataTypes=[BOOL, INT32, FP32], shaderFeatures=[], timestamps=false]
+Verified 131 FP32 results from two dependent GPU dispatches.
+
+=== example-vulkan ===
+WARNING: Using incubator modules: jdk.incubator.vector
+kernel=vector-add version=1 executable=SPIRV
+backend=VULKAN device=Apple M4 Max id=vulkan:0:4203:452985353:api=4198734:driver=10401
+java=25.0.4 os=Mac OS X 27.0.1 arch=aarch64 elements=131 bytesPerBuffer=524 capabilities=GpuCapabilities[maxBufferBytes=4294967295, maxStorageRange=4294967295, storageOffsetAlignment=16, maxBufferBindings=31, maxParameterBytes=4096, maxGroupSize=Dimensions[x=1024, y=1024, z=1024], maxGroupThreads=1024, maxGroupCount=Dimensions[x=1073741824, y=1073741824, z=1073741824], dataTypes=[BOOL, INT32, FP32], shaderFeatures=[], timestamps=false]
+Verified 131 FP32 results from two dependent GPU dispatches.
+
+=== benchmark-metal ===
+WARNING: Using incubator modules: jdk.incubator.vector
+kernel=vector-add version=1 executable=MSL_SOURCE
+backend=METAL device=Apple M4 Max id=metal:0:Apple M4 Max
+java=25.0.4 os=Mac OS X 27.0.1 arch=aarch64 elements=262144 bytesPerBuffer=1048576 capabilities=GpuCapabilities[maxBufferBytes=86586540032, maxStorageRange=86586540032, storageOffsetAlignment=16, maxBufferBindings=30, maxParameterBytes=128, maxGroupSize=Dimensions[x=1024, y=1024, z=1024], maxGroupThreads=1024, maxGroupCount=Dimensions[x=2147483647, y=2147483647, z=2147483647], dataTypes=[FP32, INT32, BOOL], shaderFeatures=[], timestamps=false]
+clock=System.nanoTime timing=host-wall gpu-timestamps=false warmup=10
+phase=allocation-and-release median_us=28.250 p95_us=70.667 iterations=100
+phase=empty-submit-call median_us=12.041 p95_us=32.083 iterations=100
+phase=upload-download-complete median_us=850.334 p95_us=966.583 iterations=100
+phase=resident-dispatch-submit-call median_us=51.416 p95_us=126.333 iterations=100
+phase=resident-dispatch-complete median_us=184.209 p95_us=372.584 iterations=100
+
+=== benchmark-vulkan ===
+WARNING: Using incubator modules: jdk.incubator.vector
+kernel=vector-add version=1 executable=SPIRV
+backend=VULKAN device=Apple M4 Max id=vulkan:0:4203:452985353:api=4198734:driver=10401
+java=25.0.4 os=Mac OS X 27.0.1 arch=aarch64 elements=262144 bytesPerBuffer=1048576 capabilities=GpuCapabilities[maxBufferBytes=4294967295, maxStorageRange=4294967295, storageOffsetAlignment=16, maxBufferBindings=31, maxParameterBytes=4096, maxGroupSize=Dimensions[x=1024, y=1024, z=1024], maxGroupThreads=1024, maxGroupCount=Dimensions[x=1073741824, y=1073741824, z=1073741824], dataTypes=[FP32, INT32, BOOL], shaderFeatures=[], timestamps=false]
+clock=System.nanoTime timing=host-wall gpu-timestamps=false warmup=10
+phase=allocation-and-release median_us=78.334 p95_us=266.875 iterations=100
+phase=empty-submit-call median_us=28.792 p95_us=71.667 iterations=100
+phase=upload-download-complete median_us=996.375 p95_us=1196.209 iterations=100
+phase=resident-dispatch-submit-call median_us=92.250 p95_us=182.625 iterations=100
+phase=resident-dispatch-complete median_us=358.375 p95_us=453.125 iterations=100
+
+=== offline-metal ===
+Offline Metal compiler required; install Xcode Metal toolchain.
+
+=== final-vulkan-portable ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.063 s -- in org.dynamisengine.gpu.test.compute.MockComputeTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[WARNING] Tests run: 13, Failures: 0, Errors: 0, Skipped: 13, Time elapsed: 0.002 s -- in org.dynamisengine.gpu.vulkan.compute.VulkanComputeTest
+[WARNING] Tests run: 56, Failures: 0, Errors: 0, Skipped: 13
+[INFO] BUILD SUCCESS
+[INFO] Total time:  2.776 s
+[INFO] Finished at: 2026-11-23T16:26:19-05:00
+
+=== final-clean-native ===
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.052 s -- in org.dynamisengine.gpu.test.compute.MockComputeTest
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.397 s -- in org.dynamisengine.gpu.vulkan.compute.VulkanComputeTest
+[INFO] Tests run: 56, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.396 s -- in org.dynamisengine.gpu.metal.MetalComputeTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  14.024 s
+[INFO] Finished at: 2026-11-23T16:29:32-05:00

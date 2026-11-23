@@ -16,6 +16,7 @@
     <maven.deploy.skip>true</maven.deploy.skip>
   </properties>
   <dependencies>
+    <dependency><groupId>org.dynamisengine</groupId><artifactId>dynamis-gpu-metal</artifactId></dependency>
     <dependency>
       <groupId>org.dynamisengine</groupId>
       <artifactId>dynamis-gpu-api</artifactId>
@@ -41,7 +42,7 @@
     <dependency>
       <groupId>org.lwjgl</groupId>
       <artifactId>lwjgl</artifactId>
-      <classifier>natives-macos-arm64</classifier>
+      <classifier>${lwjgl.natives}</classifier>
       <scope>runtime</scope>
     </dependency>
     <dependency>
@@ -51,12 +52,16 @@
     </dependency>
   </dependencies>
   <build>
+    <resources>
+      <resource><directory>src/main/resources</directory></resource>
+      <resource><directory>${project.basedir}/../dynamis-gpu-test/src/main/resources</directory></resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
-          <argLine>--enable-preview --add-modules jdk.incubator.vector</argLine>
+          <argLine>--enable-preview --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED</argLine>
         </configuration>
       </plugin>
     </plugins>

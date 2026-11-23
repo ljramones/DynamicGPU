@@ -21,18 +21,21 @@
   <modules>
     <module>dynamis-gpu-api</module>
     <module>dynamis-gpu-vulkan</module>
+    <module>dynamis-gpu-metal</module>
     <module>dynamis-gpu-test</module>
     <module>dynamis-gpu-bench</module>
   </modules>
 
   <properties>
-    <java.version>21</java.version>
-    <maven.compiler.source>${java.version}</maven.compiler.source>
-    <maven.compiler.target>${java.version}</maven.compiler.target>
+    <java.version>25</java.version>
+    <maven.compiler.release>${java.version}</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <lwjgl.version>3.4.1</lwjgl.version>
+    <lwjgl.natives>natives-linux</lwjgl.natives>
     <junit.version>5.11.0</junit.version>
     <jmh.version>1.37</jmh.version>
+    <compute.metal.required>false</compute.metal.required>
+    <compute.vulkan.required>false</compute.vulkan.required>
   </properties>
 
   <dependencyManagement>
@@ -59,6 +62,11 @@
       <dependency>
         <groupId>org.dynamisengine</groupId>
         <artifactId>dynamis-gpu-test</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dynamisengine</groupId>
+        <artifactId>dynamis-gpu-metal</artifactId>
         <version>${project.version}</version>
       </dependency>
       <!-- JUnit -->
@@ -88,8 +96,7 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.14.1</version>
         <configuration>
-          <source>${java.version}</source>
-          <target>${java.version}</target>
+          <release>${maven.compiler.release}</release>
         </configuration>
       </plugin>
       <plugin>
@@ -103,7 +110,7 @@
             <configuration>
               <rules>
                 <requireJavaVersion>
-                  <version>[21,)</version>
+                  <version>[25,)</version>
                 </requireJavaVersion>
               </rules>
             </configuration>
@@ -114,6 +121,14 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.4</version>
+        <configuration>
+          <useModulePath>false</useModulePath>
+          <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+          <systemPropertyVariables>
+            <compute.metal.required>${compute.metal.required}</compute.metal.required>
+            <compute.vulkan.required>${compute.vulkan.required}</compute.vulkan.required>
+          </systemPropertyVariables>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -125,4 +140,42 @@
       </plugin>
     </plugins>
   </build>
+  <profiles>
+    <profile>
+      <id>mac-arm64</id>
+      <activation>
+        <os><family>mac</family><arch>aarch64</arch></os>
+      </activation>
+      <properties><lwjgl.natives>natives-macos-arm64</lwjgl.natives></properties>
+    </profile>
+    <profile>
+      <id>mac-x64</id>
+      <activation>
+        <os><family>mac</family><arch>x86_64</arch></os>
+      </activation>
+      <properties><lwjgl.natives>natives-macos</lwjgl.natives></properties>
+    </profile>
+    <profile>
+      <id>linux-arm64</id>
+      <activation>
+        <os><family>unix</family><arch>aarch64</arch><name>Linux</name></os>
+      </activation>
+      <properties><lwjgl.natives>natives-linux-arm64</lwjgl.natives></properties>
+    </profile>
+    <profile>
+      <id>windows-x64</id>
+      <activation>
+        <os><family>windows</family><arch>amd64</arch></os>
+      </activation>
+      <properties><lwjgl.natives>natives-windows</lwjgl.natives></properties>
+    </profile>
+    <profile>
+      <id>metal-hardware</id>
+      <properties><compute.metal.required>true</compute.metal.required></properties>
+    </profile>
+    <profile>
+      <id>vulkan-hardware</id>
+      <properties><compute.vulkan.required>true</compute.vulkan.required></properties>
+    </profile>
+  </profiles>
 </project>

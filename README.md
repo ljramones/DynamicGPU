@@ -1,10 +1,11 @@
 # DynamisGPU
 
-Backend-neutral GPU abstraction and Vulkan runtime upload implementation for Dynamis Engine.
+Headless compute for native Metal and Vulkan, plus Vulkan geometry upload services for Dynamis Engine. Requires JDK 25.
 
 ## Modules
 - `dynamis-gpu-api`: public GPU contracts (`org.dynamisengine.gpu.api`)
-- `dynamis-gpu-vulkan`: LWJGL/Vulkan backend (`org.dynamisengine.gpu.vulkan`)
+- `dynamis-gpu-vulkan`: LWJGL/Vulkan graphics and headless compute backend
+- `dynamis-gpu-metal`: native Metal backend using JDK 25 FFM and a versioned C bridge
 - `dynamis-gpu-test`: mock/testing implementations
 - `dynamis-gpu-bench`: ingestion and benchmark runners
 
@@ -21,6 +22,33 @@ Useful module-scoped commands:
 mvn -pl dynamis-gpu-vulkan -am test
 mvn -pl dynamis-gpu-bench -am package
 ```
+
+## Headless Compute
+
+The `api.compute` contracts provide explicit provider/device selection, shared and
+private buffers, retained slices, ordered command encoders, compute pipelines,
+validated bindings, submissions, and bounded waits. Existing graphics APIs remain
+compatible. Neither a swapchain nor a render frame is needed.
+
+```sh
+# macOS native Metal build and required hardware tests
+mvn -pl dynamis-gpu-metal -am -Pmetal-native,metal-hardware test
+# Required Vulkan hardware tests (configure the Vulkan loader/driver if needed)
+mvn -pl dynamis-gpu-vulkan -am -Pvulkan-hardware test
+# Build locally, then run the same example with either backend
+mvn -Pmetal-native install
+sh scripts/run-compute.sh example metal 0 131
+sh scripts/run-compute.sh example vulkan 0 131
+sh scripts/run-compute.sh benchmark metal 262144 100
+```
+
+Ordinary builds skip hardware tests explicitly and do not compile Metal sources.
+Native applications need `--enable-native-access=ALL-UNNAMED` on the class path.
+The example verifies two dependent GPU dispatches with a single final readback.
+See the [compute runtime guide](docs/compute-runtime.md) for the shader ABI,
+resource lifetimes, native packaging, exact SDK configuration, platform support,
+and NeuralNetworks adapter handoff. See the [implementation record](docs/compute-implementation-record.md)
+for actual hardware results and remaining validation.
 
 ## Runtime Geometry Upload Path
 Current canonical flow:

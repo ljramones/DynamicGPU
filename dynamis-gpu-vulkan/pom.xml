@@ -24,11 +24,11 @@
       <groupId>org.lwjgl</groupId>
       <artifactId>lwjgl-vulkan</artifactId>
     </dependency>
-    <!-- macOS arm64 natives — add other classifiers as needed -->
+    <!-- Host classifier selected by parent OS/architecture profiles. -->
     <dependency>
       <groupId>org.lwjgl</groupId>
       <artifactId>lwjgl</artifactId>
-      <classifier>natives-macos-arm64</classifier>
+      <classifier>${lwjgl.natives}</classifier>
       <scope>runtime</scope>
     </dependency>
     <dependency>
