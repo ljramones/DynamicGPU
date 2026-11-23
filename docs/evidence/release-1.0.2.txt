@@ -1,0 +1,36 @@
+DynamisGPU 1.0.2 release verification
+Distribution: GitHub release + local Maven; no Maven Central publication.
+
+Release build: sh scripts/package-release.sh -Ddynamisgpu.vk.loader=<installed Vulkan SDK loader>
+Required profiles: metal-native,metal-hardware,vulkan-hardware; Central release profile disabled.
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 56, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  9.535 s
+[INFO] Finished at: 2026-11-23T16:46:21-05:00
+Packaged /Users/larrymitchell/Dynamis/Layer2-Geometry-Animation/DynamisGPU/target/release/dynamisgpu-1.0.2-maven.zip; native bridge: native/macos-arm64/libdynamis_metal.dylib
+
+Bundle installer: passed outside any Maven project with a fresh isolated Maven cache.
+Consumer: independent Maven project using only version 1.0.2 API/Metal/Vulkan dependencies.
+[INFO] +- org.dynamisengine:dynamis-gpu-api:jar:1.0.2:compile
+[INFO] +- org.dynamisengine:dynamis-gpu-metal:jar:1.0.2:compile
+[INFO] \- org.dynamisengine:dynamis-gpu-vulkan:jar:1.0.2:compile
+[INFO]    +- org.lwjgl:lwjgl:jar:3.4.1:compile
+[INFO]    +- org.lwjgl:lwjgl-vulkan:jar:3.4.1:compile
+[INFO]    \- org.lwjgl:lwjgl:jar:natives-macos-arm64:3.4.1:runtime
+[INFO] BUILD SUCCESS
+[INFO] Total time:  6.694 s
+[INFO] Finished at: 2026-11-23T16:48:17-05:00
+
+Release 1.0.2 independent consumer: backend=METAL device=Apple M4 Max verified=131 dependentDispatches=2
+Release 1.0.2 independent consumer: backend=VULKAN device=Apple M4 Max verified=131 dependentDispatches=2
+
+SHA-256 release assets:
+1c611eebdbea93a730404aab86f1bf538c0427a4802d062f7aa39e1e0a46da51  dynamisgpu-1.0.2-maven.zip
+c304b34707f4c236e0faa4ac015182237654cc99a561adc9866a308f2c57495f  dynamis-gpu-api-1.0.2.jar
+26c5f60ee78b22004c99345f5a9048f8f71e73b0a7f452205d52488543c6b131  dynamis-gpu-test-1.0.2.jar
+dd063053dae2ab55d785bf6f21835ed73e6b87931fe1eebc021e4dbea95c4482  dynamis-gpu-vulkan-1.0.2.jar
+9787281d9a42f1d379f0d9652bf5c69f4aa4849f82be642a06bd44a509d8b7d2  dynamis-gpu-metal-1.0.2.jar
