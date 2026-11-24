@@ -75,6 +75,40 @@ public final class ComputeDevice implements GpuDevice {
         return new Pipeline(new Resource(driver.pipeline(descriptor), true), descriptor);
     }
     @Override public GpuCommandEncoder encoder() { check(); return new Encoder(); }
+    @Override public GpuFence fence() { check(); return new Fence(driver.fence()); }
+
+    /** A timeline fence; pending submissions that wait on or signal it keep its native object alive. */
+    private final class Fence implements GpuFence {
+        final Object nativeObject;
+        int users;
+        boolean closed;
+        Fence(Object nativeObject) { this.nativeObject = nativeObject; handles.add(this); }
+        void valid() { check(); if (closed) throw new ComputeException(CLOSED, "Fence is closed"); }
+        @Override public long value() { valid(); return driver.fenceValue(nativeObject); }
+        @Override public void signal(long value) {
+            valid(); require(value >= driver.fenceValue(nativeObject), "Fence values only grow"); driver.signalFence(nativeObject, value);
+        }
+        @Override public boolean await(long value, Duration timeout) {
+            valid(); long budget; try { budget = timeout.toNanos(); } catch (ArithmeticException ex) { budget = Long.MAX_VALUE; }
+            long start = System.nanoTime();
+            while (driver.fenceValue(nativeObject) < value) {
+                long left = budget - (System.nanoTime() - start);
+                if (left <= 0) return false;
+                driver.awaitFence(nativeObject, value, Math.min(left, 10_000_000L));
+                progress();
+            }
+            return true;
+        }
+        void retain() { users++; }
+        void release() { if (--users == 0 && closed) driver.releaseFence(nativeObject); }
+        @Override public void close() { thread(); if (!closed) { closed = true; handles.remove(this); if (users == 0) driver.releaseFence(nativeObject); } }
+    }
+    private Fence fence(GpuFence fence) {
+        require(fence instanceof ComputeDevice.Fence f && !f.closed && handles.contains(fence), "Foreign or closed fence");
+        return (Fence) fence;
+    }
+    private record FenceUse(Fence fence, long value) { FenceOp op() { return new FenceOp(fence.nativeObject, value); } }
+    private static List<FenceOp> ops(List<FenceUse> uses) { return uses.stream().map(FenceUse::op).toList(); }
     @Override public GpuQueue queue() {
         check();
         return new GpuQueue() {
@@ -176,6 +210,7 @@ public final class ComputeDevice implements GpuDevice {
         final List<GpuReadback> errorChecks = new ArrayList<>();
         boolean consumed, profile;
         String label = "", name = "";
+        final List<FenceUse> waits = new ArrayList<>(), signals = new ArrayList<>();
         /** The effective label of each dispatch, in order. */
         final List<String> dispatchLabels = new ArrayList<>();
         Encoder() { handles.add(this); }
@@ -240,6 +275,8 @@ public final class ComputeDevice implements GpuDevice {
         @Override public GpuCommandEncoder profile() { valid(); profile = true; return this; }
         @Override public GpuCommandEncoder label(String label) { valid(); this.label = label == null ? "" : label; return this; }
         @Override public GpuCommandEncoder name(String name) { valid(); this.name = name == null ? "" : name; return this; }
+        @Override public GpuCommandEncoder waitFor(GpuFence f, long value) { valid(); waits.add(new FenceUse(fence(f), value)); return this; }
+        @Override public GpuCommandEncoder signal(GpuFence f, long value) { valid(); signals.add(new FenceUse(fence(f), value)); return this; }
         void release() { for (var r : used) { r.recorded--; r.release(); } used.clear(); }
         @Override public GpuRecording record() {
             valid();
@@ -264,7 +301,8 @@ public final class ComputeDevice implements GpuDevice {
         require(encoder instanceof ComputeDevice.Encoder && handles.contains(encoder), "Foreign or consumed encoder");
         Encoder e = (Encoder) encoder; e.valid();
         Job job;
-        try { job = driver.submit(List.copyOf(e.commands), e.profile); }
+        var fences = new ArrayList<Fence>(); e.waits.forEach(u -> fences.add(u.fence())); e.signals.forEach(u -> fences.add(u.fence()));
+        try { job = driver.submit(List.copyOf(e.commands), e.profile, ops(e.waits), ops(e.signals)); }
         catch (RuntimeException ex) {
             var reads = e.commands.stream().filter(c -> c instanceof Download).map(c -> ((Download) c).result()).toList();
             e.close();
@@ -275,7 +313,8 @@ public final class ComputeDevice implements GpuDevice {
             throw ex;
         }
         e.consumed = true; handles.remove(e);
-        Submission submission = new Submission(e.errorChecks, e.commands, () -> { e.release(); e.commands.clear(); }, job);
+        fences.forEach(Fence::retain);
+        Submission submission = new Submission(e.errorChecks, e.commands, () -> { e.release(); e.commands.clear(); fences.forEach(Fence::release); }, job);
         submission.name = e.name; submission.labels = List.copyOf(e.dispatchLabels); submission.transferBytes = transferBytes(e.commands);
         submittedCount++; pending.add(submission); return submission;
     }
@@ -361,8 +400,9 @@ public final class ComputeDevice implements GpuDevice {
         final String name;
         final List<String> labels;
         Object tag;
+        List<FenceUse> waits, signals;
         Recording(Encoder e) {
-            name = e.name; labels = List.copyOf(e.dispatchLabels);
+            name = e.name; labels = List.copyOf(e.dispatchLabels); waits = List.copyOf(e.waits); signals = List.copyOf(e.signals);
             commands = new ArrayList<>(e.commands); commandResources = new ArrayList<>(e.commandResources);
             for (var rs : commandResources) for (var r : rs) counts.merge(r, 1, Integer::sum);
             for (var r : e.used) if (!counts.containsKey(r)) r.release(); // never the case; keeps the books exact
@@ -386,6 +426,8 @@ public final class ComputeDevice implements GpuDevice {
         @Override public String name() { return name; }
         @Override public Object tag() { return tag; }
         @Override public GpuRecording tag(Object tag) { valid(); this.tag = tag; return this; }
+        @Override public GpuRecording waitFor(GpuFence f, long value) { valid(); waits = f == null ? List.of() : List.of(new FenceUse(fence(f), value)); return this; }
+        @Override public GpuRecording signal(GpuFence f, long value) { valid(); signals = f == null ? List.of() : List.of(new FenceUse(fence(f), value)); return this; }
         @Override public GpuRecording parameters(int dispatch, byte[] parameters) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
             require(parameters.length == d.descriptor().layout().parameterBytes(), "Scalar parameter byte count differs from layout");
@@ -436,13 +478,15 @@ public final class ComputeDevice implements GpuDevice {
         for (var res : inUse) require(!res.mapped, "A buffer of the recording is mapped; close the mapping before submitting");
         for (var res : inUse) res.recorded++;
         Job job;
-        try { job = driver.submit(r.prepared, List.copyOf(r.commands)); }
+        var fences = new ArrayList<Fence>(); r.waits.forEach(u -> fences.add(u.fence())); r.signals.forEach(u -> fences.add(u.fence()));
+        try { job = driver.submit(r.prepared, List.copyOf(r.commands), ops(r.waits), ops(r.signals)); }
         catch (RuntimeException ex) {
             for (var res : inUse) res.recorded--;
             if (ex instanceof ComputeException error && error.code() == DEVICE_LOST) queueFailure = error;
             throw ex;
         }
-        Submission submission = new Submission(List.of(), List.of(), () -> { for (var res : inUse) res.recorded--; }, job);
+        fences.forEach(Fence::retain);
+        Submission submission = new Submission(List.of(), List.of(), () -> { for (var res : inUse) res.recorded--; fences.forEach(Fence::release); }, job);
         submission.name = r.name; submission.labels = r.labels; submission.transferBytes = transferBytes(r.commands);
         submittedCount++; r.running = submission; pending.add(submission); return submission;
     }

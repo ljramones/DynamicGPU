@@ -7,6 +7,13 @@
 struct DGDevice { id<MTLDevice> device; id<MTLCommandQueue> queue; };
 struct DGBuffer { id<MTLBuffer> buffer; };
 struct DGPipeline { id<MTLComputePipelineState> pipeline; };
+// ABI 5: timeline fences as MTLSharedEvents. Host waits use a shared event listener and a semaphore, not polling.
+typedef struct DGEvent { id<MTLSharedEvent> event; } DGEvent;
+static MTLSharedEventListener *listener(void) {
+    static MTLSharedEventListener *shared = nil; static dispatch_once_t once;
+    dispatch_once(&once, ^{ shared = [[MTLSharedEventListener alloc] init]; });
+    return shared;
+}
 struct DGBatch {
     DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; dispatch_semaphore_t done; int completed;
     // per-dispatch timing (dg_batch_profile): a counter sample pair per dispatch, and CPU/GPU clock samples at commit
@@ -44,6 +51,21 @@ END(-1) }
 int dg_device_memory(DGDevice *d, uint64_t *out) { START
     out[0] = d->device.recommendedMaxWorkingSetSize; out[1] = d->device.currentAllocatedSize; return 0;
 END(-1) }
+DGEvent *dg_event_create(DGDevice *d) { START
+    DGEvent *e = calloc(1, sizeof(*e)); if (!e) { error(@"event allocation failed"); return NULL; }
+    e->event = [d->device newSharedEvent]; if (!e->event) { free(e); error(@"newSharedEvent failed"); return NULL; }
+    e->event.signaledValue = 0; return e;
+END(NULL) }
+uint64_t dg_event_value(DGEvent *e) { START return e->event.signaledValue; END(0) }
+int dg_event_signal(DGEvent *e, uint64_t value) { START e->event.signaledValue = value; return 0; END(-1) }
+int dg_event_wait(DGEvent *e, uint64_t value, int64_t nanos) { START
+    if (e->event.signaledValue >= value) return 1;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0); dispatch_retain(sem);   // one reference for the handler
+    [e->event notifyListener:listener() atValue:value block:^(id<MTLSharedEvent> ev, uint64_t v) { (void) ev; (void) v; dispatch_semaphore_signal(sem); dispatch_release(sem); }];
+    long r = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, nanos)); dispatch_release(sem);
+    return r == 0 || e->event.signaledValue >= value ? 1 : 0;
+END(-1) }
+void dg_event_release(DGEvent *e) { START if (e) { [e->event release]; free(e); } END() }
 void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->device release]; free(d); } END() }
 DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { START
     id<MTLBuffer> b = [d->device newBufferWithLength:bytes options:privateStorage ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared];
@@ -93,6 +115,9 @@ END(NULL) }
 // Consecutive dispatches share one compute encoder (serial dispatch: each completes, and its writes are visible,
 // before the next begins); it is ended before a blit and at commit. One encoder per dispatch cost the GPU ~4 us each.
 static void end_compute(DGBatch *b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; b->encoder = nil; } }
+// Waits are encoded before the batch's first command; signals just before commit.
+int dg_batch_wait_event(DGBatch *b, DGEvent *e, uint64_t value) { START end_compute(b); [b->command encodeWaitForEvent:e->event value:value]; return 0; END(-1) }
+int dg_batch_signal_event(DGBatch *b, DGEvent *e, uint64_t value) { START end_compute(b); [b->command encodeSignalEvent:e->event value:value]; return 0; END(-1) }
 int dg_copy(DGBatch *b, DGBuffer *src, uint64_t so, DGBuffer *dst, uint64_t off, uint64_t bytes) { START
     end_compute(b);
     id<MTLBlitCommandEncoder> e = [b->command blitCommandEncoder]; if (!e) { error(@"Blit encoder unavailable"); return -1; }

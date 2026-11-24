@@ -17,7 +17,7 @@ import static org.lwjgl.vulkan.VK11.*;
  */
 record VulkanFeatures(boolean int64, boolean int16, boolean float64, boolean storage16, boolean float16, boolean int8,
         boolean storage8, boolean int64Atomics, boolean float32AtomicAdd, int subgroupOperations, int minSubgroupSize,
-        int maxSubgroupSize, boolean vulkan12) {
+        int maxSubgroupSize, boolean vulkan12, boolean timelineSemaphore) {
     static final String ATOMIC_FLOAT = "VK_EXT_shader_atomic_float";
     private static final String SIZE_CONTROL = "VK_EXT_subgroup_size_control";
 
@@ -60,7 +60,7 @@ record VulkanFeatures(boolean int64, boolean int16, boolean float64, boolean sto
             return new VulkanFeatures(core.shaderInt64(), core.shaderInt16(), core.shaderFloat64(), storage16,
                     v12 && f12.shaderFloat16(), v12 && f12.shaderInt8(), storage8,
                     v12 && f12.shaderBufferInt64Atomics(), atomicFloat && af.shaderBufferFloat32AtomicAdd(),
-                    operations, min, max, v12);
+                    operations, min, max, v12, v12 && f12.timelineSemaphore());
         }
     }
 
@@ -103,7 +103,7 @@ record VulkanFeatures(boolean int64, boolean int16, boolean float64, boolean sto
         if (vulkan12) {
             var f12 = VkPhysicalDeviceVulkan12Features.calloc(stack).sType$Default().pNext(next).shaderFloat16(float16)
                     .shaderInt8(int8).storageBuffer8BitAccess(storage8).uniformAndStorageBuffer8BitAccess(storage8)
-                    .shaderBufferInt64Atomics(int64Atomics);
+                    .shaderBufferInt64Atomics(int64Atomics).timelineSemaphore(timelineSemaphore);
             var f11 = VkPhysicalDeviceVulkan11Features.calloc(stack).sType$Default().pNext(f12.address())
                     .storageBuffer16BitAccess(storage16).uniformAndStorageBuffer16BitAccess(storage16);
             next = f11.address();

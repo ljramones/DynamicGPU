@@ -22,6 +22,14 @@ public interface GpuCommandEncoder extends AutoCloseable {
      * in {@link GpuSubmission#dispatchTimings()}, for example {@code "prefill"} or {@code "decode"}. @since 1.6.0
      */
     default GpuCommandEncoder label(String label) { return this; }
+    /** Makes the submission wait, before its first command, until {@code fence} reaches {@code value}. @since 1.6.0 */
+    default GpuCommandEncoder waitFor(GpuFence fence, long value) {
+        throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here");
+    }
+    /** Sets {@code fence} to {@code value} once the submission's commands complete. @since 1.6.0 */
+    default GpuCommandEncoder signal(GpuFence fence, long value) {
+        throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here");
+    }
     /** Names the submission or recording this encoder becomes ({@link GpuSubmission#name()}). @since 1.6.0 */
     default GpuCommandEncoder name(String name) { return this; }
     /**

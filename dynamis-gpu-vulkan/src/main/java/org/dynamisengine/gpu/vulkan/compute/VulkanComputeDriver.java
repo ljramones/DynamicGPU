@@ -387,7 +387,8 @@ final class VulkanComputeDriver implements ComputeDriver {
         }
 
         /** Brings the batch up to date with {@code commands} (new parameters or bindings) and submits it. */
-        Job submit(List<Command> commands, boolean oneShot) {
+        Job submit(List<Command> commands, boolean oneShot) { return submit(commands, oneShot, List.of(), List.of()); }
+        Job submit(List<Command> commands, boolean oneShot, List<FenceOp> waits, List<FenceOp> signals) {
             if (recorded != null && !commands.equals(recorded)) {
                 boolean rerecord = false;
                 for (int i = 0; i < commands.size(); i++) {
@@ -403,6 +404,16 @@ final class VulkanComputeDriver implements ComputeDriver {
             try (var stack = MemoryStack.stackPush()) {
                 check(vkResetFences(device, fence), "reset submission fence");
                 var submit = VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd.address()));
+                if (!waits.isEmpty() || !signals.isEmpty()) {
+                    var waitSemaphores = stack.mallocLong(waits.size()); var waitValues = stack.mallocLong(waits.size()); var stages = stack.mallocInt(waits.size());
+                    for (var w : waits) { waitSemaphores.put((Long) w.fence()); waitValues.put(w.value()); stages.put(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT); }
+                    var signalSemaphores = stack.mallocLong(signals.size()); var signalValues = stack.mallocLong(signals.size());
+                    for (var g : signals) { signalSemaphores.put((Long) g.fence()); signalValues.put(g.value()); }
+                    waitSemaphores.flip(); waitValues.flip(); stages.flip(); signalSemaphores.flip(); signalValues.flip();
+                    var timeline = VkTimelineSemaphoreSubmitInfo.calloc(stack).sType$Default().pWaitSemaphoreValues(waitValues).pSignalSemaphoreValues(signalValues);
+                    submit.pNext(timeline.address()).waitSemaphoreCount(waits.size()).pWaitSemaphores(waitSemaphores).pWaitDstStageMask(stages)
+                            .pSignalSemaphores(signalSemaphores);
+                }
                 check(vkQueueSubmit(queue, submit, fence), "submit compute commands");
             }
             return new Job() {
@@ -449,6 +460,40 @@ final class VulkanComputeDriver implements ComputeDriver {
     }
 
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
+    @Override public Job submit(List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        var batch = new Batch(commands, profile);
+        try { return batch.submit(commands, true, waits, signals); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
+    }
+    @Override public Job submit(Prepared prepared, List<Command> commands, List<FenceOp> waits, List<FenceOp> signals) {
+        return ((Batch) prepared).submit(commands, false, waits, signals);
+    }
+    // Fences: timeline semaphores (Vulkan 1.2 timelineSemaphore).
+    @Override public Object fence() {
+        if (!features.timelineSemaphore()) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "this Vulkan device has no timeline semaphores");
+        try (var stack = MemoryStack.stackPush()) {
+            var type = VkSemaphoreTypeCreateInfo.calloc(stack).sType$Default().semaphoreType(VK12.VK_SEMAPHORE_TYPE_TIMELINE).initialValue(0);
+            var info = VkSemaphoreCreateInfo.calloc(stack).sType$Default().pNext(type.address());
+            var out = stack.mallocLong(1); check(vkCreateSemaphore(device, info, null, out), "create timeline semaphore"); return out.get(0);
+        }
+    }
+    @Override public long fenceValue(Object fence) {
+        try (var stack = MemoryStack.stackPush()) {
+            var out = stack.mallocLong(1); check(VK12.vkGetSemaphoreCounterValue(device, (Long) fence, out), "read timeline semaphore"); return out.get(0);
+        }
+    }
+    @Override public void signalFence(Object fence, long value) {
+        try (var stack = MemoryStack.stackPush()) {
+            check(VK12.vkSignalSemaphore(device, VkSemaphoreSignalInfo.calloc(stack).sType$Default().semaphore((Long) fence).value(value)), "signal timeline semaphore");
+        }
+    }
+    @Override public boolean awaitFence(Object fence, long value, long nanos) {
+        try (var stack = MemoryStack.stackPush()) {
+            var info = VkSemaphoreWaitInfo.calloc(stack).sType$Default().semaphoreCount(1).pSemaphores(stack.longs((Long) fence)).pValues(stack.longs(value));
+            int r = VK12.vkWaitSemaphores(device, info, Math.max(0, nanos));
+            if (r == VK_TIMEOUT) return false; check(r, "wait for timeline semaphore"); return true;
+        }
+    }
+    @Override public void releaseFence(Object fence) { vkDestroySemaphore(device, (Long) fence, null); }
     @Override public Job submit(List<Command> commands, boolean profile) {
         var batch = new Batch(commands, profile);
         try { return batch.submit(commands, true); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }

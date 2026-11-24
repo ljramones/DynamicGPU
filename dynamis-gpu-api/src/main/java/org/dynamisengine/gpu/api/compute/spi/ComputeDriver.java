@@ -41,6 +41,25 @@ public interface ComputeDriver extends AutoCloseable {
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
     Job submit(List<Command> commands);
+    /** A fence operation of a submission: wait for, or signal, {@code value} on a driver fence. */
+    record FenceOp(Object fence, long value) { }
+    /** A new timeline fence at 0, or UNSUPPORTED. */
+    default Object fence() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported by this backend"); }
+    default long fenceValue(Object fence) { throw new UnsupportedOperationException(); }
+    default void signalFence(Object fence, long value) { throw new UnsupportedOperationException(); }
+    /** Blocks until the fence reaches {@code value} or {@code nanos} pass; true if it did. */
+    default boolean awaitFence(Object fence, long value, long nanos) { throw new UnsupportedOperationException(); }
+    default void releaseFence(Object fence) { }
+    /** Submits with fence waits (before the first command) and signals (after the last). */
+    default Job submit(List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        if (!waits.isEmpty() || !signals.isEmpty()) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported by this backend");
+        return submit(commands, profile);
+    }
+    /** As {@link #submit(Prepared, List)}, with fence waits and signals. */
+    default Job submit(Prepared prepared, List<Command> commands, List<FenceOp> waits, List<FenceOp> signals) {
+        if (!waits.isEmpty() || !signals.isEmpty()) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported by this backend");
+        return submit(prepared, commands);
+    }
     /** Submits {@code commands}, timing each dispatch when {@code profile} (see {@link Job#dispatchNanos()}). */
     default Job submit(List<Command> commands, boolean profile) { return submit(commands); }
     /**

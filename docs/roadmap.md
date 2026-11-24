@@ -109,7 +109,7 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 ### 1.6: Runtime II, queues and synchronization
 
 **Progress (branch `feat/runtime-queues`):** labels, names, tags, memory classes, queue counters and backend debug
-labels are done. Next come queues and synchronization.
+labels are done. So are timeline fences (`GpuFence`). Next come multiple queues.
 
 **First, observability for cost models** (from the token-efficiency review, 2026-11-24). The runtime provides generic
 hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers above.

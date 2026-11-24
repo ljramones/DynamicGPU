@@ -7,6 +7,8 @@ public interface GpuDevice extends AutoCloseable {
     GpuComputePipeline pipeline(PipelineDescriptor descriptor);
     GpuCommandEncoder encoder();
     GpuQueue queue();
+    /** A new timeline fence starting at 0 (see {@link GpuFence}); UNSUPPORTED where the backend has none. @since 1.6.0 */
+    default GpuFence fence() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here"); }
     /**
      * The device's buffer memory: blocks held, bytes used, live allocations, and driver allocations so far. Buffers
      * are sub-allocated from pooled blocks, so {@code blockAllocations} grows far slower than the number of buffers.

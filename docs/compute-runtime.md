@@ -259,6 +259,17 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Timeline fences (1.6.0).** `GpuDevice.fence()` makes a `GpuFence`: a 64-bit value that only grows.
+- **On the GPU:** `encoder.waitFor(fence, v)` holds a submission, before its first command, until the value reaches
+  `v`; `encoder.signal(fence, v)` sets it once the commands complete.
+- **On the host:** `value()` reads without blocking, `signal(v)` sets it, and `await(v, timeout)` blocks without
+  polling.
+- **Recordings:** `waitFor` and `signal` set the values for their next runs, because a timeline value is used once.
+- **Backends:** Vulkan timeline semaphores (`timelineSemaphore`, enabled where supported); Metal `MTLSharedEvent`
+  with an event listener for host waits (`dg_event_*`, bridge ABI 5). The mock has none (`UNSUPPORTED`).
+- **Caution:** a submission that waits for a value nobody signals never runs. Closing the device then times out, so
+  pair every wait with a signal.
+
 **Observability for cost models (1.6.0).** These are host-side hooks, so reading them never waits for the device.
 - **Labels:**
   - `encoder.label("decode")` labels the dispatches that follow.

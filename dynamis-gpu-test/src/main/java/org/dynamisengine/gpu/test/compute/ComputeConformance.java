@@ -342,6 +342,47 @@ public abstract class ComputeConformance {
         assertNull(device.memoryByLabel().get("kv"), "the memory class empties when its buffers close");
     }
 
+    /**
+     * Timeline fences: host reads, signals and waits; a submission that waits for a value stays pending until the
+     * host signals it; a submission's signal reaches the host; recordings take new values per run.
+     */
+    @Test void fencesOrderWorkWithoutTheHost() throws InterruptedException {
+        GpuFence f;
+        try { f = device.fence(); }
+        catch (ComputeException e) { assertEquals(ComputeException.Code.UNSUPPORTED, e.code()); System.out.println("fences: none on " + device.adapter().name()); return; }
+        try (f; var buf = buffer(256, Placement.PRIVATE)) {
+            assertEquals(0, f.value());
+            f.signal(5); assertEquals(5, f.value());
+            assertTrue(f.await(5, WAIT)); assertFalse(f.await(6, Duration.ofMillis(20)));
+            assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> f.signal(3)).code());
+            // the GPU waits for the host
+            GpuSubmission s; GpuReadback r;
+            try (var e = device.encoder()) {
+                e.waitFor(f, 6).fill(buf, 7); r = e.download(buf); s = device.queue().submit(e);
+            }
+            Thread.sleep(50);
+            assertEquals(GpuSubmission.Status.PENDING, s.status(), "the submission waits for fence value 6");
+            f.signal(6); await(s);
+            assertEquals(7, ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder()).getInt(0));
+            // the GPU signals the host
+            try (var e = device.encoder()) { e.fill(buf, 8).signal(f, 10); s = device.queue().submit(e); }
+            assertTrue(f.await(10, WAIT), "the submission's signal reaches the host"); assertTrue(f.value() >= 10); await(s);
+            // recordings take new values per run
+            GpuRecording rec;
+            try (var e = device.encoder()) { e.fill(buf, 9); rec = e.record(); }
+            try (rec) {
+                for (long v = 11; v <= 13; v++) {
+                    rec.signal(f, v); var run = device.queue().submit(rec);
+                    assertTrue(f.await(v, WAIT)); await(run);
+                }
+                rec.signal(null, 0).waitFor(f, 14);
+                var run = device.queue().submit(rec);
+                Thread.sleep(30); assertEquals(GpuSubmission.Status.PENDING, run.status(), "the recording waits for 14");
+                f.signal(14); await(run);
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

@@ -92,10 +92,26 @@ final class MetalDriver implements ComputeDriver {
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
     @Override public Job submit(List<Command> commands, boolean profile) {
         int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
-        return submitBatch(commands, profile ? dispatches : 0);
+        return submitBatch(commands, profile ? dispatches : 0, List.of(), List.of());
     }
-    private Job submitBatch(List<Command> commands, int profiled) {
+    @Override public Job submit(List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
+        return submitBatch(commands, profile ? dispatches : 0, waits, signals);
+    }
+    @Override public Job submit(Prepared prepared, List<Command> commands, List<FenceOp> waits, List<FenceOp> signals) {
+        return submit(commands, prepared instanceof Unprepared u && u.profile(), waits, signals);
+    }
+    // Fences: MTLSharedEvents through the bridge.
+    @Override public Object fence() { return n.pointer("dg_event_create", device); }
+    @Override public long fenceValue(Object fence) { return n.number("dg_event_value", (MemorySegment) fence); }
+    @Override public void signalFence(Object fence, long value) { n.check("dg_event_signal", (MemorySegment) fence, value); }
+    @Override public boolean awaitFence(Object fence, long value, long nanos) {
+        int r = n.integer("dg_event_wait", (MemorySegment) fence, value, nanos); if (r < 0) throw n.error("event wait"); return r == 1;
+    }
+    @Override public void releaseFence(Object fence) { n.release("dg_event_release", (MemorySegment) fence); }
+    private Job submitBatch(List<Command> commands, int profiled, List<FenceOp> waits, List<FenceOp> signals) {
         var batch = n.pointer("dg_batch_create", device);
+        for (var w : waits) n.check("dg_batch_wait_event", batch, (MemorySegment) w.fence(), w.value());
         // a device without stage-boundary counters runs unprofiled
         final int timed = profiled > 0 && n.integer("dg_batch_profile", batch, profiled) == 0 ? profiled : 0;
         List<MetalBuffer> stages = new ArrayList<>(); Map<GpuReadback, MetalBuffer> reads = new LinkedHashMap<>();
@@ -128,6 +144,7 @@ final class MetalDriver implements ComputeDriver {
                     }
                 }
             }
+            for (var g : signals) n.check("dg_batch_signal_event", batch, (MemorySegment) g.fence(), g.value());
             n.check("dg_commit", batch);
         } catch (RuntimeException ex) {
             n.release("dg_batch_release", batch); stages.forEach(this::releaseBuffer); throw ex;

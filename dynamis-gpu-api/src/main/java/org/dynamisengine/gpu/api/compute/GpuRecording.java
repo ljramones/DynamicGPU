@@ -32,6 +32,13 @@ public interface GpuRecording extends AutoCloseable {
     GpuRecording bind(int dispatch, int slot, GpuBuffer buffer);
     /** Replaces dispatch {@code dispatch}'s group counts for later runs. */
     GpuRecording groups(int dispatch, Dimensions groups);
+    /**
+     * The fence the next runs wait for before starting, replacing any recorded wait (null clears it). A timeline
+     * value is passed once, so a recording that waits or signals is given new values before each run. @since 1.6.0
+     */
+    default GpuRecording waitFor(GpuFence fence, long value) { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here"); }
+    /** The fence the next runs signal on completion, replacing any recorded signal (null clears it). @since 1.6.0 */
+    default GpuRecording signal(GpuFence fence, long value) { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here"); }
     /** The name its encoder was given, or empty. @since 1.6.0 */
     default String name() { return ""; }
     /** The caller's tag (for example a prefix-cache domain), or null. @since 1.6.0 */
