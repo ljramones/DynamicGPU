@@ -13,12 +13,21 @@ public interface ComputeDriver extends AutoCloseable {
     record Download(Region source, GpuReadback result) implements Command { }
     record Copy(Region source, Region destination) implements Command { }
     record Fill(Region destination, int pattern) implements Command { }
-    /** A dispatch; {@code label} is its effective label (empty for none), for backend debug labels. */
+    /**
+     * A dispatch; {@code label} is its effective label (empty for none), for backend debug labels. With
+     * {@code indirect} (12 bytes, 4-aligned), the group counts are read from that region and {@code groups} is unused.
+     */
     record Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings,
-                    byte[] parameters, Dimensions groups, String label) implements Command {
-        public Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings, byte[] parameters, Dimensions groups) {
-            this(pipeline, descriptor, bindings, parameters, groups, "");
+                    byte[] parameters, Dimensions groups, String label, Region indirect) implements Command {
+        public Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings, byte[] parameters, Dimensions groups, String label) {
+            this(pipeline, descriptor, bindings, parameters, groups, label, null);
         }
+        public Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings, byte[] parameters, Dimensions groups) {
+            this(pipeline, descriptor, bindings, parameters, groups, "", null);
+        }
+        public Dispatch withParameters(byte[] p) { return new Dispatch(pipeline, descriptor, bindings, p, groups, label, indirect); }
+        public Dispatch withGroups(Dimensions g) { return new Dispatch(pipeline, descriptor, bindings, parameters, g, label, indirect); }
+        public Dispatch withBindings(List<Bound> b) { return new Dispatch(pipeline, descriptor, b, parameters, groups, label, indirect); }
     }
     interface Job extends AutoCloseable {
         /** COMPLETE includes host-read visibility and publication of every readback. */
@@ -41,6 +50,8 @@ public interface ComputeDriver extends AutoCloseable {
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
     Job submit(List<Command> commands);
+    /** Whether the backend runs {@link Dispatch}es with an {@code indirect} region. */
+    default boolean indirectDispatch() { return false; }
     /** The hardware queue for transfers (queue 0 is compute), or -1 if transfers share queue 0. */
     default int transferQueue() { return -1; }
     /** Submits on hardware queue {@code queue} (0 compute, or {@link #transferQueue()}: transfers and fills only). */

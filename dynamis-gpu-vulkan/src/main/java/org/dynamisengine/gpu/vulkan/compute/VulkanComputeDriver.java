@@ -178,7 +178,8 @@ final class VulkanComputeDriver implements ComputeDriver {
     private Block createBlock(Placement placement, long bytes) {
         long buffer = 0, memory = 0;
         try (var stack = MemoryStack.stackPush()) {
-            int usages = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            int usages = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                    | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
             var info = VkBufferCreateInfo.calloc(stack).sType$Default().size(bytes).usage(usages).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
             if (transferOnly) info.sharingMode(VK_SHARING_MODE_CONCURRENT).pQueueFamilyIndices(stack.ints(computeFamily, transferFamily));
             var out = stack.mallocLong(1); check(vkCreateBuffer(device, info, null, out), "create buffer"); buffer = out.get(0);
@@ -308,11 +309,14 @@ final class VulkanComputeDriver implements ComputeDriver {
     /** As above; a transfer-only queue has no compute stage. */
     private static void barrier(VkCommandBuffer cmd, boolean host, boolean transferOnly, MemoryStack stack) {
         int stages = transferOnly ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        // on a compute queue, later indirect dispatches read their group counts at the draw-indirect stage
+        int dstStages = transferOnly ? stages : stages | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+        int dstAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT
+                | (transferOnly ? 0 : VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
         var memory = VkMemoryBarrier.calloc(1, stack); memory.get(0).sType$Default()
                 .srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)
-                .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT
-                        : VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd, stages, host ? VK_PIPELINE_STAGE_HOST_BIT : stages, 0, memory, null, null);
+                .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT : dstAccess);
+        vkCmdPipelineBarrier(cmd, stages, host ? VK_PIPELINE_STAGE_HOST_BIT : dstStages, 0, memory, null, null);
     }
     private static void copy(VkCommandBuffer cmd, long src, long srcOffset, long dst, long dstOffset, long bytes, MemoryStack stack) {
         var region = VkBufferCopy.calloc(1, stack); region.get(0).srcOffset(srcOffset).dstOffset(dstOffset).size(bytes); vkCmdCopyBuffer(cmd, src, dst, region);
@@ -418,7 +422,8 @@ final class VulkanComputeDriver implements ComputeDriver {
                                 if (labelled) EXTDebugUtils.vkCmdBeginDebugUtilsLabelEXT(cmd, VkDebugUtilsLabelEXT.calloc(local).sType$Default().pLabelName(local.UTF8(d.label())));
                                 boolean timed = profile && queries != 0;
                                 if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 2 + 2 * dispatchNumber);
-                                vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
+                                if (d.indirect() != null) vkCmdDispatchIndirect(cmd, buffer(d.indirect()), offset(d.indirect()));
+                                else vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
                                 if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 3 + 2 * dispatchNumber);
                                 if (labelled) EXTDebugUtils.vkCmdEndDebugUtilsLabelEXT(cmd);
                                 dispatchNumber++;
@@ -507,6 +512,7 @@ final class VulkanComputeDriver implements ComputeDriver {
 
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
     @Override public int transferQueue() { return transfer != null ? 1 : -1; }
+    @Override public boolean indirectDispatch() { return true; }
     @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         var batch = new Batch(commands, profile, q);
         try { return batch.submit(commands, true, waits, signals); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }

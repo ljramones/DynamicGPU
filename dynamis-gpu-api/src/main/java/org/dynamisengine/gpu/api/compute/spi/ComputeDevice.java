@@ -260,6 +260,15 @@ public final class ComputeDevice implements GpuDevice {
         @Override public GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, Dimensions groups) {
             return dispatch(pipeline, bindings, parameters, groups, "");
         }
+        @Override public GpuCommandEncoder dispatchIndirect(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, GpuBuffer args, long offset) {
+            valid();
+            if (!driver.indirectDispatch()) throw new ComputeException(UNSUPPORTED, "Indirect dispatch is not supported by this backend");
+            Buffer a = buffer(args); a.usage(BufferUsage.INDIRECT);
+            require(offset >= 0 && (offset & 3) == 0 && offset <= a.bytes - 12 && a.bytes >= 12, "Indirect arguments need 12 bytes at a 4-aligned offset inside the buffer");
+            indirectArgs = a; indirectOffset = offset;
+            try { return dispatch(pipeline, bindings, parameters, new Dimensions(1, 1, 1), ""); } finally { indirectArgs = null; }
+        }
+        private Buffer indirectArgs; private long indirectOffset;
         @Override public GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, Dimensions groups, String dispatchLabel) {
             valid(); require(pipeline instanceof ComputeDevice.Pipeline && pipeline.device() == ComputeDevice.this, "Cross-device or foreign pipeline");
             Pipeline p = (Pipeline) pipeline;
@@ -277,11 +286,21 @@ public final class ComputeDevice implements GpuDevice {
             }
             for (int i = 0; i < buffers.size(); i++) for (int j = i + 1; j < buffers.size(); j++)
                 require(!overlap(buffers.get(i), buffers.get(j)) || (!bound.get(i).access().writes() && !bound.get(j).access().writes()), "Writable dispatch bindings overlap");
+            Region indirect = null; Buffer args = indirectArgs;
+            if (args != null) {
+                for (int i = 0; i < buffers.size(); i++) {
+                    var b = buffers.get(i);
+                    require(!(bound.get(i).access().writes() && b.resource == args.resource && b.offset < args.offset + indirectOffset + 12
+                            && args.offset + indirectOffset < b.offset + b.bytes), "The dispatch writes its own indirect arguments");
+                }
+                var whole = args.region(); indirect = new Region(whole.allocation(), whole.offset() + indirectOffset, 12);
+            }
             byte[] snapshot = parameters.clone(); retain(p.resource); buffers.forEach(b -> retain(b.resource));
-            List<Resource> rs = new ArrayList<>(); rs.add(p.resource); buffers.forEach(b -> rs.add(b.resource));
+            if (args != null) retain(args.resource);
+            List<Resource> rs = new ArrayList<>(); rs.add(p.resource); buffers.forEach(b -> rs.add(b.resource)); if (args != null) rs.add(args.resource);
             String inner = dispatchLabel == null ? "" : dispatchLabel;
             String effective = label.isEmpty() ? inner : inner.isEmpty() ? label : label + "/" + inner;
-            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups, effective)); commandResources.add(rs);
+            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups, effective, indirect)); commandResources.add(rs);
             dispatchLabels.add(effective);
             return this;
         }
@@ -448,12 +467,13 @@ public final class ComputeDevice implements GpuDevice {
         @Override public GpuRecording parameters(int dispatch, byte[] parameters) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
             require(parameters.length == d.descriptor().layout().parameterBytes(), "Scalar parameter byte count differs from layout");
-            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), parameters.clone(), d.groups(), d.label())); return this;
+            idle(); commands.set(i, d.withParameters(parameters.clone())); return this;
         }
         @Override public GpuRecording groups(int dispatch, Dimensions groups) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
+            require(d.indirect() == null, "Dispatch " + dispatch + " is indirect: its group counts come from its argument buffer");
             limits().validateGroups(d.descriptor().localSize(), groups);
-            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), d.parameters(), groups, d.label())); return this;
+            idle(); commands.set(i, d.withGroups(groups)); return this;
         }
         @Override public GpuRecording bind(int dispatch, int slot, GpuBuffer buffer) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
@@ -475,7 +495,7 @@ public final class ComputeDevice implements GpuDevice {
             }
             idle();
             var bound = new ArrayList<>(d.bindings()); bound.set(position, new Bound(slot, region, spec.access()));
-            commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), List.copyOf(bound), d.parameters(), d.groups(), d.label()));
+            commands.set(i, d.withBindings(List.copyOf(bound)));
             var newRs = new ArrayList<>(rs); Resource old = newRs.set(position + 1, b.resource); commandResources.set(i, newRs);
             if (counts.merge(b.resource, 1, Integer::sum) == 1) b.resource.retain();
             if (counts.merge(old, -1, Integer::sum) == 0) { counts.remove(old); old.release(); }

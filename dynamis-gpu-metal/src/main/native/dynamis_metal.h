@@ -39,6 +39,8 @@ int dg_batch_wait_event(DGBatch *batch, DGEvent *event, uint64_t value);
 int dg_batch_signal_event(DGBatch *batch, DGEvent *event, uint64_t value);
 /* ABI 5: a batch on queue q: 0 compute, 1 transfer (a second command queue). */
 DGBatch *dg_batch_create_on(DGDevice *device, int q);
+/* ABI 5: an indirect dispatch: threadgroup counts read from args at offset. */
+int dg_compute_dispatch_indirect(DGBatch *batch, DGBuffer *args, uint64_t offset, uint32_t lx, uint32_t ly, uint32_t lz);
 void dg_device_release(DGDevice *device);
 DGBuffer *dg_buffer_create(DGDevice *device, uint64_t bytes, int privateStorage);
 void *dg_buffer_contents(DGBuffer *buffer);

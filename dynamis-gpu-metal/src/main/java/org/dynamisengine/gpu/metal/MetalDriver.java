@@ -99,6 +99,7 @@ final class MetalDriver implements ComputeDriver {
         return submitBatch(0, commands, profile ? dispatches : 0, waits, signals);
     }
     @Override public int transferQueue() { return 1; }
+    @Override public boolean indirectDispatch() { return true; }
     @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
         return submitBatch(q, commands, profile ? dispatches : 0, waits, signals);
@@ -145,7 +146,9 @@ final class MetalDriver implements ComputeDriver {
                         if (!d.label().isEmpty()) n.check("dg_compute_label", batch, arena.allocateFrom(d.label()));
                         for (var binding : d.bindings()) n.check("dg_compute_buffer", batch, buffer(binding.region()), offset(binding.region()), binding.slot());
                         if (d.parameters().length > 0) n.check("dg_compute_parameters", batch, arena.allocateFrom(JAVA_BYTE, d.parameters()), (long) d.parameters().length, d.descriptor().layout().parameterSlot());
-                        var g = d.groups(); var l = d.descriptor().localSize(); n.check("dg_compute_dispatch", batch, g.x(), g.y(), g.z(), l.x(), l.y(), l.z());
+                        var g = d.groups(); var l = d.descriptor().localSize();
+                        if (d.indirect() != null) n.check("dg_compute_dispatch_indirect", batch, buffer(d.indirect()), offset(d.indirect()), l.x(), l.y(), l.z());
+                        else n.check("dg_compute_dispatch", batch, g.x(), g.y(), g.z(), l.x(), l.y(), l.z());
                     }
                 }
             }

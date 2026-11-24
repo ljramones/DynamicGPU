@@ -18,6 +18,17 @@ public interface GpuCommandEncoder extends AutoCloseable {
         return dispatch(pipeline, bindings, parameters, groups);
     }
     /**
+     * A dispatch whose group counts the GPU reads, when the dispatch runs, from {@code args} at byte {@code offset}:
+     * three unsigned 32-bit values (x, y, z). Earlier commands of the submission may write them, so work sized on
+     * the GPU (culling, compaction, routing) needs no readback. The counts cannot be checked on the host: they must
+     * be within the device's group-count limits, and 0 runs nothing. {@code args} needs {@link BufferUsage#INDIRECT};
+     * {@code offset} must be a multiple of 4. UNSUPPORTED where the backend has no indirect dispatch. @since 1.6.0
+     */
+    default GpuCommandEncoder dispatchIndirect(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings,
+            byte[] parameters, GpuBuffer args, long offset) {
+        throw new ComputeException(ComputeException.Code.UNSUPPORTED, "indirect dispatch is not supported here");
+    }
+    /**
      * Labels the dispatches recorded after this call (until the next call; null or empty clears it), for attribution
      * in {@link GpuSubmission#dispatchTimings()}, for example {@code "prefill"} or {@code "decode"}. @since 1.6.0
      */

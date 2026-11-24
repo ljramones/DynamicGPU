@@ -259,6 +259,18 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Indirect dispatch (1.6.0).** `encoder.dispatchIndirect(pipeline, bindings, parameters, args, offset)` reads its
+three group counts from a buffer when the dispatch runs. So work sized on the GPU (culling, compaction, routing
+tokens to experts) needs no readback.
+- **The argument buffer:** it needs `BufferUsage.INDIRECT`, and `offset` must be a multiple of 4.
+- **Writing the counts:** earlier commands of the submission may write them; the Vulkan barrier covers the
+  indirect-argument read.
+- **Checks:** the counts cannot be checked on the host, so they must stay within the device's group-count limits.
+  Zero runs nothing.
+- **Recordings:** they read the counts at each run. `groups(...)` is refused for an indirect dispatch.
+- **Backends:** `vkCmdDispatchIndirect` (every pool block has the indirect usage), and Metal
+  `dispatchThreadgroupsWithIndirectBuffer` (`dg_compute_dispatch_indirect`). The mock has none (`UNSUPPORTED`).
+
 **Queues (1.6.0).** `GpuDevice.queue(QueueKind.TRANSFER)` is a queue for uploads, downloads, copies and fills. It
 rejects dispatches and recordings.
 - **Which hardware queue:** `GpuQueue.dedicated()` says whether it runs on its own hardware queue.

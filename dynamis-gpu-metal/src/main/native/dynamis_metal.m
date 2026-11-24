@@ -188,6 +188,13 @@ int dg_compute_dispatch(DGBatch *b, uint32_t gx, uint32_t gy, uint32_t gz, uint3
     if (b->samples && b->nextDispatch < b->sampleDispatches) { end_compute(b); b->nextDispatch++; }
     return 0;
 END(-1) }
+// ABI 5: a dispatch whose threadgroup counts the GPU reads from a buffer (three uint32 at offset).
+int dg_compute_dispatch_indirect(DGBatch *b, DGBuffer *args, uint64_t offset, uint32_t lx, uint32_t ly, uint32_t lz) { START
+    [b->encoder dispatchThreadgroupsWithIndirectBuffer:args->buffer indirectBufferOffset:offset threadsPerThreadgroup:MTLSizeMake(lx, ly, lz)];
+    if (b->labelled) { [b->encoder popDebugGroup]; b->labelled = 0; }
+    if (b->samples && b->nextDispatch < b->sampleDispatches) { end_compute(b); b->nextDispatch++; }
+    return 0;
+END(-1) }
 int dg_commit(DGBatch *b) { START
     end_compute(b);
     if (b->samples) [b->device->device sampleTimestamps:&b->cpu0 gpuTimestamp:&b->gpu0];

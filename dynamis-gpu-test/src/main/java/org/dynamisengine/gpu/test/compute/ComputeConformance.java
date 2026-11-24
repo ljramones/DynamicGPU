@@ -442,6 +442,71 @@ public abstract class ComputeConformance {
         }
     }
 
+    private GpuBuffer indirectArgs() {
+        return device.allocate(new BufferDescriptor(64, EnumSet.of(BufferUsage.INDIRECT, BufferUsage.STORAGE, BufferUsage.TRANSFER_DESTINATION,
+                BufferUsage.TRANSFER_SOURCE), Placement.PRIVATE));
+    }
+    private static byte[] groups(int x, int y, int z) {
+        return ByteBuffer.allocate(16).order(ByteOrder.nativeOrder()).putInt(x).putInt(y).putInt(z).putInt(0).array();
+    }
+
+    /**
+     * Indirect dispatch: group counts uploaded by the host, written on the GPU by an earlier command, zero (nothing
+     * runs) and partial; recordings take new counts between runs; bad arguments are refused.
+     */
+    @Test void dispatchesIndirectly() {
+        int n = 512;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE);
+             var args = indirectArgs(); var source = indirectArgs(); var p = pipeline(n)) {
+            try (var e = device.encoder()) { e.upload(a, floats(n, i -> i)).upload(b, floats(n, i -> 2 * i)); await(device.queue().submit(e)); }
+            GpuSubmission s; GpuReadback r;
+            try (var e = device.encoder()) {
+                e.upload(args.slice(0, 16), groups(n / 64, 1, 1));
+                try { e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 0); }
+                catch (ComputeException ex) { assertEquals(ComputeException.Code.UNSUPPORTED, ex.code()); System.out.println("indirect dispatch: none on " + device.adapter().name()); return; }
+                r = e.download(c); s = device.queue().submit(e);
+            }
+            await(s);
+            var got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) assertEquals(3f * i, got.getFloat(4 * i), "host-written counts, element " + i);
+            // counts written on the GPU by an earlier command; 2 groups = the first 128 elements
+            try (var e = device.encoder()) {
+                e.upload(source.slice(0, 16), groups(2, 1, 1)).fill(c, Float.floatToRawIntBits(-1f)).copy(source, args);
+                e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 0);
+                r = e.download(c); await(device.queue().submit(e));
+            }
+            got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) assertEquals(i < 128 ? 3f * i : -1f, got.getFloat(4 * i), "GPU-written counts, element " + i);
+            // zero groups: nothing runs
+            try (var e = device.encoder()) {
+                e.upload(args.slice(0, 16), groups(0, 1, 1)).fill(c, Float.floatToRawIntBits(-2f)).dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 0);
+                r = e.download(c); await(device.queue().submit(e));
+            }
+            got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) assertEquals(-2f, got.getFloat(4 * i), "zero groups, element " + i);
+            // a recording reads whatever the counts are at each run
+            GpuRecording rec;
+            try (var e = device.encoder()) { e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 16); rec = e.record(); }
+            try (rec) {
+                for (int groupsX : new int[] {1, 4, 8}) {
+                    try (var e = device.encoder()) {
+                        byte[] at16 = new byte[32]; System.arraycopy(groups(groupsX, 1, 1), 0, at16, 16, 16);
+                        e.upload(args.slice(0, 32), at16).fill(c, Float.floatToRawIntBits(-3f)); await(device.queue().submit(e));
+                    }
+                    await(device.queue().submit(rec));
+                    float[] f = read(c, n);
+                    for (int i = 0; i < n; i++) assertEquals(i < 64 * groupsX ? 3f * i : -3f, f[i], groupsX + " groups, element " + i);
+                }
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> rec.groups(0, new Dimensions(1, 1, 1))).code(), "groups of an indirect dispatch");
+            }
+            try (var e = device.encoder()) {
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 2)).code(), "misaligned");
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), args, 56)).code(), "past the end");
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> e.dispatchIndirect(p, Map.of(0, a, 1, b, 2, c), scalar(n), c, 0)).code(), "no INDIRECT usage");
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");
