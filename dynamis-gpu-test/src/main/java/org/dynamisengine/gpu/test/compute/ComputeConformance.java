@@ -53,8 +53,15 @@ public abstract class ComputeConformance {
     /** The fp_strict kernel for this backend (resources compute/fp_strict.*), or null when it has none. */
     protected KernelBundle strictKernel() { return null; }
     /**
-     * Floating point follows IEEE 754 by default: no reassociation, a product rounded before it is added (no implicit
-     * fused multiply-add) and NaN preserved, so a kernel computes what its source says on every backend.
+     * Whether this device rounds even unmarked arithmetic as written (no reassociation without a precise mark). True
+     * for native Metal and for MoltenVK, where DynamisGPU disables fast math; a general Vulkan driver may reassociate
+     * code that is not marked NoContraction, as GLSL permits.
+     */
+    protected boolean strictWithoutPreciseMarks() { return true; }
+    /**
+     * Floating point follows IEEE 754: operations marked precise round as written on every backend (no reassociation,
+     * a product rounded before it is added), NaN is preserved, and where {@link #strictWithoutPreciseMarks()} holds,
+     * unmarked operations round as written too.
      */
     @Test void floatingPointFollowsIeeeByDefault() {
         var kernel = strictKernel(); Assumptions.assumeTrue(kernel != null, "No strict floating-point kernel for this backend");
@@ -63,16 +70,19 @@ public abstract class ComputeConformance {
             Float.POSITIVE_INFINITY, 2f, 3f, -1234.567f, 0.1f, 5f, 1e30f, 1e-30f, -1f};
         int n = in.length / 3;
         var layout = new BindingLayout(List.of(new BindingLayout.BufferBinding(0, Access.READ, n * 12L),
-                new BindingLayout.BufferBinding(1, Access.WRITE, n * 12L)), 4);
+                new BindingLayout.BufferBinding(1, Access.WRITE, n * 16L)), 4);
         try (var p = device.pipeline(new PipelineDescriptor(kernel, "fp_strict", layout, new Dimensions(64, 1, 1), Map.of(), Set.of("FP32"), Set.of()));
-             var src = buffer(n * 12, Placement.SHARED); var dst = buffer(n * 12, Placement.SHARED); var e = device.encoder()) {
+             var src = buffer(n * 12, Placement.SHARED); var dst = buffer(n * 16, Placement.SHARED); var e = device.encoder()) {
             var bytes = ByteBuffer.allocate(n * 12).order(ByteOrder.nativeOrder()); for (float f : in) bytes.putFloat(f);
             e.upload(src, bytes.array()).dispatch(p, Map.of(0, src, 1, dst), scalar(n), new Dimensions(1, 1, 1));
             var output = e.download(dst); await(device.queue().submit(e));
             var out = ByteBuffer.wrap(output.bytes()).order(ByteOrder.nativeOrder());
             for (int i = 0; i < n; i++) {
                 float x = in[3 * i], y = in[3 * i + 1], z = in[3 * i + 2];
-                assertEquals(Float.floatToIntBits((x + 12582912f) - 12582912f), Float.floatToIntBits(out.getFloat()), "(x + c) - c reassociated for x=" + x);
+                int rounded = Float.floatToIntBits((x + 12582912f) - 12582912f);
+                assertEquals(rounded, Float.floatToIntBits(out.getFloat()), "precise (x + c) - c reassociated for x=" + x);
+                int unmarked = Float.floatToIntBits(out.getFloat());
+                if (strictWithoutPreciseMarks()) assertEquals(rounded, unmarked, "(x + c) - c reassociated without a precise mark for x=" + x);
                 assertEquals(Float.floatToIntBits(x * y + z), Float.floatToIntBits(out.getFloat()), "x*y + z fused for " + x + ", " + y + ", " + z);
                 assertEquals(Float.isNaN(x) ? 1f : 0f, out.getFloat(), "isnan(" + x + ")");
             }

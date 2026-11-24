@@ -17,6 +17,8 @@ class VulkanComputeTest extends ComputeConformance {
             return new KernelBundle("fp-strict", "1", Map.of(Backend.VULKAN, new KernelBundle.Executable(KernelBundle.Format.SPIRV, stream.readAllBytes())));
         } catch (java.io.IOException e) { throw new AssertionError(e); }
     }
+    /** MoltenVK (Apple's vendor ID, 0x106B) runs with fast math off; other drivers may reassociate unmarked code. */
+    @Override protected boolean strictWithoutPreciseMarks() { return device.adapter().id().contains(":" + 0x106B + ":"); }
     @Override protected GpuProvider provider() { return new VulkanProvider(); }
     @Override protected KernelBundle kernel() {
         try (var stream = ComputeConformance.class.getResourceAsStream("/compute/vector_add.spv")) {

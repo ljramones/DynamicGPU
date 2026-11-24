@@ -11,8 +11,11 @@ public final class MockComputeCullingDispatch implements ComputeCullingDispatch 
   private boolean destroyed;
 
   @Override
-  public void dispatch(VkCommandBuffer cmd, int meshCount, float[] frustumPlanes6) {
-    calls.add(new DispatchCall(cmd.handle(), meshCount, Arrays.copyOf(frustumPlanes6, frustumPlanes6.length)));
+  public void dispatch(VkCommandBuffer cmd, int meshCount, float[] frustumPlanes) {
+    if (frustumPlanes.length != FRUSTUM_PLANE_FLOATS) {
+      throw new IllegalArgumentException("frustumPlanes must contain exactly " + FRUSTUM_PLANE_FLOATS + " values");
+    }
+    calls.add(new DispatchCall(cmd.handle(), meshCount, Arrays.copyOf(frustumPlanes, frustumPlanes.length)));
   }
 
   @Override
@@ -28,5 +31,5 @@ public final class MockComputeCullingDispatch implements ComputeCullingDispatch 
     return destroyed;
   }
 
-  public record DispatchCall(long commandBufferHandle, int meshCount, float[] frustumPlanes6) {}
+  public record DispatchCall(long commandBufferHandle, int meshCount, float[] frustumPlanes) {}
 }

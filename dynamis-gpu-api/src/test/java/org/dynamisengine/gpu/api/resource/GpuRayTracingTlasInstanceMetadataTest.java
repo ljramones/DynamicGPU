@@ -41,6 +41,21 @@ class GpuRayTracingTlasInstanceMetadataTest {
         () -> GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0, 256, 0, 0));
   }
 
+  /** Vulkan packs these into 24-, 24- and 8-bit fields; wider values used to be truncated silently. */
+  @Test
+  void rejectsValuesWiderThanTheirVulkanBitFields() {
+    GpuRayTracingBlasResource blas = createBlasResource();
+    GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0xFFFFFF, 0xFF, 0xFFFFFF, 0xFF);
+    assertThrows(IllegalArgumentException.class,
+        () -> GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0x1000000, 1, 0, 0));
+    assertThrows(IllegalArgumentException.class,
+        () -> GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0, 1, 0x1000000, 0));
+    assertThrows(IllegalArgumentException.class,
+        () -> GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0, 1, 0, 0x100));
+    assertThrows(IllegalArgumentException.class,
+        () -> GpuRayTracingTlasInstanceMetadata.of(blas, identity3x4(), 0, 1, -1, 0));
+  }
+
   private static GpuRayTracingBlasResource createBlasResource() {
     ByteBuffer bytes = ByteBuffer.allocate(5 * Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
     bytes.putInt(0).putInt(0).putInt(36).putInt(0).putInt(0).flip();

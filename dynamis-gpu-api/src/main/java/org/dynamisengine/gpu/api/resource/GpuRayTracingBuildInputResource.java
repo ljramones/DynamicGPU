@@ -58,6 +58,10 @@ public final class GpuRayTracingBuildInputResource implements AutoCloseable {
     return payload.vertexDataOffsetBytes();
   }
 
+  public org.dynamisengine.gpu.api.layout.IndexType indexType() {
+    return payload.indexType();
+  }
+
   public long indexDataOffsetBytes() {
     return payload.indexDataOffsetBytes();
   }

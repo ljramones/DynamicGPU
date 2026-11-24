@@ -119,18 +119,25 @@ specialization constants; Metal ABI 1 rejects specialization requests and accept
 pre-specialized executables.
 
 Floating point follows IEEE 754 by default, so a kernel computes what its source says: no reassociation, NaN and
-infinities preserved, and a product rounded before it is added unless the source asks for a fused multiply-add.
+infinities preserved, and a product rounded before it is added unless the source asks for a fused multiply-add. On
+Metal and MoltenVK that holds for all arithmetic. On other Vulkan drivers it holds for operations the SPIR-V marks
+`NoContraction` (`precise` in GLSL), because GLSL and SPIR-V let a driver reassociate and fuse unmarked arithmetic,
+and Mesa does.
 - **Metal runtime compilation (macOS 15+):** MSL source is compiled with `MTLMathModeSafe` and precise math
   functions, and with fp contraction off. `MTLMathModeSafe` alone still fuses `a*b + c`, so the bridge places
   `#pragma METAL fp contract(off)` before the source (with `#line 1`, so diagnostics keep their line numbers). A
   kernel can opt back in with its own `#pragma METAL fp contract(fast)`.
 - **Metal before macOS 15:** only fast math is disabled.
 - **Offline `metallib`s:** these keep whatever their compiler was told. Put the pragma in the source.
-- **Vulkan:** contraction is controlled by the SPIR-V (`NoContraction`, from `precise` in GLSL).
+- **Vulkan:** the SPIR-V controls contraction and reassociation. Mark every operation whose rounding matters
+  `NoContraction`, for example with `precise` in GLSL or by decorating the module after compilation; drivers must
+  then round it as written.
 - **MoltenVK:** it would otherwise compile every shader with Metal fast math, so the provider switches that off with
   `VK_EXT_layer_settings` (`MVK_CONFIG_FAST_MATH_ENABLED = 0`). Other drivers ignore the setting.
 
-`ComputeConformance.floatingPointFollowsIeeeByDefault` checks all three properties on each hardware backend. Results
+`ComputeConformance.floatingPointFollowsIeeeByDefault` checks these properties on each hardware backend: the
+marked operations everywhere, and unmarked ones where the backend promises strict defaults (Metal and MoltenVK).
+CI runs the Vulkan suite on Mesa's lavapipe, a CPU implementation of Vulkan. Results
 can still differ between backends in built-in transcendental functions, in division on drivers that don't round it
 correctly, and in subnormals, which Apple GPUs flush to zero. Applications own their numerical tolerances.
 

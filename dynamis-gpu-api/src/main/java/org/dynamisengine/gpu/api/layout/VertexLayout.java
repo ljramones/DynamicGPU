@@ -27,7 +27,8 @@ public record VertexLayout(int strideBytes, List<VertexAttribute> attributes) {
       if (!locations.add(attribute.location())) {
         throw new IllegalArgumentException("duplicate attribute location: " + attribute.location());
       }
-      int attributeEnd = attribute.offsetBytes() + attribute.format().byteSize();
+      // long: offsetBytes near Integer.MAX_VALUE used to wrap negative and pass the check
+      long attributeEnd = (long) attribute.offsetBytes() + attribute.format().byteSize();
       if (attributeEnd > strideBytes) {
         throw new IllegalArgumentException(
             "attribute exceeds stride: location=" + attribute.location() + ", end=" + attributeEnd + ", stride=" + strideBytes);

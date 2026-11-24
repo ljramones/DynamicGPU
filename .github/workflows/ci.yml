@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  build:
+    # The portable build: every module, the mock backend and the API tests. Hardware tests report as skipped.
+    name: Build (JDK 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - name: Verify
+        run: mvn -B verify
+
+  vulkan:
+    # The compute conformance suite on a real Vulkan driver: Mesa's lavapipe (llvmpipe), a CPU implementation of
+    # Vulkan, so no GPU is needed. It exercises device creation, pipelines, bindings, barriers, submission and the
+    # IEEE floating-point checks on a non-Apple driver.
+    name: Vulkan conformance (lavapipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - name: Install lavapipe and the Vulkan loader
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+          ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+          echo "VK_LOADER=$(ls /usr/lib/*-linux-gnu/libvulkan.so.1 | head -1)" >> "$GITHUB_ENV"
+      - name: Show the Vulkan device
+        run: vulkaninfo --summary | grep -E 'deviceName|apiVersion|driverName'
+      - name: Run the Vulkan hardware profile
+        run: mvn -B -pl dynamis-gpu-vulkan -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$VK_LOADER" test
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-vulkan
+          path: "*/target/surefire-reports"

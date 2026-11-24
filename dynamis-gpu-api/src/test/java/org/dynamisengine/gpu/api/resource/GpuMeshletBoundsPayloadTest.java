@@ -33,6 +33,22 @@ class GpuMeshletBoundsPayloadTest {
     assertEquals(ByteOrder.LITTLE_ENDIAN, payload.boundsBytes().order());
   }
 
+  /** The floats must arrive unchanged from either byte order (they were byte-swapped when the input was LE). */
+  @Test
+  void preservesFloatValuesFromEitherByteOrder() {
+    for (ByteOrder order : new ByteOrder[] {ByteOrder.LITTLE_ENDIAN, ByteOrder.BIG_ENDIAN}) {
+      ByteBuffer bytes = ByteBuffer.allocate(24).order(order);
+      bytes.putFloat(1f).putFloat(-2.5f).putFloat(3f).putFloat(4f).putFloat(5.25f).putFloat(6f).flip();
+
+      ByteBuffer out = GpuMeshletBoundsPayload.fromLittleEndianBytes(1, 0, 6, bytes).boundsBytes();
+
+      float[] expected = {1f, -2.5f, 3f, 4f, 5.25f, 6f};
+      for (int i = 0; i < expected.length; i++) {
+        assertEquals(expected[i], out.getFloat(i * Float.BYTES), "float " + i + " from " + order);
+      }
+    }
+  }
+
   @Test
   void rejectsInconsistentCountStrideByteSize() {
     ByteBuffer bytes = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);

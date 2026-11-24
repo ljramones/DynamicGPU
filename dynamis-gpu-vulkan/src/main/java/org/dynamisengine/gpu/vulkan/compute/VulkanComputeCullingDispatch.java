@@ -15,19 +15,20 @@ public final class VulkanComputeCullingDispatch implements ComputeCullingDispatc
   private float[] lastFrustumPlanes;
 
   @Override
-  public void dispatch(VkCommandBuffer cmd, int meshCount, float[] frustumPlanes6) {
+  public void dispatch(VkCommandBuffer cmd, int meshCount, float[] frustumPlanes) {
     ensureAlive();
     Objects.requireNonNull(cmd, "cmd");
-    Objects.requireNonNull(frustumPlanes6, "frustumPlanes6");
-    if (frustumPlanes6.length != 6) {
-      throw new IllegalArgumentException("frustumPlanes6 must contain exactly 6 values");
+    Objects.requireNonNull(frustumPlanes, "frustumPlanes");
+    if (frustumPlanes.length != FRUSTUM_PLANE_FLOATS) {
+      throw new IllegalArgumentException("frustumPlanes must contain exactly " + FRUSTUM_PLANE_FLOATS
+          + " values (6 planes of a, b, c, d), got " + frustumPlanes.length);
     }
     if (meshCount < 0) {
       throw new IllegalArgumentException("meshCount must be >= 0");
     }
     lastCommandBufferHandle = cmd.handle();
     lastMeshCount = meshCount;
-    lastFrustumPlanes = Arrays.copyOf(frustumPlanes6, frustumPlanes6.length);
+    lastFrustumPlanes = Arrays.copyOf(frustumPlanes, frustumPlanes.length);
   }
 
   @Override

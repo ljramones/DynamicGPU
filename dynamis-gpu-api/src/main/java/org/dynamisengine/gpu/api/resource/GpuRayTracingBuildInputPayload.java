@@ -2,6 +2,7 @@ package org.dynamisengine.gpu.api.resource;
 
 import java.util.Objects;
 import org.dynamisengine.gpu.api.buffer.GpuBufferHandle;
+import org.dynamisengine.gpu.api.layout.IndexType;
 
 /**
  * Immutable RT geometry build-input payload contract for BLAS-ready geometry linkage.
@@ -17,6 +18,7 @@ public final class GpuRayTracingBuildInputPayload {
   private final int maxVertexIndex;
   private final long vertexDataOffsetBytes;
   private final long indexDataOffsetBytes;
+  private final IndexType indexType;
 
   private GpuRayTracingBuildInputPayload(
       GpuRayTracingGeometryResource geometryResource,
@@ -25,7 +27,8 @@ public final class GpuRayTracingBuildInputPayload {
       int vertexStrideBytes,
       int maxVertexIndex,
       long vertexDataOffsetBytes,
-      long indexDataOffsetBytes) {
+      long indexDataOffsetBytes,
+      IndexType indexType) {
     this.geometryResource = geometryResource;
     this.vertexBufferHandle = vertexBufferHandle;
     this.indexBufferHandle = indexBufferHandle;
@@ -33,8 +36,10 @@ public final class GpuRayTracingBuildInputPayload {
     this.maxVertexIndex = maxVertexIndex;
     this.vertexDataOffsetBytes = vertexDataOffsetBytes;
     this.indexDataOffsetBytes = indexDataOffsetBytes;
+    this.indexType = indexType;
   }
 
+  /** A payload with 32-bit indices; see {@link #of(GpuRayTracingGeometryResource, GpuBufferHandle, GpuBufferHandle, int, int, long, long, IndexType)}. */
   public static GpuRayTracingBuildInputPayload of(
       GpuRayTracingGeometryResource geometryResource,
       GpuBufferHandle vertexBufferHandle,
@@ -43,6 +48,25 @@ public final class GpuRayTracingBuildInputPayload {
       int maxVertexIndex,
       long vertexDataOffsetBytes,
       long indexDataOffsetBytes) {
+    return of(geometryResource, vertexBufferHandle, indexBufferHandle, vertexStrideBytes, maxVertexIndex,
+        vertexDataOffsetBytes, indexDataOffsetBytes, IndexType.UINT32);
+  }
+
+  /**
+   * A payload whose index buffer holds {@code indexType} elements. Region {@code firstIndex} values count elements of
+   * that type, and {@code indexDataOffsetBytes} must be a multiple of its size (Vulkan requires the primitive offset
+   * to be aligned to the index size).
+   */
+  public static GpuRayTracingBuildInputPayload of(
+      GpuRayTracingGeometryResource geometryResource,
+      GpuBufferHandle vertexBufferHandle,
+      GpuBufferHandle indexBufferHandle,
+      int vertexStrideBytes,
+      int maxVertexIndex,
+      long vertexDataOffsetBytes,
+      long indexDataOffsetBytes,
+      IndexType indexType) {
+    Objects.requireNonNull(indexType, "indexType");
     Objects.requireNonNull(geometryResource, "geometryResource");
     Objects.requireNonNull(vertexBufferHandle, "vertexBufferHandle");
     Objects.requireNonNull(indexBufferHandle, "indexBufferHandle");
@@ -67,6 +91,12 @@ public final class GpuRayTracingBuildInputPayload {
     if (indexDataOffsetBytes < 0) {
       throw new IllegalArgumentException("indexDataOffsetBytes must be >= 0");
     }
+    if ((indexDataOffsetBytes % indexType.byteSize()) != 0) {
+      throw new IllegalArgumentException("indexDataOffsetBytes must be a multiple of the " + indexType + " size");
+    }
+    if (indexType == IndexType.UINT16 && maxVertexIndex > 0xFFFF) {
+      throw new IllegalArgumentException("maxVertexIndex exceeds the UINT16 index range: " + maxVertexIndex);
+    }
     return new GpuRayTracingBuildInputPayload(
         geometryResource,
         vertexBufferHandle,
@@ -74,7 +104,15 @@ public final class GpuRayTracingBuildInputPayload {
         vertexStrideBytes,
         maxVertexIndex,
         vertexDataOffsetBytes,
-        indexDataOffsetBytes);
+        indexDataOffsetBytes,
+        indexType);
+  }
+
+  /**
+   * @return the element type of the index buffer
+   */
+  public IndexType indexType() {
+    return indexType;
   }
 
   public GpuRayTracingGeometryResource geometryResource() {

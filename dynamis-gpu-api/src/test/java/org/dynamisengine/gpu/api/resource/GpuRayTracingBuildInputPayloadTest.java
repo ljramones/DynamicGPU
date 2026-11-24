@@ -9,6 +9,7 @@ import org.dynamisengine.gpu.api.buffer.GpuBuffer;
 import org.dynamisengine.gpu.api.buffer.GpuBufferHandle;
 import org.dynamisengine.gpu.api.buffer.GpuBufferUsage;
 import org.dynamisengine.gpu.api.buffer.GpuMemoryLocation;
+import org.dynamisengine.gpu.api.layout.IndexType;
 import org.junit.jupiter.api.Test;
 
 class GpuRayTracingBuildInputPayloadTest {
@@ -25,6 +26,31 @@ class GpuRayTracingBuildInputPayloadTest {
     assertEquals(1024, payload.maxVertexIndex());
     assertEquals(7001L, payload.vertexBufferHandle().value());
     assertEquals(7002L, payload.indexBufferHandle().value());
+  }
+
+  @Test
+  void carriesTheIndexType() {
+    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
+    assertEquals(IndexType.UINT32,
+        GpuRayTracingBuildInputPayload.of(
+            geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 10, 0L, 0L).indexType());
+    GpuRayTracingBuildInputPayload uint16 = GpuRayTracingBuildInputPayload.of(
+        geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 0xFFFF, 0L, 6L, IndexType.UINT16);
+    assertEquals(IndexType.UINT16, uint16.indexType());
+    assertEquals(IndexType.UINT16, new GpuRayTracingBuildInputResource(uint16, 9001L, 9002L).indexType());
+  }
+
+  @Test
+  void rejectsIndexOffsetsAndRangesTheIndexTypeCannotHold() {
+    GpuRayTracingGeometryResource geometryResource = createGeometryResource();
+    assertThrows(IllegalArgumentException.class, () -> GpuRayTracingBuildInputPayload.of(
+        geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 10, 0L, 1L, IndexType.UINT16));
+    assertThrows(IllegalArgumentException.class, () -> GpuRayTracingBuildInputPayload.of(
+        geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 10, 0L, 6L, IndexType.UINT32));
+    assertThrows(IllegalArgumentException.class, () -> GpuRayTracingBuildInputPayload.of(
+        geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 0x10000, 0L, 0L, IndexType.UINT16));
+    assertThrows(NullPointerException.class, () -> GpuRayTracingBuildInputPayload.of(
+        geometryResource, new GpuBufferHandle(1L), new GpuBufferHandle(2L), 16, 10, 0L, 0L, null));
   }
 
   @Test

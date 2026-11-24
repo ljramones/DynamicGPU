@@ -1,8 +1,11 @@
 #version 450
-// IEEE floating-point checks for the conformance suite. Per element i, from v[3i..3i+2] = (x, y, z):
-//   o[3i]     = (x + 1.5*2^23) - 1.5*2^23: rounds x to an integer; fast math reassociates it to x
-//   o[3i + 1] = x*y + z with the product rounded first (precise: NoContraction)
-//   o[3i + 2] = 1 if x is NaN; fast math may assume no NaN
+// IEEE floating-point checks for the conformance suite. Per element i, from v[3i..3i+2] = (x, y, z), four outputs:
+//   o[4i]     = (x + 1.5*2^23) - 1.5*2^23, precise: rounds x to an integer
+//   o[4i + 1] = the same, unmarked: GLSL lets a driver reassociate it to x (Mesa does), so the conformance suite
+//               checks it only on backends that promise strict defaults (Metal; MoltenVK with fast math off)
+//   o[4i + 2] = x*y + z, precise: the product is rounded before the add
+//   o[4i + 3] = 1 if x is NaN
+// `precise` is SPIR-V NoContraction: every Vulkan driver must then round each operation as written.
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0) readonly buffer In { float v[]; };
 layout(set = 0, binding = 1) writeonly buffer Out { float o[]; };
@@ -13,9 +16,11 @@ void main() {
     float x = v[3 * i];
     float y = v[3 * i + 1];
     float z = v[3 * i + 2];
-    o[3 * i] = (x + 12582912.0) - 12582912.0;
+    precise float rounded = (x + 12582912.0) - 12582912.0;
+    o[4 * i] = rounded;
+    o[4 * i + 1] = (x + 12582912.0) - 12582912.0;
     precise float product = x * y;
     precise float unfused = product + z;
-    o[3 * i + 1] = unfused;
-    o[3 * i + 2] = isnan(x) ? 1.0 : 0.0;
+    o[4 * i + 2] = unfused;
+    o[4 * i + 3] = isnan(x) ? 1.0 : 0.0;
 }

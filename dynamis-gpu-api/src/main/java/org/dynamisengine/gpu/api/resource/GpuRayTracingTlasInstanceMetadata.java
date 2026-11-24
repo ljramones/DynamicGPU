@@ -53,17 +53,19 @@ public final class GpuRayTracingTlasInstanceMetadata {
               + " actual="
               + transform3x4RowMajor.length);
     }
-    if (instanceCustomIndex < 0) {
-      throw new IllegalArgumentException("instanceCustomIndex must be >= 0");
+    // VkAccelerationStructureInstanceKHR packs these into 24-, 24- and 8-bit fields; wider values were truncated
+    if (instanceCustomIndex < 0 || instanceCustomIndex > 0xFFFFFF) {
+      throw new IllegalArgumentException("instanceCustomIndex must be in [0, 0xFFFFFF] (24 bits): " + instanceCustomIndex);
     }
     if (mask < 0 || mask > 0xFF) {
       throw new IllegalArgumentException("mask must be in [0, 255]");
     }
-    if (shaderBindingTableRecordOffset < 0) {
-      throw new IllegalArgumentException("shaderBindingTableRecordOffset must be >= 0");
+    if (shaderBindingTableRecordOffset < 0 || shaderBindingTableRecordOffset > 0xFFFFFF) {
+      throw new IllegalArgumentException(
+          "shaderBindingTableRecordOffset must be in [0, 0xFFFFFF] (24 bits): " + shaderBindingTableRecordOffset);
     }
-    if (flags < 0) {
-      throw new IllegalArgumentException("flags must be >= 0");
+    if (flags < 0 || flags > 0xFF) {
+      throw new IllegalArgumentException("flags must be in [0, 0xFF] (8 bits): " + flags);
     }
     return new GpuRayTracingTlasInstanceMetadata(
         blasResource,

@@ -1,5 +1,7 @@
 package org.dynamisengine.gpu.test.mock;
 
+import org.dynamisengine.gpu.api.gpu.ComputeCullingDispatch;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -13,7 +15,7 @@ class MockImplementationsTest {
     MockVkCommandBuffer cmd = new MockVkCommandBuffer(77L);
 
     MockComputeCullingDispatch culling = new MockComputeCullingDispatch();
-    culling.dispatch(cmd, 32, new float[] {1, 2, 3, 4, 5, 6});
+    culling.dispatch(cmd, 32, new float[ComputeCullingDispatch.FRUSTUM_PLANE_FLOATS]);
     assertEquals(1, culling.calls().size());
     assertEquals(32, culling.calls().getFirst().meshCount());
 

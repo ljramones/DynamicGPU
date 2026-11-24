@@ -78,6 +78,16 @@ or both.
 
 Defects 1-12 come from the 2026-11-22 survey; 13-18 were found during verification.
 
+**Fixed in DynamisGPU (branch `fix/defects-ci`, 2026-11-24):**
+- **1:** meshlet bounds keep the source byte order.
+- **7a:** the culling frustum is specified as 24 floats, `ComputeCullingDispatch.FRUSTUM_PLANE_FLOATS`, and
+  enforced.
+- **8:** BLAS build inputs carry an `IndexType`, and TLAS instance fields are checked against their 24-, 24- and
+  8-bit Vulkan widths.
+- **10:** `VertexLayout` computes an attribute's end in `long`.
+
+Each fix has a test that failed before it.
+
 ## 3. Fixing order
 
 1. **LightEngine build health (15, 14).** Fix the package names and the `gl_DrawIDARB` name; nothing else can be

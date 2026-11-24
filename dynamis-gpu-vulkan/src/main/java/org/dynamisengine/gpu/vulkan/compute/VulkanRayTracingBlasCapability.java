@@ -1,5 +1,6 @@
 package org.dynamisengine.gpu.vulkan.compute;
 
+import org.dynamisengine.gpu.api.layout.IndexType;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 import static org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
@@ -19,6 +20,7 @@ import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 import static org.lwjgl.vulkan.VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 import static org.lwjgl.vulkan.VK10.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 import static org.lwjgl.vulkan.VK10.VK_FORMAT_R32G32B32_SFLOAT;
+import static org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT16;
 import static org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT32;
 import static org.lwjgl.vulkan.VK10.VK_NULL_HANDLE;
 import static org.lwjgl.vulkan.VK10.VK_SHARING_MODE_EXCLUSIVE;
@@ -159,7 +161,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
           GpuRayTracingBlasPayload.forGeometryResource(buildInput.payload().geometryResource());
 
       try (MemoryStack stack = MemoryStack.stackPush()) {
-        ParsedBuildRanges parsed = parseBuildRanges(buildInput.payload().geometryResource().payload(), stack);
+        ParsedBuildRanges parsed = parseBuildRanges(buildInput.payload().geometryResource().payload(), buildInput.indexType(), stack);
         VkAccelerationStructureBuildGeometryInfoKHR buildInfo =
             createBuildInfo(buildInput, parsed.geometryBuffer(), parsed.regionCount(), stack);
 
@@ -296,7 +298,8 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
       }
     }
 
-    private ParsedBuildRanges parseBuildRanges(GpuRayTracingGeometryPayload payload, MemoryStack stack) {
+    private ParsedBuildRanges parseBuildRanges(
+        GpuRayTracingGeometryPayload payload, IndexType indexType, MemoryStack stack) {
       ByteBuffer regions = payload.regionsBytes().order(ByteOrder.LITTLE_ENDIAN);
       int regionCount = payload.regionCount();
       int offsetInts = payload.regionsOffsetInts();
@@ -320,7 +323,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
         maxPrimitiveCounts.put(i, primitiveCount);
         rangeBuffer.get(i)
             .primitiveCount(primitiveCount)
-            .primitiveOffset(firstIndex * Integer.BYTES)
+            .primitiveOffset(firstIndex * indexType.byteSize())
             .firstVertex(0)
             .transformOffset(0);
       }
@@ -340,7 +343,7 @@ public final class VulkanRayTracingBlasCapability implements RayTracingBlasCapab
                 .vertexFormat(VK_FORMAT_R32G32B32_SFLOAT)
                 .vertexStride(buildInput.vertexStrideBytes())
                 .maxVertex(buildInput.maxVertexIndex())
-                .indexType(VK_INDEX_TYPE_UINT32)
+                .indexType(buildInput.indexType() == IndexType.UINT16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32)
                 .vertexData(
                     VkDeviceOrHostAddressConstKHR.calloc(stack)
                         .deviceAddress(
