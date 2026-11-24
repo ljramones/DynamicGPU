@@ -70,6 +70,8 @@ public final class VulkanProvider implements GpuProvider {
             if (extension(null, "VK_KHR_portability_enumeration")) {
                 info.flags(1); extensions.add("VK_KHR_portability_enumeration");
             }
+            // debug labels for captures (RenderDoc, Xcode through MoltenVK) where the loader offers them
+            if (extension(null, EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) extensions.add(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
             if (extension(null, EXTLayerSettings.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME)) {
                 extensions.add(EXTLayerSettings.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
                 var value = stack.malloc(4).order(ByteOrder.nativeOrder()).putInt(0, MOLTENVK_FAST_MATH_NEVER);

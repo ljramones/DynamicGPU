@@ -11,13 +11,14 @@ struct DGBatch {
     DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; dispatch_semaphore_t done; int completed;
     // per-dispatch timing (dg_batch_profile): a counter sample pair per dispatch, and CPU/GPU clock samples at commit
     id<MTLCounterSampleBuffer> samples; uint32_t sampleDispatches, nextDispatch; MTLTimestamp cpu0, gpu0;
+    int labelled;   // a debug group is open for the current dispatch
 };
 static _Thread_local char errorText[4096];
 static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
 #define START @autoreleasepool { @try { errorText[0] = 0;
 #define END(value) } @catch (NSException *e) { error(e.reason); return value; } }
-uint32_t dg_abi(void) { return 4; }
+uint32_t dg_abi(void) { return 5; }
 const char *dg_error(void) { return errorText; }
 int dg_device_count(void) { START NSArray *a = MTLCopyAllDevices(); int n = (int)a.count; [a release]; return n; END(-1) }
 DGDevice *dg_device_open(int index) { START
@@ -137,10 +138,16 @@ int dg_compute_begin(DGBatch *b, DGPipeline *p) { START
     }
     [b->encoder setComputePipelineState:p->pipeline]; return 0;
 END(-1) }
+// ABI 5: a debug group around the next dispatch (Xcode GPU captures show it); dg_compute_dispatch pops it.
+int dg_compute_label(DGBatch *b, const char *label) { START
+    if (!b->encoder) { error(@"no compute encoder"); return -1; }
+    [b->encoder pushDebugGroup:[NSString stringWithUTF8String:label]]; b->labelled = 1; return 0;
+END(-1) }
 int dg_compute_buffer(DGBatch *b, DGBuffer *buffer, uint64_t offset, uint32_t slot) { START [b->encoder setBuffer:buffer->buffer offset:offset atIndex:slot]; return 0; END(-1) }
 int dg_compute_parameters(DGBatch *b, const void *data, uint64_t bytes, uint32_t slot) { START [b->encoder setBytes:data length:bytes atIndex:slot]; return 0; END(-1) }
 int dg_compute_dispatch(DGBatch *b, uint32_t gx, uint32_t gy, uint32_t gz, uint32_t lx, uint32_t ly, uint32_t lz) { START
     [b->encoder dispatchThreadgroups:MTLSizeMake(gx, gy, gz) threadsPerThreadgroup:MTLSizeMake(lx, ly, lz)];
+    if (b->labelled) { [b->encoder popDebugGroup]; b->labelled = 0; }
     if (b->samples && b->nextDispatch < b->sampleDispatches) { end_compute(b); b->nextDispatch++; }
     return 0;
 END(-1) }

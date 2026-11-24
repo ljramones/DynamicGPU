@@ -230,9 +230,10 @@ public final class ComputeDevice implements GpuDevice {
                 require(!overlap(buffers.get(i), buffers.get(j)) || (!bound.get(i).access().writes() && !bound.get(j).access().writes()), "Writable dispatch bindings overlap");
             byte[] snapshot = parameters.clone(); retain(p.resource); buffers.forEach(b -> retain(b.resource));
             List<Resource> rs = new ArrayList<>(); rs.add(p.resource); buffers.forEach(b -> rs.add(b.resource));
-            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); commandResources.add(rs);
             String inner = dispatchLabel == null ? "" : dispatchLabel;
-            dispatchLabels.add(label.isEmpty() ? inner : inner.isEmpty() ? label : label + "/" + inner);
+            String effective = label.isEmpty() ? inner : inner.isEmpty() ? label : label + "/" + inner;
+            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups, effective)); commandResources.add(rs);
+            dispatchLabels.add(effective);
             return this;
         }
         void add(Command c, Resource... rs) { commands.add(c); commandResources.add(List.of(rs)); }
@@ -388,12 +389,12 @@ public final class ComputeDevice implements GpuDevice {
         @Override public GpuRecording parameters(int dispatch, byte[] parameters) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
             require(parameters.length == d.descriptor().layout().parameterBytes(), "Scalar parameter byte count differs from layout");
-            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), parameters.clone(), d.groups())); return this;
+            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), parameters.clone(), d.groups(), d.label())); return this;
         }
         @Override public GpuRecording groups(int dispatch, Dimensions groups) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
             limits().validateGroups(d.descriptor().localSize(), groups);
-            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), d.parameters(), groups)); return this;
+            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), d.parameters(), groups, d.label())); return this;
         }
         @Override public GpuRecording bind(int dispatch, int slot, GpuBuffer buffer) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
@@ -415,7 +416,7 @@ public final class ComputeDevice implements GpuDevice {
             }
             idle();
             var bound = new ArrayList<>(d.bindings()); bound.set(position, new Bound(slot, region, spec.access()));
-            commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), List.copyOf(bound), d.parameters(), d.groups()));
+            commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), List.copyOf(bound), d.parameters(), d.groups(), d.label()));
             var newRs = new ArrayList<>(rs); Resource old = newRs.set(position + 1, b.resource); commandResources.set(i, newRs);
             if (counts.merge(b.resource, 1, Integer::sum) == 1) b.resource.retain();
             if (counts.merge(old, -1, Integer::sum) == 0) { counts.remove(old); old.release(); }

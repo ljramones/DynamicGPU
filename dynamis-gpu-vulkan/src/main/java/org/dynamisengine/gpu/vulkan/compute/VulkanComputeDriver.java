@@ -34,6 +34,8 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final java.nio.file.Path pipelineCacheFile;
     /** System property naming a directory where pipeline caches persist across runs (opt-in). */
     static final String PIPELINE_CACHE_PROPERTY = "dynamisgpu.pipelineCache";
+    /** Whether the instance has VK_EXT_debug_utils, so dispatches carry debug labels. */
+    private final boolean debugLabels;
     /** Whether VK_EXT_memory_budget is enabled (budget and usage per heap). */
     private final boolean memoryBudget;
     /** Every pooled range starts at a multiple of this: at least 256 and the device's buffer offset alignments. */
@@ -59,6 +61,7 @@ final class VulkanComputeDriver implements ComputeDriver {
             var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
             List<String> extensions = new ArrayList<>(features.extensions());
             memoryBudget = VulkanProvider.extension(physical, "VK_EXT_memory_budget");
+            debugLabels = instance.getCapabilities().VK_EXT_debug_utils;
             if (memoryBudget) extensions.add("VK_EXT_memory_budget");
             if (VulkanProvider.extension(physical, "VK_KHR_portability_subset")) extensions.add("VK_KHR_portability_subset");
             if (!extensions.isEmpty()) {
@@ -365,10 +368,13 @@ final class VulkanComputeDriver implements ComputeDriver {
                                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline());
                                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout(), 0, local.longs(sets[i]), null);
                                 if (d.parameters().length > 0) vkCmdPushConstants(cmd, p.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, local.bytes(d.parameters()));
+                                boolean labelled = debugLabels && !d.label().isEmpty();
+                                if (labelled) EXTDebugUtils.vkCmdBeginDebugUtilsLabelEXT(cmd, VkDebugUtilsLabelEXT.calloc(local).sType$Default().pLabelName(local.UTF8(d.label())));
                                 boolean timed = profile && queries != 0;
                                 if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 2 + 2 * dispatchNumber);
                                 vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
                                 if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 3 + 2 * dispatchNumber);
+                                if (labelled) EXTDebugUtils.vkCmdEndDebugUtilsLabelEXT(cmd);
                                 dispatchNumber++;
                             }
                         }

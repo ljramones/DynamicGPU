@@ -273,6 +273,10 @@ can be transferred/mapped in slices.
   `GpuDevice.memoryByLabel()` gives the live buffers and requested bytes per class.
 - **Queue counters:** `GpuQueue.stats()` gives pending, submitted, completed and failed submissions, and the transfer
   bytes in flight. Reading them polls completions without blocking.
+- **Debug labels:** labelled dispatches carry their label into GPU captures.
+  - **Vulkan:** `VK_EXT_debug_utils` regions, where the loader offers the extension (the Vulkan SDK's loader does,
+    with MoltenVK).
+  - **Metal:** debug groups on the compute encoder (`dg_compute_label`, bridge ABI 5).
 - **Use for cost accounting:** time labelled submissions or recordings with `gpuTime()`. Per-dispatch timing perturbs
   execution (see below), so it is a diagnostic.
 

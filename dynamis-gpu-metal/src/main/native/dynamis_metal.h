@@ -26,6 +26,8 @@ int dg_device_memory(DGDevice *device, uint64_t *out);
 /* ABI 4: per-dispatch timing. Profile before the first dispatch; read the nanoseconds after completion (-1 if unsampled). */
 int dg_batch_profile(DGBatch *batch, uint32_t dispatches);
 int dg_dispatch_times(DGBatch *batch, int64_t *out, uint32_t count);
+/* ABI 5: a debug group around the next dispatch. */
+int dg_compute_label(DGBatch *batch, const char *label);
 void dg_device_release(DGDevice *device);
 DGBuffer *dg_buffer_create(DGDevice *device, uint64_t bytes, int privateStorage);
 void *dg_buffer_contents(DGBuffer *buffer);

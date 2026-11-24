@@ -13,8 +13,13 @@ public interface ComputeDriver extends AutoCloseable {
     record Download(Region source, GpuReadback result) implements Command { }
     record Copy(Region source, Region destination) implements Command { }
     record Fill(Region destination, int pattern) implements Command { }
+    /** A dispatch; {@code label} is its effective label (empty for none), for backend debug labels. */
     record Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings,
-                    byte[] parameters, Dimensions groups) implements Command { }
+                    byte[] parameters, Dimensions groups, String label) implements Command {
+        public Dispatch(Object pipeline, PipelineDescriptor descriptor, List<Bound> bindings, byte[] parameters, Dimensions groups) {
+            this(pipeline, descriptor, bindings, parameters, groups, "");
+        }
+    }
     interface Job extends AutoCloseable {
         /** COMPLETE includes host-read visibility and publication of every readback. */
         GpuSubmission.Status poll();
