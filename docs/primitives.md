@@ -6,7 +6,7 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 
 | Primitive | Does | Since |
 |---|---|---|
-| `GemmF16` | half-precision matrix multiply: transposed B, batches, FP32 or FP16 output | 1.2.0 (forms 1.4.0) |
+| `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
 | `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
 | `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting | 1.7.0 |
@@ -23,123 +23,222 @@ Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(.
 Output types are `Precision.FP32` and `Precision.FP16`. FP16 output is the FP32 result rounded once to the nearest
 half.
 
-## `GemmF16`
+## `GemmF16`: the GEMM family
 
-`C = alpha * A * B + beta * C`:
+`C = epilogue(alpha * op(A) * op(B) + beta * C)`:
 - **Layout:**
-  - A is `m x k` in FP16.
-  - B is `k x n`, or `n x k` when transposed, in FP16.
-  - C is `m x n`, in FP32 or FP16.
+  - A is `m x k`, or `k x m` when transposed; B is `k x n`, or `n x k` when transposed.
+  - A and B are FP16, BF16 or FP32 (`GemmF16.Input`, 1.8.0); C is `m x n`, in FP32 or FP16 (`Precision`).
   - All are row-major with leading dimensions in elements (`GemmF16.Shape`).
-- **Use:** it is a dense layer with half-precision weights and activations.
-  - **Linear layers:** with transposed B it computes a linear layer's `x W^T`, with the weights as stored.
-  - **Attention:** with a batch, it runs the per-head products of attention in one dispatch.
+- **Use:**
+  - **Linear layers:** with transposed B it computes `x W^T`, with the weights as stored, and a fused bias,
+    activation, gate or residual.
+  - **Decode:** for `m` up to 16 the skinny kernel streams the weights at close to memory bandwidth.
+  - **Attention:** with a batch, it runs the per-head products in one dispatch.
+  - **Backward pass:** with transposed A it computes the weight gradient `dY^T X`.
+  - **Mixture of experts:** the grouped form runs every expert's multiply in one dispatch.
+  - **Small networks:** batches of 16 x 16 or 32 x 32 multiplies, such as game-AI layers, run on the small kernel.
 
 ```java
-try (GemmF16 gemm = GemmF16.create(device)) {              // FP32 C; create(device, Output.FP16) for FP16 C
+try (GemmF16 gemm = GemmF16.create(device)) {              // FP16 A and B, FP32 C; create(device, Input, Precision)
     var shape = GemmF16.Shape.of(m, n, k, 1f, 0f);          // dense: lda = k, ldb = ldc = n
-    gemm.encode(encoder, a, b, c, shape);                    // a, b: >= shape.aBytes(), bBytes(); c: cBytes(output)
+    gemm.encode(encoder, a, b, c, shape);                    // a, b: >= shape.aBytes(input), bBytes(input); c: cBytes(output)
 }
 var linear = GemmF16.Shape.ofTransposedB(tokens, out, in, 1f, 0f);       // C = X W^T, W stored out x in
 var heads = GemmF16.Shape.ofTransposedB(seq, seq, headDim, scale, 0f).batched(numHeads);   // one Q K^T per head
 var shared = GemmF16.Shape.of(m, n, k, 1f, 0f).withBatch(count, m * k, 0, m * n);         // stride 0: one B for all
+var gradient = GemmF16.Shape.ofTransposedA(out, in, tokens, 1f, 0f);    // dW = dY^T X, dY stored tokens x out
 ```
 
 - **Transposed B:** `Shape.ofTransposedB`, or `transposeB = true` with `ldb >= k`.
+- **Transposed A** (1.8.0): `Shape.ofTransposedA`, or `transposeA = true` with `lda >= m`. Every algorithm but
+  SKINNY takes it.
 - **Batches:** `batched(count)` packs the matrices densely one after another; `withBatch(count, strideA, strideB,
   strideC)` sets the strides.
   - **Sharing:** a stride of 0 shares one matrix across the batch.
   - **Overlap:** C matrices may not overlap.
   - **Dispatch:** the batch is the dispatch's z dimension.
-- **FP16 output:** `Output.FP16` computes in FP32 as above, then rounds the result once to the nearest half.
+- **Column-major operands** (1.8.0): there are no column-major kernels. A column-major product is the row-major
+  `C^T = op(B)^T op(A)^T`, which `Shape.columnMajor(m, n, k, lda, ldb, ldc, alpha, beta, transposeA, transposeB)`
+  describes. Encode it with the buffers of A and B swapped.
+- **FP16 output:** `Precision.FP16` computes in FP32 as above, then rounds the result once to the nearest half.
   Overflow gives infinity.
-
 - **`beta == 0`:** C is not read (as in BLAS), so it may hold anything.
-- **Buffer sizes:** transfers move whole 32-bit words, so round the FP16 buffers up to a multiple of 4 bytes.
-- **Refusal:** `create` throws `UNSUPPORTED` on a device without `FP16`.
+- **Buffer sizes:** transfers move whole 32-bit words, so round 2-byte buffers up to a multiple of 4 bytes.
+- **Refusal:** `create` throws `UNSUPPORTED` on a device without `FP16` when the inputs or C are FP16.
 - **Indexing:** element indices are 32-bit, so each operand, batch included, spans fewer than 2^32 elements.
 
 ### Algorithms
 
-`GemmF16.create(device)` picks the fastest algorithm the device has; `create(device, algorithm)` chooses one.
+`GemmF16.create(device)` compiles every algorithm the device runs and picks one per shape;
+`create(device, algorithm, input, output)` runs one algorithm for every shape.
 
-| Algorithm | Runs on | Kernel |
-|---|---|---|
-| `TILED` | every device with `FP16` | Slang (`gemm_body.slang`, one entry per output type): shared FP32 tiles and fused multiply-adds |
-| `SIMDGROUP_MATRIX` | native Metal on Apple7+ GPUs (`SUBGROUP_MATRIX_F16`) | MSL (`metal/gemm_f16_simdgroup.metal`, one entry per output type): 8 x 8 hardware multiply-accumulate |
+| Algorithm | Runs on | Kernel | Order |
+|---|---|---|---|
+| `TILED` | every device | Slang (`gemm_body.slang`, `gemm_tile.slang`): 64 x 64 tiles, shared FP32 tiles and fused multiply-adds | fixed: `reference` |
+| `SIMDGROUP_MATRIX` | native Metal on Apple7+ GPUs (`SUBGROUP_MATRIX_F16`); FP16 and FP32 inputs | MSL (`metal/gemm_f16_simdgroup.metal`): 8 x 8 hardware multiply-accumulate | the hardware's |
+| `SKINNY` (1.8.0) | every device; `m <= 16`, A not transposed | Slang (`gemm_skinny_body.slang`): streams B once with every row of A | fixed: `referenceSkinny` |
+| `SMALL` (1.8.0) | every device | Slang (`gemm_small_body.slang`): 16 x 16 tiles, one element per thread | fixed: `reference` |
 
 - **The matrix kernel:** a group of four SIMD-groups computes a 64 x 64 tile, each SIMD-group a 32 x 32 quarter.
   - **Interior tiles** (`k` a multiple of 8) load 8 x 8 blocks straight from device memory; the caches serve the
-    reuse. Transposed B loads its blocks transposed, in a separate loop: testing the layout inside the loop cost
-    about 15 %.
+    reuse. Transposed operands load their blocks transposed, in separate loops: testing the layout inside the loop
+    cost about 15 %.
   - **Edge tiles** stage zero-filled copies in threadgroup memory.
   - **Why the direct loads:** staging every tile in threadgroup memory, a half at a time, ran at 3.7 TFLOP/s.
+- **The skinny kernel** (the decode step of an LLM):
+  - **B transposed** (the weights of a linear layer): a group of 256 threads computes 16 columns. Each column's k
+    elements are split over 32 lanes in chunks of 8, and each thread computes 2 columns, so a value of A serves both.
+  - **B not transposed:** a group computes 64 columns, 16 lanes of 16 threads, each thread 4 adjacent columns.
+  - **The vector build:** with B transposed, every row on a multiple of 8 elements and the buffers at 16-byte
+    offsets, A and B are read 16 bytes per lane. Otherwise they are read as 32-bit words. Both builds sum in the
+    same order.
+  - **Lanes:** they combine in a fixed tree in group memory, never through subgroup operations, whose width differs
+    between devices.
+- **The small kernel:** each thread sums its element's k products in order, as TILED does, so it is bit for bit
+  `reference`. It wins wherever TILED's 64 x 64 tiles would be mostly padding or too few to fill the GPU.
+
+### Inputs (1.8.0)
+
+`GemmF16.Input`: FP16, BF16 or FP32. Every family has a kernel per input and output type, 30 Slang kernels in all.
+- **FP16 and BF16:** they widen exactly to FP32 in the kernel (BF16 by a shift), and their products are exact in
+  FP32. The fixed-order algorithms are therefore bit for bit their references on every device.
+  - **BF16** is never narrowed to FP16, whose exponent range is smaller.
+  - **Subnormals:** devices that flush FP32 subnormals (Apple GPUs) also flush BF16 subnormal inputs.
+- **FP32:** products round, so each step is one fused multiply-add.
+  - **The references** use `Math.fma`, and are bit for bit where the device reports `FUSED_FMA` (native Metal and
+    MoltenVK).
+  - **On lavapipe,** which rounds `fma` twice, results are within the bound.
+- **References:** `reference(algorithm, Elements a, Elements b, ...)` reads A and B through `GemmF16.Elements`
+  (`fp16`, `bf16`, `fp32`). `bf16ToFloat` and `floatToBf16` (ties to even) convert.
+- **The matrix kernel** takes FP16 and FP32. FP32 SIMD-group matrices ran at only 2.7 to 3.0 TFLOP/s at 4096^3,
+  against the tiled kernel's 4.9 to 5.3, so shape dispatch leaves them out for FP32 inputs.
+
+### Fused epilogues (1.8.0)
+
+`GemmF16.Epilogue` is applied to each element in FP32, in this order, before the one rounding to C's type:
+1. `r = fl(fl(alpha acc) + fl(beta c))`, as without an epilogue;
+2. `r + bias`, per column (`bias[j]`, a linear layer's bias) or per row (`bias[i]`), shared by every matrix of a
+   batch;
+3. the activation: ReLU (`Math.max(r, 0)`, so NaN stays NaN), GELU in its tanh form, or SiLU;
+4. `r * gate`, the gated linear unit: SiLU with the up projection as gate is SwiGLU (`Epilogue.swiGlu()`);
+5. `r + residual`.
+
+```java
+var ep = GemmF16.Epilogue.NONE.withBias(GemmF16.Epilogue.Bias.COLUMN).withActivation(GemmF16.Epilogue.Activation.GELU);
+gemm.encode(encoder, x, w, h, GemmF16.Shape.ofTransposedB(tokens, hidden, dim, 1f, 0f), ep, bias, null, null);
+```
+
+- **Operands:** gate and residual are laid out as C (`ldc`, `strideC`), and bias, gate and residual have C's
+  element type. Each is passed exactly when the epilogue uses it, else null; an unused slot binds a placeholder.
+- **Exactness:** bias, ReLU, gate and residual round as written, so TILED, SKINNY and SMALL stay bit for bit with
+  `reference(algorithm, ..., epilogue, bias, gate, residual)` (`Epilogue.exact()`).
+- **GELU and SiLU** use the device's `exp`, written so that its overflow and underflow give the right limits; they
+  are held to the bound. `contract(algorithm, input, output, epilogue)` states it.
+
+### Grouped GEMM (1.8.0)
+
+`encodeGrouped(encoder, a, b, c, problems, grouped, epilogue, bias, gate, residual)` runs many multiplies of
+different shapes in one dispatch, such as the experts of a mixture-of-experts layer.
+- **The table:** `problems` is a buffer of `Problem` records (48 bytes each: sizes, leading dimensions and element
+  offsets into the shared A, B, C and bias buffers). A kernel can write it, a router for example; `Problem.encode`
+  writes it from the host.
+- **Shared by all problems:** alpha, beta, the layouts and the epilogue (`Grouped`). `maxM` and `maxN` bound the
+  problems and size the dispatch.
+- **The kernel:** each problem runs the tiled kernel, so it is bit for bit `referenceGrouped`. Empty problems (an
+  expert with no tokens) cost nothing.
+- **Safety:** a problem that reaches outside a buffer, or beyond `maxM` or `maxN`, is skipped and reported through a
+  `KernelErrors` buffer, so the submission fails with `KERNEL_ERROR`.
 
 ### Accuracy and reproducibility
 
 - **Contract:** before `alpha` and `beta`, `|C - exact| <= k * 2^-24 * sum |a b|`. Later kernel versions may sum in
   another order, for example on matrix hardware, within the same bound.
-- **The tiled algorithm is reproducible across devices:**
-  - **Why:** products of halves are exact in FP32, so `fma(a, b, acc)` rounds once whether or not the device fuses
-    it.
-  - **The sum:** each element is `acc = fl(acc + a b)`, over `k` in order.
-  - **The epilogue:** it is `fl(fl(alpha acc) + fl(beta c))`, with the add marked `NoContraction`.
-  - **Checking it:** `GemmF16.reference` computes the same bits on the CPU, and the tests require equality on native
-    Metal, MoltenVK and Mesa lavapipe. lavapipe doesn't fuse `fma`, so it's a meaningful check.
+- **The accumulation** is FP32 for every input. A narrower accumulation would be a separate, named variant; there
+  is none. Every contract states its accumulation type and order (`contract(...)`).
+- **The fixed-order algorithms are reproducible across devices** that round FP32 add and multiply correctly:
+  - **TILED and SMALL:** each element is `acc = fma(a, b, acc)` over `k` in order. For FP16 and BF16 the product is
+    exact, so this is `fl(acc + a b)` whether or not the device fuses `fma`.
+  - **SKINNY:** element `q` of k goes to lane `(q / chunk) % L`, with `L` 32 and `chunk` 8 when B is transposed, 16
+    and 2 when not. Each lane sums in order of `q`, then lane `t` takes lane `t + w` for `w = L/2, ..., 1`.
+  - **The epilogue:** `fl(fl(alpha acc) + fl(beta c))`, with the add marked `NoContraction`, then the steps above.
+  - **Checking it:** the references compute the same bits on the CPU, and the tests require equality on native
+    Metal, MoltenVK and Mesa lavapipe (FP32 inputs where `FUSED_FMA` holds).
   - **On the CPU:** NNJava can reproduce a GPU layer bit for bit.
 - **The matrix algorithm:** it is held to the bound only.
-  - **Measured:** on an M4 Max it matched `GemmF16.reference` bit for bit on every test shape: 0 differences in
-    about 62,000 elements, interior and edge tiles. So that GPU's multiply-accumulate sums exact products in order
-    with FP32 rounding.
+  - **Measured:** on an M4 Max it matched `GemmF16.reference` bit for bit on every test shape, FP16 and FP32 inputs
+    alike. So that GPU's multiply-accumulate sums in order with FP32 rounding.
   - **Not promised:** Apple does not document this, and other GPU generations are unverified.
 
-### Shape dispatch (1.7.0)
+### Shape dispatch
 
-`GemmF16.create(device)` compiles both algorithms where the device has matrix hardware, and `encode` picks one per
-shape (`algorithm(shape)`) from `GemmF16.REGISTRY`, a kit `ShapeRegistry`.
+`GemmF16.create(device)` compiles every algorithm the device runs for the input type, all or none, and `encode`
+picks one per shape (`algorithm(shape)`) from `GemmF16.REGISTRY`, a kit `ShapeRegistry` (1.7.0).
 - **Reproducible mode:** it is TILED only.
-- **An explicit algorithm:** `create(device, algorithm, output)` still runs that algorithm for every shape.
-- **The rule:** measured on an Apple M4 Max with `-Dgemm.shapes=true`. The figures are GPU time per multiply, and
-  the ratio is TILED over the matrix kernel:
+- **An explicit algorithm:** `create(device, algorithm, input, output)` runs that algorithm for every shape.
+- **The costs** (1.8.0) are estimated GPU times (`GemmF16.Costs`), fitted to sweeps on an Apple M4 Max
+  (`-Dgemm.shapes=true`, `-Dgemm.decode=true`; native Metal and MoltenVK agree):
+  - **TILED:** 5.5 TFLOP/s over its 64-padded work when the GPU is full, which takes about 100 groups. A 128^3
+    multiply (4 groups) runs at 4 % of that.
+  - **SMALL:** 2.15 TFLOP/s over its 16-padded work, full from about 190 groups.
+  - **SKINNY:** B at 400 GB/s when B is transposed (300 when not), slower by 17 % (45 %) per extra row of A. It is
+    offered only for decode-sized products: k of at least 256 and at least 32 groups.
+  - **SIMDGROUP_MATRIX:** 0.5 of TILED's time from `m = 64`, 0.75 with B transposed and `m <= 16`, else 1.5.
+  - **Checked:** on all 46 measured shapes the model picks the fastest algorithm or one within 1.2 times of it,
+    with the matrix kernel and without (`GemmF16Test.costModelPicksTheMeasuredFastest`).
+- **Some measured choices** (GPU time relative to TILED, M4 Max):
 
-  | Shape (m x n x k) | B | TILED | SIMDGROUP_MATRIX | Ratio |
+  | Shape (m x n x k x batch) | B | Fastest | Its time | Matrix kernel |
   |---|---|---|---|---|
-  | 1 x 4096 x 4096 | as stored | 510 us | 764 us | 0.67 |
-  | 1 x 4096 x 4096 | transposed | 640 us | 424 us | 1.51 |
-  | 32 x 4096 x 4096 | as stored | 519 us | 979 us | 0.53 |
-  | 32 x 4096 x 4096 | transposed | 636 us | 697 us | 0.91 |
-  | 64 x 4096 x 4096 | as stored | 531 us | 305 us | 1.74 |
-  | 32 x 2048 x 128 | as stored | 14.7 us | 20.6 us | 0.71 |
-  | 512 x 512 x 512 | as stored | 70.2 us | 34.5 us | 2.04 |
-  | 2048 x 2048 x 128 | as stored | 227 us | 101 us | 2.24 |
+  | 1 x 4096 x 4096 | transposed | SKINNY | 0.14 | 0.68 |
+  | 16 x 4096 x 4096 | as stored | SMALL | 0.59 | 1.63 |
+  | 128 x 128 x 128 | as stored | SMALL | 0.29 | 0.76 |
+  | 16 x 16 x 16 x 4096 | as stored | SMALL | 0.26 | 2.25 |
+  | 512 x 512 x 512 | as stored | matrix | 0.52 | 0.52 |
+  | 2048 x 2048 x 128 | as stored | matrix | 0.57 | 0.57 |
 
-  - **Why:** the matrix kernel's 64 x 64 tiles waste most of their work when `m < 64`.
-  - **So the registry picks:** the matrix kernel from `m = 64`, and below that only with B transposed and
-    `m <= 16`; TILED otherwise.
-  - **Not yet fast:** the `m = 1` decode products run at about 64 GB/s, far below the memory bandwidth. They wait for
-    1.8's skinny GEMM.
 - **Checking it:** `REGISTRY.checkLimits(device, shape)` compiles every variant the device supports and checks it
   against the pipeline's and the device's limits. The tests run it on every backend.
+
+### Decode bandwidth (1.8.0)
+
+`-Dgemm.decode=true` measures the decode products and reports them as GB/s of B and as a share of the device's
+streaming-read bandwidth, measured in the same run as a row sum over 256 MiB. On an M4 Max that measurement varies
+between runs, from 415 to 516 GB/s (nominal 546).
+
+| m = 1, n = k = 4096 | B transposed | B as stored |
+|---|---|---|
+| TILED (1.7.0) | 53 GB/s | 67 GB/s |
+| SKINNY, FP16 weights | 378-408 GB/s, 77-96 % | 304-345 GB/s, 59-67 % |
+| SKINNY, BF16 weights | 368 GB/s, 89 % | 294 GB/s, 71 % |
+| SKINNY, FP32 weights | 395 GB/s, 80 % | 511 GB/s |
+
+- **Rows of A:** each extra row costs about 17 % with B transposed: 52 % of TILED's time at `m = 16`.
+- **MoltenVK** runs the same kernels at the same rates.
 
 ### Performance
 
 Measured on an Apple M4 Max (40-core GPU, macOS 27). The figures are GPU time (`GpuSubmission.gpuTime`) over
-back-to-back multiplies in one submission (`-Dgemm.benchmark=true`). MoltenVK runs the tiled kernel.
+back-to-back multiplies in one submission (`-Dgemm.benchmark=true`; `-Dgemm.input` picks the input type). MoltenVK
+runs the Slang kernels.
 
 | Size (m = n = k) | Metal, `SIMDGROUP_MATRIX` | Metal, `TILED` | MoltenVK, `TILED` |
 |---|---|---|---|
 | 512 | 7.8 TFLOP/s | 3.9 TFLOP/s | 3.0 TFLOP/s |
 | 1024 | 11.3 TFLOP/s | 5.0 TFLOP/s | 4.6 TFLOP/s |
 | 2048 | 12.8 TFLOP/s | 5.6 TFLOP/s | 5.4 TFLOP/s |
-| 4096 | 12.9 TFLOP/s | 5.7 TFLOP/s | 5.4 TFLOP/s |
+| 4096 | 12.7 TFLOP/s | 5.3-5.7 TFLOP/s | 5.4 TFLOP/s |
 
-- **The kernel:** a group of 16 x 16 threads computes a 64 x 64 tile, each thread 4 x 4 outputs. k advances in steps
-  of 16 through shared FP32 tiles.
+- **Inputs at 4096^3:** TILED runs 5.3 TFLOP/s with FP16, 5.1 with BF16 and 5.3 with FP32; the matrix kernel 12.7
+  with FP16 and 2.7 to 3.0 with FP32.
+- **The tiled kernel:** a group of 16 x 16 threads computes a 64 x 64 tile, each thread 4 x 4 outputs. k advances in
+  steps of 16 through shared FP32 tiles.
 - **Alternatives measured on the same GPU:**
   - 128 x 128 tiles with 8 x 8 per thread: 3.6 TFLOP/s;
   - steps of 32: 4.2 TFLOP/s.
 - **Unrolling:** the fixed loops are `[ForceUnroll]`ed. The shader build compiles at `-O0`, and without unrolling the
   SPIR-V keeps the accumulators as indexed arrays. MoltenVK then ran 14 times slower: 376 against 5,261 GFLOP/s.
+- **Epilogues** cost nothing measurable: the 4096^3 rates are the same with the 1.8.0 parameter block.
 - **Peak:** the tiled kernel reaches about a third of the GPU's FP32 peak, and the matrix kernel about three
   quarters.
 
@@ -212,8 +311,8 @@ try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
 
 - **Flash attention:** fused attention that keeps the scores on chip, with memory linear in the sequence, and skips
   masked blocks.
-- **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on.
-- **Other primitives:** layer and RMS norms, reductions, and int8 and BF16 weight formats.
+- **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
+- **Other primitives:** layer and RMS norms, and int8 and int4 weight formats (1.9).
 
 ## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)
 

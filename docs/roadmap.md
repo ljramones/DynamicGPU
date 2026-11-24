@@ -268,6 +268,35 @@ Not done, deliberately:
 
 ### 1.8: GEMM family
 
+**Status: complete, to be released as 1.8.0.** Done:
+- **Skinny GEMM** (`Algorithm.SKINNY`, `m <= 16`): a fixed split order, bit for bit `referenceSkinny` on every
+  device. At `m = 1` with B transposed it streams 378-408 GB/s on an M4 Max, 77-96 % of the measured streaming-read
+  bandwidth (`-Dgemm.decode=true` reports both), about 7 times the tiled kernel.
+- **Small multiplies** (`Algorithm.SMALL`): 16 x 16 tiles, bit for bit `reference`. On batches of 16 x 16 and
+  32 x 32 multiplies it takes 0.26 and 0.62 of TILED's time.
+- **Grouped GEMM** (`encodeGrouped`): a `Problem` table the GPU may write, tiled per problem, bit for bit
+  `referenceGrouped`; out-of-range problems fail the submission.
+- **Transposed A** (`Shape.transposeA`) on every algorithm but SKINNY.
+- **Fused epilogues** (`Epilogue`): bias per column or row, ReLU, GELU (tanh form), SiLU, gate (SwiGLU) and
+  residual, in FP32 before the output rounding. The exact ones keep the fixed-order kernels bit for bit.
+- **Inputs** (`Input`): FP16, BF16 and FP32 on every family; FP32 bit for bit where the device fuses fma. The Metal
+  matrix kernel takes FP32 too.
+- **Accumulation policy:** every contract states its accumulation (FP32 for every input) and order class.
+- **Column-major:** `Shape.columnMajor` maps it onto `C^T = op(B)^T op(A)^T`.
+- **Shape dispatch:** the registry's costs are estimated GPU times (`GemmF16.Costs`). On all 46 measured shapes
+  they pick the fastest algorithm or one within 1.2 times of it.
+- **Found and fixed:** the Vulkan backend failed past about 1,170 dispatches per submission (a thread-stack frame
+  per submission); now a frame per dispatch, with a conformance test.
+
+Not done:
+- **Vulkan cooperative matrices:** no NVIDIA, AMD or Intel hardware to test on.
+- **A fast FP32 matrix kernel:** Metal's FP32 SIMD-group matrices ran at only 2.7 to 3.0 TFLOP/s at 4096^3, against
+  the tiled kernel's 5.3. Shape dispatch leaves them out for FP32 inputs.
+- **The matrix kernel** has no BF16 entry (Metal's `bfloat` matrices need a newer language version) and no grouped
+  form; grouped problems run the tiled kernel.
+
+The plan as agreed:
+
 On the kit, `GemmF16` grows into a family. Each form is tested bit for bit (tiled) or within its bound, on every
 backend.
 - **Skinny GEMM / GEMV** (`m` from 1 to 16): one SIMD-group streams a slice of the weights once.

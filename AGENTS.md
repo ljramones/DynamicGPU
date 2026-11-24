@@ -92,9 +92,17 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - Declare buffers with `[[vk::binding(i, 0)]]` in slot order, and the `[[vk::push_constant]]` parameter block
     last. Metal buffer indices then equal the slots, and the parameters take the next index, which `ShaderBuild`
     checks.
+  - Slang numbers Metal buffers in declaration order, includes too. An include that declares buffers or the
+    parameters must come after the buffers before it: the GEMM kernels declare A and B (`gemm_inputs.slang`), then C
+    and the epilogue operands (`gemm_common.slang`), then any extra buffers, then the parameters
+    (`gemm_epilogue.slang`).
   - Parameter blocks are 32-bit fields. Java writes them little-endian, in declaration order.
 - **Variants:** share one body file. Each entry file does `#define OUT_T` / `#define ENTRY` and then
   `#include "x_body.slang"` (see `gemm_body.slang`). Slang `import` is not transitive.
+  - **The GEMM family** has one four-line entry file per family, input and output type:
+    `gemm_<family>[_bf16|_f32][_h].slang`, defining `IN_KIND` (0 FP16, 1 BF16, 2 FP32), `OUT_T`, `ENTRY` and, for
+    the skinny vector build, `VEC`. The tiled family is `gemm_f16`, `gemm_bf16` and `gemm_f32`. `GemmF16.kernel`
+    builds the names, and `GemmF16Test` checks that every one exists with the shared ABI.
 - **What the build does for rounding:**
   - It compiles at `-O0`, because the optimizer folds `(x + c) - c`.
   - It marks SPIR-V `FAdd`, `FSub` and `Fma` `NoContraction`, but not `FMul`: SPIRV-Cross turns a marked multiply
@@ -135,6 +143,15 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **Cooperative matrices:** neither MoltenVK nor lavapipe supports `VK_KHR_cooperative_matrix`. Don't ship a
   cooperative-matrix kernel until there is hardware to run it.
 - **Tiers measured on each target:** see the table in `docs/compute-runtime.md`.
+
+## Runtime traps
+
+- **LWJGL's `MemoryStack` is 64 KiB per thread.** Allocate per-command structures in a frame per command
+  (`try (var local = MemoryStack.stackPush())`), never in the frame that spans a whole command list: the Vulkan
+  backend failed past about 1,170 dispatches per submission until 1.8.0 (`ComputeConformance.runsLongCommandLists`).
+  The error is LWJGL's `OutOfMemoryError("Out of stack space.")`, which kills the surefire fork.
+- **Benchmarks record many dispatches per submission.** Long command lists are a good stress test; keep
+  `-Dgemm.shapes=true` and `-Dgemm.benchmark=true` running on MoltenVK as well as Metal.
 
 ## Testing conventions
 
@@ -220,8 +237,10 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.5.0 are on GitHub.
-  - **1.4.0** added the GEMM forms, `Softmax` and `AttentionF16`.
-  - **1.5.0** completed milestone 1.5: memory pools, blocking waits, recordings, the memory budget, per-dispatch
-    timing and the Vulkan pipeline cache.
-- **Next:** milestone 1.6 (queues and synchronization, indirect dispatch, arenas, interop).
+- **Published:** 1.0.x to 1.7.0 are on GitHub.
+  - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
+    pipeline cache.
+  - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
+  - **1.7.0:** the kernel kit, and the `Elementwise`, `Reduce`, `Scan` and `NanCheck` primitives.
+- **1.8.0 (the GEMM family):** built on branch `feat/gemm-family`; see `docs/releases/1.8.0.md`.
+- **Next:** milestone 1.9 (quantized weights and packing).
