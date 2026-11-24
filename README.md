@@ -17,6 +17,14 @@ CI (`.github/workflows/ci.yml`) runs on every push:
   `moltenvk`). This job runs only on pushes, never for pull requests, so code from forks cannot reach that machine.
   It waits in the queue while the runner is offline.
 
+## Roadmap
+
+[docs/roadmap.md](docs/roadmap.md) lays out the plan, layer by layer:
+- runtime (memory pools, command replay, queues);
+- the kernel kit;
+- the GEMM family, quantized weights, and inference, attention and training kernels;
+- then the flow into Vectrix.
+
 ## Modules
 - `dynamis-gpu-api`: public GPU contracts (`org.dynamisengine.gpu.api`)
 - `dynamis-gpu-vectrix`: GPU data written from Vectrix types (transform layouts and writers, instance
