@@ -19,6 +19,14 @@ jobs:
           distribution: temurin
           java-version: "25"
           cache: maven
+      - name: Install Vectrix (for dynamis-gpu-vectrix; Vectrix 3.x is released on GitHub, not Maven Central)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VECTRIX=$(mvn -B -q help:evaluate -pl dynamis-gpu-vectrix -Dexpression=vectrix.version -DforceStdout)
+          gh release download "v$VECTRIX" --repo ljramones/vectrix --pattern "vectrix-$VECTRIX.jar" --dir "$RUNNER_TEMP"
+          mvn -B -q install:install-file -Dfile="$RUNNER_TEMP/vectrix-$VECTRIX.jar" -DgroupId=org.dynamisengine \
+            -DartifactId=vectrix -Dversion="$VECTRIX" -Dpackaging=jar
       - name: Verify
         run: mvn -B verify
 
