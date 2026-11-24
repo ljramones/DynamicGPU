@@ -259,6 +259,20 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Transient arenas (1.6.0).** `GpuDevice.arena(descriptor)` allocates one backing buffer. `arena.scope()` opens a
+stack-like scope whose `allocate(bytes)` hands out aligned sub-buffers.
+- **Reuse:** closing a scope closes its buffers, and the next scope reuses the same memory, for example one layer's
+  scratch for the next, or a frame's temporaries.
+- **Why reuse is safe:** an arena is bound to the compute queue, and its buffers are refused on another queue. On one
+  queue, each command waits for the writes of everything submitted before it.
+  - **Vulkan:** the pipeline barrier before every command covers earlier submissions.
+  - **Metal:** it tracks hazards across a queue's command buffers.
+- **Mapping:** the host cannot map arena memory while work on it is in flight.
+- **Bookkeeping:** `used()` and `highWater()` report what is allocated now and what was needed at most. The
+  descriptor's label puts the arena in a memory class.
+- **Tested:** five layers queued back to back without waiting, each reusing the same memory, all correct on every
+  backend.
+
 **Indirect dispatch (1.6.0).** `encoder.dispatchIndirect(pipeline, bindings, parameters, args, offset)` reads its
 three group counts from a buffer when the dispatch runs. So work sized on the GPU (culling, compaction, routing
 tokens to experts) needs no readback.

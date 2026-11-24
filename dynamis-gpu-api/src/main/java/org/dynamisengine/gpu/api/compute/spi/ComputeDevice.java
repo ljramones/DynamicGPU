@@ -77,6 +77,53 @@ public final class ComputeDevice implements GpuDevice {
     }
     @Override public GpuCommandEncoder encoder() { check(); return new Encoder(); }
     @Override public GpuFence fence() { check(); return new Fence(driver.fence()); }
+    @Override public GpuArena arena(BufferDescriptor descriptor) {
+        check(); Buffer backing = (Buffer) allocate(descriptor); backing.resource.arena = true; return new Arena(backing);
+    }
+
+    /** A transient arena: stack-like scopes of slices over one backing buffer. */
+    private final class Arena implements GpuArena {
+        final Buffer backing;
+        final List<ArenaScope> open = new ArrayList<>();
+        long top, highWater;
+        boolean closed;
+        Arena(Buffer backing) { this.backing = backing; handles.add(this); }
+        @Override public Scope scope() {
+            check(); if (closed) throw new ComputeException(CLOSED, "Arena is closed");
+            var scope = new ArenaScope(this, top); open.add(scope); return scope;
+        }
+        @Override public long capacity() { return backing.bytes; }
+        @Override public long used() { return top; }
+        @Override public long highWater() { return highWater; }
+        @Override public void close() {
+            thread(); if (closed) return;
+            for (var scope : List.copyOf(open).reversed()) scope.close();
+            closed = true; handles.remove(this); backing.close();   // the storage stays until in-flight work completes
+        }
+    }
+    private final class ArenaScope implements GpuArena.Scope {
+        final Arena arena; final long start;
+        final List<Buffer> buffers = new ArrayList<>();
+        boolean closed;
+        ArenaScope(Arena arena, long start) { this.arena = arena; this.start = start; handles.add(this); }
+        @Override public GpuBuffer allocate(long bytes) {
+            check(); if (closed) throw new ComputeException(CLOSED, "Arena scope is closed");
+            require(arena.open.getLast() == this, "Only the innermost open scope of an arena allocates");
+            require(bytes > 0, "Arena allocations must be positive");
+            long align = Math.max(4, limits().storageOffsetAlignment());
+            long offset = (arena.top + align - 1) / align * align;
+            if (offset + bytes > arena.backing.bytes)
+                throw new ComputeException(RESOURCE_EXHAUSTED, "Arena of " + arena.backing.bytes + " bytes cannot fit " + bytes + " more at " + offset);
+            arena.top = offset + bytes; arena.highWater = Math.max(arena.highWater, arena.top);
+            var b = (Buffer) arena.backing.slice(offset, bytes); buffers.add(b); return b;
+        }
+        @Override public void close() {
+            thread(); if (closed) return;
+            while (arena.open.getLast() != this) arena.open.getLast().close();   // inner scopes close first
+            closed = true; handles.remove(this); arena.open.removeLast();
+            buffers.forEach(Buffer::close); buffers.clear(); arena.top = start;
+        }
+    }
 
     /** A timeline fence; pending submissions that wait on or signal it keep its native object alive. */
     private final class Fence implements GpuFence {
@@ -143,6 +190,7 @@ public final class ComputeDevice implements GpuDevice {
         int recorded;
         boolean mapped;
         String memoryClass; long bytes;   // buffers only
+        boolean arena;                    // an arena's backing buffer: compute queue only
         Resource(Object nativeObject, boolean pipeline) {
             this.nativeObject = nativeObject; this.pipeline = pipeline; resources.add(this);
         }
@@ -333,8 +381,10 @@ public final class ComputeDevice implements GpuDevice {
         check(); progress(); if (queueFailure != null) throw queueFailure;
         require(encoder instanceof ComputeDevice.Encoder && handles.contains(encoder), "Foreign or consumed encoder");
         Encoder e = (Encoder) encoder; e.valid();
-        if (q.kind == QueueKind.TRANSFER)
+        if (q.kind == QueueKind.TRANSFER) {
             require(e.commands.stream().noneMatch(c -> c instanceof Dispatch), "The transfer queue runs transfers and fills, not dispatches");
+            require(e.used.stream().noneMatch(r -> r.arena), "Arena buffers are reused in queue order and run on the compute queue only");
+        }
         Job job;
         var fences = new ArrayList<Fence>(); e.waits.forEach(u -> fences.add(u.fence())); e.signals.forEach(u -> fences.add(u.fence()));
         try { job = driver.submit(q.hardware, List.copyOf(e.commands), e.profile, ops(e.waits), ops(e.signals)); }

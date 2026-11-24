@@ -507,6 +507,51 @@ public abstract class ComputeConformance {
         }
     }
 
+    /**
+     * Transient arenas: a scope's buffers reuse the previous scope's memory, and back-to-back scopes on the compute
+     * queue give correct results; nesting, capacity and the compute-queue binding are enforced.
+     */
+    @Test void arenasReuseMemoryInQueueOrder() {
+        int n = 4096, bytes = n * 4;
+        var descriptor = new BufferDescriptor(1 << 20, EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE, BufferUsage.TRANSFER_DESTINATION), Placement.PRIVATE, "scratch");
+        try (var arena = device.arena(descriptor); var p = pipeline(n); var out = buffer(bytes, Placement.PRIVATE)) {
+            assertEquals(1 << 20, arena.capacity());
+            long firstOffset = -1;
+            List<GpuSubmission> runs = new ArrayList<>(); List<GpuReadback> reads = new ArrayList<>();
+            for (int layer = 0; layer < 5; layer++) {
+                final int k = layer;
+                try (var scope = arena.scope()) {
+                    var a = scope.allocate(bytes); var b = scope.allocate(bytes); var c = scope.allocate(bytes);
+                    if (layer == 0) firstOffset = a.offset(); else assertEquals(firstOffset, a.offset(), "each layer reuses the same memory");
+                    try (var e = device.encoder()) {
+                        e.upload(a, floats(n, i -> i * k)).upload(b, floats(n, i -> k)).dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+                        reads.add(e.download(c)); runs.add(device.queue().submit(e));   // not awaited: layers queue up
+                    }
+                }
+            }
+            for (int layer = 0; layer < 5; layer++) {
+                await(runs.get(layer));
+                var got = ByteBuffer.wrap(reads.get(layer).bytes()).order(ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) assertEquals((float) i * layer + layer, got.getFloat(4 * i), "layer " + layer + " element " + i);
+            }
+            assertEquals(0, arena.used()); assertTrue(arena.highWater() >= 3L * bytes);
+            assertEquals(new MemoryUse(1, 1 << 20), device.memoryByLabel().get("scratch"), "the arena is one buffer of its memory class");
+            try (var outer = arena.scope()) {
+                outer.allocate(1024);
+                var inner = arena.scope(); inner.allocate(1024);
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> outer.allocate(16)).code(), "only the innermost scope allocates");
+                assertEquals(ComputeException.Code.RESOURCE_EXHAUSTED, assertThrows(ComputeException.class, () -> inner.allocate(2 << 20)).code(), "capacity");
+                var x = inner.allocate(256);
+                try (var e = device.encoder()) {
+                    e.fill(x, 1);
+                    assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> device.queue(QueueKind.TRANSFER).submit(e)).code(), "arena buffers stay on the compute queue");
+                }
+            } // closes inner first
+            assertEquals(0, arena.used());
+        }
+        assertNull(device.memoryByLabel().get("scratch"));
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

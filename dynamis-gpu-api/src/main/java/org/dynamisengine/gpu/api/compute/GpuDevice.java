@@ -13,6 +13,11 @@ public interface GpuDevice extends AutoCloseable {
      * shares it. Order work across queues with fences. @since 1.6.0
      */
     default GpuQueue queue(QueueKind kind) { return queue(); }
+    /**
+     * A transient arena over one backing buffer of {@code descriptor} (its bytes are the capacity; its usages and
+     * placement apply to every buffer the arena hands out; its label is the memory class). @since 1.6.0
+     */
+    default GpuArena arena(BufferDescriptor descriptor) { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "arenas are not supported here"); }
     /** A new timeline fence starting at 0 (see {@link GpuFence}); UNSUPPORTED where the backend has none. @since 1.6.0 */
     default GpuFence fence() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here"); }
     /**
