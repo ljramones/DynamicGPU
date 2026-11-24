@@ -48,6 +48,7 @@ public final class MetalProvider implements GpuProvider {
                         GpuCapabilities.SUBGROUP_BALLOT, GpuCapabilities.SUBGROUP_SHUFFLE));
             }
             if ((families & METAL3) != 0) features.add(GpuCapabilities.ATOMIC_FLOAT32_ADD);
+            if (apple) features.add(GpuCapabilities.SUBGROUP_MATRIX_F16);
             int min = !simd ? 0 : apple ? 32 : 8, max = !simd ? 0 : apple ? 32 : 64;
             return new Tiers(types, features, min, max);
         }

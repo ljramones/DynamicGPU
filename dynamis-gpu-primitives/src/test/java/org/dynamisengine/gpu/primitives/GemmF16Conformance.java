@@ -13,14 +13,27 @@ import static org.junit.jupiter.api.Assertions.*;
 abstract class GemmF16Conformance {
     protected abstract GpuProvider provider();
     protected GpuDevice device;
+    /** The algorithm under test; every test runs once per algorithm the device supports. */
     protected GemmF16 gemm;
     static final Duration WAIT = Duration.ofSeconds(60);
 
     @BeforeEach void open() {
-        device = provider().adapters().getFirst().open(); gemm = GemmF16.create(device);
+        device = provider().adapters().getFirst().open();
         System.out.println("gemm device=" + device.adapter().name() + " backend=" + device.adapter().backend());
     }
-    @AfterEach void close() { gemm.close(); device.close(); }
+    @AfterEach void close() { device.close(); }
+
+    interface Body { void run() throws Exception; }
+    /** Runs {@code body} with {@link #gemm} set to each algorithm the device supports. */
+    void eachAlgorithm(Body body) throws Exception {
+        for (var algorithm : GemmF16.Algorithm.values()) {
+            if (!GemmF16.supports(device, algorithm)) {
+                assertThrows(ComputeException.class, () -> GemmF16.create(device, algorithm), algorithm + " refused");
+                continue;
+            }
+            try (var g = GemmF16.create(device, algorithm)) { gemm = g; body.run(); } finally { gemm = null; }
+        }
+    }
 
     GpuBuffer buffer(long bytes) {
         return device.allocate(new BufferDescriptor(bytes, EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE, BufferUsage.TRANSFER_DESTINATION), Placement.PRIVATE));
@@ -51,8 +64,13 @@ abstract class GemmF16Conformance {
             for (int i = 0; i < out.length; i++) out[i] = bb.getFloat(4 * i);
         }
         float[] exact = c0.clone(); GemmF16.reference(a, b, exact, s);
-        for (int i = 0; i < out.length; i++)
-            assertEquals(Float.floatToRawIntBits(exact[i]), Float.floatToRawIntBits(out[i]), "C[" + i + "] differs from GemmF16.reference for " + s);
+        if (gemm.algorithm() == GemmF16.Algorithm.TILED) {
+            for (int i = 0; i < out.length; i++)
+                assertEquals(Float.floatToRawIntBits(exact[i]), Float.floatToRawIntBits(out[i]), "C[" + i + "] differs from GemmF16.reference for " + s);
+        } else {
+            int differ = 0; for (int i = 0; i < out.length; i++) if (Float.floatToRawIntBits(exact[i]) != Float.floatToRawIntBits(out[i])) differ++;
+            System.out.println("gemm " + gemm.algorithm() + " " + s.m() + "x" + s.n() + "x" + s.k() + " differs from reference in " + differ + " of " + out.length);
+        }
         double worst = 0;
         for (int i = 0; i < s.m(); i++) {
             for (int j = 0; j < s.n(); j++) {
@@ -75,25 +93,29 @@ abstract class GemmF16Conformance {
         return worst;
     }
 
-    @Test void matchesTheReferenceWithinTheBound() {
+    @Test void matchesTheReferenceWithinTheBound() throws Exception {
         int[][] shapes = {{1, 1, 1}, {64, 64, 16}, {64, 64, 64}, {65, 63, 17}, {1, 100, 300}, {130, 1, 77}, {100, 37, 513}, {128, 256, 1024}};
-        long seed = 1;
-        for (int[] d : shapes) {
-            double worst = check(GemmF16.Shape.of(d[0], d[1], d[2], 1f, 0f), seed++, false);
-            System.out.printf("gemm %dx%dx%d worst error/bound %.3g%n", d[0], d[1], d[2], worst);
-        }
+        eachAlgorithm(() -> {
+            long seed = 1;
+            for (int[] d : shapes) {
+                double worst = check(GemmF16.Shape.of(d[0], d[1], d[2], 1f, 0f), seed++, false);
+                System.out.printf("gemm %s %dx%dx%d worst error/bound %.3g%n", gemm.algorithm(), d[0], d[1], d[2], worst);
+            }
+        });
     }
 
-    @Test void appliesAlphaAndBetaAndStrides() {
-        check(new GemmF16.Shape(70, 50, 90, 96, 64, 72, -0.75f, 0.5f), 11, false);
-        check(new GemmF16.Shape(33, 129, 40, 40, 130, 131, 2f, 1f), 12, false);
+    @Test void appliesAlphaAndBetaAndStrides() throws Exception {
+        eachAlgorithm(() -> {
+            check(new GemmF16.Shape(70, 50, 90, 96, 64, 72, -0.75f, 0.5f), 11, false);
+            check(new GemmF16.Shape(33, 129, 40, 40, 130, 131, 2f, 1f), 12, false);
+        });
     }
 
-    @Test void betaZeroIgnoresC() { check(GemmF16.Shape.of(65, 66, 67, 1.5f, 0f), 13, true); }
+    @Test void betaZeroIgnoresC() throws Exception { eachAlgorithm(() -> check(GemmF16.Shape.of(65, 66, 67, 1.5f, 0f), 13, true)); }
 
     @Test void rejectsUndersizedBuffers() {
         var s = GemmF16.Shape.of(8, 8, 8, 1, 0);
-        try (var small = buffer(64); var ok = buffer(256); var e = device.encoder()) {
+        try (var gemm = GemmF16.create(device); var small = buffer(64); var ok = buffer(256); var e = device.encoder()) {
             assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, small, ok, ok, s));
             assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ok, small, ok, s));
             assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ok, ok, small, s));
@@ -103,8 +125,12 @@ abstract class GemmF16Conformance {
     }
 
     /** -Dgemm.benchmark=true: GFLOP/s for square multiplies over back-to-back dispatches, by GPU time and by wall time. */
-    @Test void benchmark() {
+    @Test void benchmark() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
+        eachAlgorithm(this::benchmarkOne);
+    }
+
+    private void benchmarkOne() {
         for (int size : new int[] {512, 1024, 2048, 4096}) {
             var s = GemmF16.Shape.of(size, size, size, 1, 0);
             try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
@@ -121,8 +147,8 @@ abstract class GemmF16Conformance {
                     }
                     best = Math.min(best, (System.nanoTime() - t0) / 1e9);
                 }
-                System.out.printf("gemm %s %d^3: %.0f GFLOP/s by GPU time, %.0f by wall time (%d per submission)%n", device.adapter().name(),
-                        size, reps * s.flops() / bestGpu / 1e9, reps * s.flops() / best / 1e9, reps);
+                System.out.printf("gemm %s %s %d^3: %.0f GFLOP/s by GPU time, %.0f by wall time (%d per submission)%n", device.adapter().name(),
+                        gemm.algorithm(), size, reps * s.flops() / bestGpu / 1e9, reps * s.flops() / best / 1e9, reps);
             }
         }
     }

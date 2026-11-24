@@ -51,6 +51,14 @@ public record GpuCapabilities(long maxBufferBytes, long maxStorageRange, int sto
     public static final String SUBGROUP_BALLOT = "SUBGROUP_BALLOT";
     /** Shader feature: reading another lane's value by lane index (shuffle and shuffle-xor). */
     public static final String SUBGROUP_SHUFFLE = "SUBGROUP_SHUFFLE";
+    /**
+     * Shader feature: subgroup matrix multiply-accumulate of FP16 inputs into FP32 accumulators in hardware: Metal
+     * SIMD-group matrices ({@code simdgroup_matrix}, 8 x 8) on Apple7 and later GPUs. Kernels using it are written for
+     * one backend; Vulkan cooperative matrices are not reported yet.
+     *
+     * @since 1.3.0
+     */
+    public static final String SUBGROUP_MATRIX_F16 = "SUBGROUP_MATRIX_F16";
     /** Shader feature: atomic add on 32-bit floats in storage buffers, the scatter-add of gradient kernels. */
     public static final String ATOMIC_FLOAT32_ADD = "ATOMIC_FLOAT32_ADD";
     /** Shader feature: atomic add, min, max, exchange and compare-exchange on 64-bit integers in storage buffers. */

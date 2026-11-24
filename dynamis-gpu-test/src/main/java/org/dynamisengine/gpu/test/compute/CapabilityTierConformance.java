@@ -208,6 +208,41 @@ public abstract class CapabilityTierConformance extends ComputeConformance {
         }
     }
 
+    /**
+     * SUBGROUP_MATRIX_F16: an 8 x 8 half multiply-accumulate into floats, with small integers so the result is exact.
+     * Only native Metal reports it, with a hand-written kernel; elsewhere a pipeline requiring it is refused.
+     */
+    @Test void subgroupMatrixMultipliesExactly() throws java.io.IOException {
+        PipelineDescriptor descriptor;
+        try (var in = CapabilityTierConformance.class.getResourceAsStream("/compute/matrix/subgroup_matrix.metal")) {
+            var bundle = new KernelBundle("subgroup-matrix", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, in.readAllBytes())));
+            var layout = new BindingLayout(List.of(new BindingLayout.BufferBinding(0, Access.READ, 128), new BindingLayout.BufferBinding(1, Access.READ, 128),
+                    new BindingLayout.BufferBinding(2, Access.READ_WRITE, 256)), 4);
+            descriptor = new PipelineDescriptor(bundle, "subgroup_matrix", layout, new Dimensions(32, 1, 1), Map.of(),
+                    Set.of(GpuCapabilities.FP16), Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
+        }
+        if (!device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_MATRIX_F16)) {
+            assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> device.pipeline(descriptor)).code());
+            System.out.println("tier SUBGROUP_MATRIX_F16: not reported, refused");
+            return;
+        }
+        var r = new SplittableRandom(21); int[] x = new int[64], y = new int[64], z = new int[64];
+        for (int i = 0; i < 64; i++) { x[i] = r.nextInt(-8, 9); y[i] = r.nextInt(-8, 9); z[i] = r.nextInt(-100, 101); }
+        byte[] a = bytes(64, 2, i -> (long) Float.floatToFloat16(x[i])), b = bytes(64, 2, i -> (long) Float.floatToFloat16(y[i]));
+        byte[] c = bytes(64, 4, i -> (long) Float.floatToRawIntBits(z[i]));
+        try (var p = device.pipeline(descriptor); var ga = buffer(128, Placement.PRIVATE); var gb = buffer(128, Placement.PRIVATE);
+             var gc = buffer(256, Placement.PRIVATE); var e = device.encoder()) {
+            e.upload(ga, a).upload(gb, b).upload(gc, c).dispatch(p, Map.of(0, ga, 1, gb, 2, gc), scalar(1), new Dimensions(1, 1, 1));
+            var read = e.download(gc); await(device.queue().submit(e));
+            var out = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) {
+                int expected = z[i * 8 + j]; for (int q = 0; q < 8; q++) expected += x[i * 8 + q] * y[q * 8 + j];
+                assertEquals((float) expected, out.getFloat(4 * (i * 8 + j)), "c[" + i + "][" + j + "]");
+            }
+            System.out.println("tier SUBGROUP_MATRIX_F16: ran subgroup_matrix");
+        }
+    }
+
     @Test void atomicFloatAddSumsExactly() {
         int n = 1000; var out = run("atomic_float_add", n, 32); if (out == null) return;
         assertEquals(n, out.getFloat(0));

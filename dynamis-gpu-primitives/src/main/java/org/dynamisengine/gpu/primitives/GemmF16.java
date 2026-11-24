@@ -16,7 +16,11 @@ import java.util.Set;
  * {@code |error| <= k * 2^-24 * sum |a b|}. Later kernel versions may sum in another order, for example on matrix
  * hardware, within the same bound.
  * <p>
- * <b>Reproducibility.</b> This version gives the same bits on every device that rounds FP32 add and multiply
+ * <b>Algorithms.</b> {@link Algorithm#TILED} runs everywhere and is reproducible; {@link Algorithm#SIMDGROUP_MATRIX}
+ * uses Apple GPU matrix hardware ({@link GpuCapabilities#SUBGROUP_MATRIX_F16} on native Metal) and is faster, within
+ * the same bound but summing in the hardware's order. {@link #create(GpuDevice)} picks the fastest the device has.
+ * <p>
+ * <b>Reproducibility.</b> The tiled algorithm gives the same bits on every device that rounds FP32 add and multiply
  * correctly (tested on native Metal, MoltenVK and lavapipe):
  * <ul>
  * <li>Products of halves are exact in FP32, so each element of C is {@code acc = fl(acc + a b)} over {@code k} in
@@ -26,14 +30,26 @@ import java.util.Set;
  * </ul>
  * <p>
  * <b>Use.</b> Create one per device (it compiles a pipeline), then record multiplies into encoders. With
- * {@code beta == 0}, C is not read, as in BLAS. Requires {@link GpuCapabilities#FP16}; {@link #create} throws
+ * {@code beta == 0}, C is not read, as in BLAS. Requires {@link GpuCapabilities#FP16}; {@code create} throws
  * {@link ComputeException.Code#UNSUPPORTED} without it.
  */
 public final class GemmF16 implements AutoCloseable {
     static final KernelLibrary KERNELS = KernelLibrary.load(GemmF16.class, "kernels", "kernels.properties", "dynamisgpu.primitives.");
     private static final String KERNEL = "gemm_f16";
-    /** The output tile one group computes. */
+    /** The output tile one group computes (both algorithms). */
     static final int TILE = 64;
+    private static final String SIMDGROUP_ENTRY = "gemm_f16_simdgroup";
+
+    /** How the multiply is computed. */
+    public enum Algorithm {
+        /** Shared-memory tiles and FP32 fused multiply-adds: every device with FP16, bit for bit with {@link #reference}. */
+        TILED,
+        /**
+         * SIMD-group matrices (8 x 8 multiply-accumulate in hardware): native Metal on Apple7 and later GPUs, which
+         * report {@link GpuCapabilities#SUBGROUP_MATRIX_F16}. Within the bound, not bit for bit with {@link #reference}.
+         */
+        SIMDGROUP_MATRIX
+    }
 
     /**
      * A multiply's shape and scalars. Leading dimensions are in elements: row {@code r} of A starts at {@code r * lda}.
@@ -59,15 +75,56 @@ public final class GemmF16 implements AutoCloseable {
 
     private final GpuDevice device;
     private final GpuComputePipeline pipeline;
+    private final Algorithm algorithm;
 
-    private GemmF16(GpuDevice device, GpuComputePipeline pipeline) { this.device = device; this.pipeline = pipeline; }
-
-    /** Compiles the kernel for {@code device}. */
-    public static GemmF16 create(GpuDevice device) {
-        var descriptor = KERNELS.pipeline(KERNEL, List.of(Access.READ, Access.READ, Access.READ_WRITE),
-                Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16), Set.of());
-        return new GemmF16(device, device.pipeline(descriptor));
+    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, Algorithm algorithm) {
+        this.device = device; this.pipeline = pipeline; this.algorithm = algorithm;
     }
+
+    /** Compiles the fastest algorithm {@code device} supports. */
+    public static GemmF16 create(GpuDevice device) {
+        return create(device, supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED);
+    }
+
+    /** Compiles {@code algorithm} for {@code device}; throws {@code UNSUPPORTED} where the device lacks it. */
+    public static GemmF16 create(GpuDevice device, Algorithm algorithm) {
+        var types = Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16);
+        var accesses = List.of(Access.READ, Access.READ, Access.READ_WRITE);
+        PipelineDescriptor descriptor = switch (algorithm) {
+            case TILED -> KERNELS.pipeline(KERNEL, accesses, types, Set.of());
+            case SIMDGROUP_MATRIX -> {
+                if (device.adapter().backend() != Backend.METAL)
+                    throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
+                List<BindingLayout.BufferBinding> b = List.of(new BindingLayout.BufferBinding(0, Access.READ, 4),
+                        new BindingLayout.BufferBinding(1, Access.READ, 4), new BindingLayout.BufferBinding(2, Access.READ_WRITE, 4));
+                yield new PipelineDescriptor(simdgroupBundle(), SIMDGROUP_ENTRY, new BindingLayout(b, KERNELS.parameterBytes(KERNEL)),
+                        new Dimensions(128, 1, 1), Map.of(), types, Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
+            }
+        };
+        return new GemmF16(device, device.pipeline(descriptor), algorithm);
+    }
+
+    /** Whether {@code device} can run {@code algorithm}. */
+    public static boolean supports(GpuDevice device, Algorithm algorithm) {
+        var c = device.capabilities();
+        if (!c.dataTypes().contains(GpuCapabilities.FP16)) return false;
+        return algorithm == Algorithm.TILED || device.adapter().backend() == Backend.METAL
+                && c.shaderFeatures().contains(GpuCapabilities.SUBGROUP_MATRIX_F16);
+    }
+
+    private static KernelBundle simdgroupBundle() {
+        try (var in = GemmF16.class.getResourceAsStream("metal/gemm_f16_simdgroup.metal")) {
+            if (in == null) throw new IllegalStateException("missing metal/gemm_f16_simdgroup.metal");
+            byte[] source = in.readAllBytes();
+            return new KernelBundle("dynamisgpu.primitives." + SIMDGROUP_ENTRY, "1",
+                    Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, source)));
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    /** The algorithm this instance runs. */
+    public Algorithm algorithm() { return algorithm; }
 
     /** Records {@code C = alpha * A * B + beta * C}. */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer a, GpuBuffer b, GpuBuffer c, Shape s) {
@@ -86,7 +143,7 @@ public final class GemmF16 implements AutoCloseable {
     }
 
     /**
-     * The CPU result of this kernel version, bit for bit: {@code C = fl(fl(alpha acc) + fl(beta c))}, where
+     * The CPU result of the {@link Algorithm#TILED} kernel, bit for bit: {@code C = fl(fl(alpha acc) + fl(beta c))}, where
      * {@code acc} sums the products in order of {@code k} in FP32, from halves given as raw bits.
      */
     public static void reference(short[] a, short[] b, float[] c, Shape s) {

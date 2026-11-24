@@ -24,6 +24,10 @@ class GemmF16Test {
     @Test void refusesDevicesWithoutFp16() {
         try (var device = new MockComputeProvider().adapters().getFirst().open()) {
             assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> GemmF16.create(device)).code());
+            for (var algorithm : GemmF16.Algorithm.values()) {
+                assertFalse(GemmF16.supports(device, algorithm));
+                assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> GemmF16.create(device, algorithm)).code());
+            }
         }
     }
 }

@@ -35,7 +35,8 @@ class MetalComputeTest extends org.dynamisengine.gpu.test.compute.CapabilityTier
     @Override protected java.util.Set<String> expectedTiers() {
         return device.adapter().name().startsWith("Apple") ? java.util.Set.of(GpuCapabilities.FP16, GpuCapabilities.INT16, GpuCapabilities.INT8, GpuCapabilities.INT64,
                 GpuCapabilities.SUBGROUP_BASIC, GpuCapabilities.SUBGROUP_VOTE, GpuCapabilities.SUBGROUP_ARITHMETIC,
-                GpuCapabilities.SUBGROUP_BALLOT, GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.ATOMIC_FLOAT32_ADD) : java.util.Set.of();
+                GpuCapabilities.SUBGROUP_BALLOT, GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.ATOMIC_FLOAT32_ADD,
+                GpuCapabilities.SUBGROUP_MATRIX_F16) : java.util.Set.of();
     }
     @Override protected GpuProvider provider() { return new MetalProvider(); }
     @Override protected KernelBundle kernel() {

@@ -126,6 +126,7 @@ features it supports. The backend enables them when it opens the device, and a p
 | `SUBGROUP_BASIC`, `_VOTE`, `_ARITHMETIC`, `_BALLOT`, `_SHUFFLE` | subgroup (SIMD-group) operations in compute | `VkPhysicalDeviceSubgroupProperties` | Apple7+, Mac2 |
 | `ATOMIC_FLOAT32_ADD` | float atomic add in storage buffers | `VK_EXT_shader_atomic_float` | Metal 3 |
 | `ATOMIC_INT64` | 64-bit integer atomics in storage buffers | `shaderBufferInt64Atomics` | never (Metal has 64-bit min/max only) |
+| `SUBGROUP_MATRIX_F16` (1.3.0) | hardware matrix multiply-accumulate, FP16 into FP32 | not yet (see below) | Apple7+ (`simdgroup_matrix`) |
 
 - **Subgroup sizes:** `minSubgroupSize()` and `maxSubgroupSize()` bound the lane count a kernel can see. They are 0
   without subgroups. A kernel must work at any size in the range; MoltenVK reports 4 to 32.
@@ -148,7 +149,12 @@ features it supports. The backend enables them when it opens the device, and a p
   - **Exact checks:** correctly rounded half and double add and multiply; wrapping 8-, 16- and 64-bit integers;
     subgroup reductions, scans, shuffles, ballots and votes; exact float and 64-bit atomic sums.
   - **Backends:** every backend's conformance test inherits it.
-- **Still to come:** matrix hardware (Metal SIMD-group matrices, Vulkan cooperative matrices).
+- **Matrix hardware (1.3.0):** `SUBGROUP_MATRIX_F16` reports Metal SIMD-group matrices on Apple7 and later GPUs.
+  - **Writing the kernels:** they are written in MSL by hand, because Slang cannot emit Metal SIMD-group matrices.
+    The conformance kernel is `compute/matrix/subgroup_matrix.metal`.
+  - **Vulkan cooperative matrices:** Slang emits `CooperativeMatrixKHR`, but neither MoltenVK nor lavapipe supports
+    `VK_KHR_cooperative_matrix`, so no device here can run such a kernel. They are left until there is NVIDIA, AMD or
+    Intel hardware to test on.
 
 **GPU timestamps (1.3.0).** `GpuSubmission.gpuTime()` gives the GPU execution time of a completed submission, from the
 start of its first command to the end of its last. It excludes queueing and host work, so use it for kernel
