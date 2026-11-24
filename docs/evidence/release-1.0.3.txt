@@ -1,0 +1,40 @@
+DynamisGPU 1.0.3 release verification
+Includes strict floating-point fix 13c2a79.
+Distribution: GitHub + local Maven. Maven Central publishing is disabled.
+MVK_CONFIG_FAST_MATH_ENABLED was explicitly unset for the build and independent consumer.
+Required hardware profiles: metal-native,metal-hardware,vulkan-hardware.
+Local hardware: Apple M4 Max, macOS 27.0.1, MoltenVK 1.4.1. No repository CI.
+Totals: 208 discovered, 207 passed, 1 expected mock-only skip, 0 failures/errors.
+
+[INFO] Tests run: 118, Failures: 0, Errors: 0, Skipped: 0
+[WARNING] Tests run: 16, Failures: 0, Errors: 0, Skipped: 1
+[INFO] Tests run: 57, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time:  9.169 s
+[INFO] Finished at: 2026-11-23T21:47:17-05:00
+
+Bundle installer: passed outside a Maven project using a fresh isolated Maven cache.
+Independent consumer dependencies:
+[INFO] +- org.dynamisengine:dynamis-gpu-api:jar:1.0.3:compile
+[INFO] +- org.dynamisengine:dynamis-gpu-metal:jar:1.0.3:compile
+[INFO] \- org.dynamisengine:dynamis-gpu-vulkan:jar:1.0.3:compile
+[INFO]    +- org.lwjgl:lwjgl:jar:3.4.1:compile
+[INFO]    +- org.lwjgl:lwjgl-vulkan:jar:3.4.1:compile
+[INFO]    \- org.lwjgl:lwjgl:jar:natives-macos-arm64:3.4.1:runtime
+[INFO] BUILD SUCCESS
+[INFO] Total time:  6.895 s
+[INFO] Finished at: 2026-11-23T21:48:23-05:00
+
+Release 1.0.3 strict consumer: backend=METAL cases=7 reassociation=preserved contraction=off NaN=preserved workaround=unset
+Release 1.0.3 independent consumer: backend=METAL device=Apple M4 Max verified=131 dependentDispatches=2
+Release 1.0.3 strict consumer: backend=VULKAN cases=7 reassociation=preserved contraction=off NaN=preserved workaround=unset
+Release 1.0.3 independent consumer: backend=VULKAN device=Apple M4 Max verified=131 dependentDispatches=2
+
+SHA-256 release assets:
+b1dcb4ec7e28ac6836285f9c8bb74e52ed55fc3ff7ed860656ddc2d7f81dbac5  dynamisgpu-1.0.3-maven.zip
+e4e2c67848876f8d5edc899653cabb6d2b43b778300437e522e97ded446c2ea6  dynamis-gpu-api-1.0.3.jar
+1ba66bd20032eb6dcbb91ed69eeb58270a3bf7e0e56164525e6df45570b1b4ce  dynamis-gpu-test-1.0.3.jar
+249d8b077f705e0195c6b3b4998e5cb454bb9e50fde307ae71c898a361763776  dynamis-gpu-vulkan-1.0.3.jar
+d50dd6f8b55ea06376ee21227367f56f3c071a24261eabe02bc0337cec188d25  dynamis-gpu-metal-1.0.3.jar

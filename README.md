@@ -2,12 +2,12 @@
 
 Headless compute for native Metal and Vulkan, plus Vulkan geometry upload services for Dynamis Engine. Requires JDK 25.
 
-## Release 1.0.2
+## Release 1.0.3
 
-Version `1.0.2` is available through the
-[GitHub release](https://github.com/ljramones/DynamicGPU/releases/tag/v1.0.2) and
+Version `1.0.3` is available through the
+[GitHub release](https://github.com/ljramones/DynamicGPU/releases/tag/v1.0.3) and
 local Maven installation; it is not published to Maven Central.
-See [release notes and NeuralNetworks dependency setup](docs/releases/1.0.2.md)
+See [release notes and NeuralNetworks dependency setup](docs/releases/1.0.3.md)
 for the downloadable Maven bundle, exact coordinates, and supported platforms.
 
 ## Modules

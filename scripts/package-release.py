@@ -60,6 +60,11 @@ verified on macOS 27.0.1). Offline metallib generation and other platforms are
 unverified. Consumers supply their own kernel bundles; MSL source compilation is
 available for development. See docs/compute-runtime.md in tag v{version}.
 
+Runtime MSL compilation on macOS 15+ uses safe/precise math and disables implicit
+multiply-add contraction. MoltenVK fast math is disabled by the Vulkan provider;
+MVK_CONFIG_FAST_MATH_ENABLED=0 is not required. Older macOS and offline metallibs
+retain their documented numerical limits. See the versioned runtime guide.
+
 Sources, Javadocs, POMs and repository checksums are included. The parent dependency
 org.dynamisengine:dynamis-parent:1.0.1 remains unchanged and is on Maven Central.
 """
