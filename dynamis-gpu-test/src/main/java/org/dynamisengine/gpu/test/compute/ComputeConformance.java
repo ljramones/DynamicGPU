@@ -569,6 +569,35 @@ public abstract class ComputeConformance {
         }
     }
 
+    /** Kit: a pipeline set compiles together, fails as a whole, hands out a placeholder and closes everything. */
+    @Test void pipelineSetsCompileAndCloseTogether() {
+        int n = 256;
+        PipelineDescriptor d;
+        try (var p = pipeline(n)) { d = p.descriptor(); }
+        var unsupported = new PipelineDescriptor(d.kernel(), d.entryPoint(), d.layout(), d.localSize(), d.specialization(),
+                d.requiredDataTypes(), Set.of("NO_SUCH_FEATURE"));
+        assertThrows(ComputeException.class, () -> org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, List.of(d, d, unsupported)));
+        var set = org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, List.of(d, d));
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE)) {
+            assertEquals(2, set.size()); assertEquals(4, set.placeholder().bytes()); assertSame(set.placeholder(), set.placeholder());
+            try (var e = device.encoder()) {
+                e.upload(a, floats(n, i -> i)).upload(b, floats(n, i -> 1));
+                e.dispatch(set.get(0), Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+                e.dispatch(set.get(1), Map.of(0, c, 1, b, 2, a), scalar(n), new Dimensions(n / 64, 1, 1));
+                var r = e.download(a); await(device.queue().submit(e));
+                var got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) assertEquals(i + 2f, got.getFloat(4 * i), "element " + i);
+            }
+            var pipeline = set.get(0);
+            set.close(); set.close();
+            assertThrows(IllegalStateException.class, () -> set.get(0));
+            try (var e = device.encoder()) {
+                assertEquals(ComputeException.Code.CLOSED, assertThrows(ComputeException.class,
+                        () -> e.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1))).code());
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

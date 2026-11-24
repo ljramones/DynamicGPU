@@ -1,8 +1,8 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import org.dynamisengine.gpu.api.compute.kit.Checks;
+import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,7 +25,7 @@ import java.util.Set;
  * {@link Precision#FP16}. The {@code 2^-126} allows for devices that flush subnormal results to zero, as Apple GPUs do.
  */
 public final class Softmax implements AutoCloseable {
-    private static final long MAX_INDEX = 0xFFFF_FFFFL;
+    private static final long MAX_INDEX = Checks.MAX_INDEX;
 
     /**
      * The rows to normalize. Leading dimensions and strides are in elements: row {@code r} of matrix {@code z} of the
@@ -69,9 +69,11 @@ public final class Softmax implements AutoCloseable {
     private final GpuDevice device;
     private final GpuComputePipeline pipeline;
     private final Precision output;
+    private final ParameterLayout layout;
 
     private Softmax(GpuDevice device, GpuComputePipeline pipeline, Precision output) {
         this.device = device; this.pipeline = pipeline; this.output = output;
+        this.layout = ParameterLayout.of(KERNELS, kernel(output));
     }
 
     /** Compiles the kernel writing {@code output}; FP16 output needs {@link GpuCapabilities#FP16}. */
@@ -87,18 +89,12 @@ public final class Softmax implements AutoCloseable {
 
     /** Records the softmax of {@code scores} into {@code out}. */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer scores, GpuBuffer out, Shape s) {
-        check(scores, s.sElements(), 4, "scores"); check(out, s.yElements(), output.bytes(), "output");
+        Checks.range(scores, 0, s.sElements(), 4, "scores"); Checks.range(out, 0, s.yElements(), output.bytes(), "output");
         if ((long) s.m() + s.causalOffset() + 1 > MAX_INDEX) throw new IllegalArgumentException("causalOffset too large");
-        byte[] params = ByteBuffer.allocate(KERNELS.parameterBytes(kernel(output))).order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(s.m()).putInt(s.n()).putInt(s.lds()).putInt(s.ldy()).putInt(s.causal() ? 1 : 0).putInt(s.causalOffset())
-                .putInt((int) s.strideS()).putInt((int) s.strideY()).array();
+        byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("lds", s.lds()).u32("ldy", s.ldy())
+                .bool("causal", s.causal()).u32("causalOffset", s.causalOffset()).u32("strideS", s.strideS())
+                .u32("strideY", s.strideY()).bytes();
         return encoder.dispatch(pipeline, Map.of(0, scores, 1, out), params, new Dimensions(s.m(), 1, s.batch()), "softmax");
-    }
-
-    private static void check(GpuBuffer buffer, long elements, int elementBytes, String name) {
-        if (buffer.bytes() < elements * elementBytes)
-            throw new IllegalArgumentException(name + " holds " + buffer.bytes() + " bytes, needs " + elements * elementBytes);
-        if (elements - 1 > MAX_INDEX) throw new IllegalArgumentException(name + " spans more than 2^32 elements");
     }
 
     /** The device this softmax runs on. */

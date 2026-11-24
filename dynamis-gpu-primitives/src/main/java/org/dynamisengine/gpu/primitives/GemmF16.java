@@ -1,8 +1,8 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import org.dynamisengine.gpu.api.compute.kit.Checks;
+import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,7 +39,7 @@ public final class GemmF16 implements AutoCloseable {
     static final KernelLibrary KERNELS = KernelLibrary.load(GemmF16.class, "kernels", "kernels.properties", "dynamisgpu.primitives.");
     /** The output tile one group computes (both algorithms). */
     static final int TILE = 64;
-    private static final long MAX_INDEX = 0xFFFF_FFFFL;
+    private static final long MAX_INDEX = Checks.MAX_INDEX;
 
     /** How the multiply is computed. */
     public enum Algorithm {
@@ -116,9 +116,11 @@ public final class GemmF16 implements AutoCloseable {
     private final GpuComputePipeline pipeline;
     private final Algorithm algorithm;
     private final Precision output;
+    private final ParameterLayout layout;
 
     private GemmF16(GpuDevice device, GpuComputePipeline pipeline, Algorithm algorithm, Precision output) {
         this.device = device; this.pipeline = pipeline; this.algorithm = algorithm; this.output = output;
+        this.layout = ParameterLayout.of(KERNELS, kernel(output));   // the simdgroup kernel shares the block
     }
 
     /** Compiles the fastest algorithm {@code device} supports, with an FP32 C. */
@@ -182,20 +184,13 @@ public final class GemmF16 implements AutoCloseable {
 
     /** Records {@code C = alpha * A * B + beta * C} (for each matrix of the batch). */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer a, GpuBuffer b, GpuBuffer c, Shape s) {
-        check(a, s.aElements(), 2, "A"); check(b, s.bElements(), 2, "B"); check(c, s.cElements(), output.bytes(), "C");
-        byte[] params = ByteBuffer.allocate(KERNELS.parameterBytes(kernel(output))).order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(s.m()).putInt(s.n()).putInt(s.k()).putInt(s.lda()).putInt(s.ldb()).putInt(s.ldc())
-                .putFloat(s.alpha()).putFloat(s.beta()).putInt(s.transposeB() ? 1 : 0)
-                .putInt((int) s.strideA()).putInt((int) s.strideB()).putInt((int) s.strideC()).array();
+        Checks.range(a, 0, s.aElements(), 2, "A"); Checks.range(b, 0, s.bElements(), 2, "B");
+        Checks.range(c, 0, s.cElements(), output.bytes(), "C");
+        byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("k", s.k()).u32("lda", s.lda()).u32("ldb", s.ldb())
+                .u32("ldc", s.ldc()).f32("alpha", s.alpha()).f32("beta", s.beta()).bool("transB", s.transposeB())
+                .u32("strideA", s.strideA()).u32("strideB", s.strideB()).u32("strideC", s.strideC()).bytes();
         var groups = new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
         return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), params, groups, algorithm == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
-    }
-
-    private static void check(GpuBuffer buffer, long elements, int elementBytes, String name) {
-        if (buffer.bytes() < elements * elementBytes)
-            throw new IllegalArgumentException(name + " holds " + buffer.bytes() + " bytes, needs " + elements * elementBytes);
-        // the kernels index elements with 32-bit unsigned integers
-        if (elements - 1 > MAX_INDEX) throw new IllegalArgumentException(name + " spans more than 2^32 elements");
     }
 
     private static float product(short[] a, short[] b, Shape s, int z, int i, int j) {
