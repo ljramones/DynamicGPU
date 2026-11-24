@@ -50,8 +50,8 @@ org.dynamisengine:dynamis-gpu-vulkan:{version}.
 The dynamis-gpu-test artifact contains optional mocks and conformance tests.
 The dynamis-gpu-shaders artifact is the build-time Slang shader tool (ShaderBuild).
 The dynamis-gpu-vectrix artifact writes GPU data from Vectrix types. It depends on
-org.dynamisengine:vectrix:3.2.1, which is distributed through the Vectrix GitHub release
-(https://github.com/ljramones/vectrix/releases/tag/v3.2.1), not Maven Central.
+org.dynamisengine:vectrix:3.3.0, which is distributed through the Vectrix GitHub release
+(https://github.com/ljramones/vectrix/releases/tag/v3.3.0), not Maven Central.
 The dynamis-gpu-primitives artifact holds throughput kernels (GemmF16).
 Existing graphics contracts remain available. No benchmark artifact is published.
 

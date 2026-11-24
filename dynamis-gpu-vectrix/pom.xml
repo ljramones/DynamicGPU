@@ -7,14 +7,14 @@
   <parent>
     <groupId>org.dynamisengine</groupId>
     <artifactId>dynamisgpu-parent</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
   </parent>
   <artifactId>dynamis-gpu-vectrix</artifactId>
   <name>DynamisGPU Vectrix bridge</name>
   <!-- GPU data written from Vectrix types: transform layouts and writers, instance submission. The only DynamisGPU
        module that depends on Vectrix; dynamis-gpu-api stays dependency-free. -->
   <properties>
-    <vectrix.version>3.2.1</vectrix.version>
+    <vectrix.version>3.3.0</vectrix.version>
   </properties>
   <dependencies>
     <dependency>
