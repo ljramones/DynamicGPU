@@ -1,6 +1,6 @@
 # DynamisGPU roadmap
 
-Agreed 2026-11-24, after release 1.4.0.
+Agreed 2026-11-24, after release 1.4.0 (published).
 
 **Goal:** build DynamisGPU into a complete, layered GPU management system for compute, so that throughput work
 (neural networks and LLMs) and the engine's GPU work run on one runtime.
@@ -11,6 +11,13 @@ Agreed 2026-11-24, after release 1.4.0.
 3. Then plan NNJava, which stays untouched until then.
 
 Graphics (images, render passes, the LightEngine breakup) follows the same order once compute is complete.
+
+**How to work on it:**
+- [AGENTS.md](../AGENTS.md) covers the environment and the test commands for each backend, including the lavapipe
+  container.
+- It also covers the kernel-writing rules and Slang traps, the testing conventions, the repository rules and the
+  release checklist.
+- Every milestone below ends with a **Where to start** list of the files involved.
 
 ## The layers
 
@@ -52,6 +59,28 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 - **Persistent pipeline cache:** Vulkan `VkPipelineCache` and Metal binary archives, saved to a cache directory.
   Start-up compiles only once per driver version.
 
+- **Where to start:**
+  - **Memory:** buffers are allocated in `VulkanComputeDriver.allocate` (one `vkAllocateMemory` each) and
+    `MetalDriver.allocate` (`dg_buffer_create`).
+  - **Staging:** it is created per transfer in `VulkanComputeDriver.submit` (`Upload`, `Download`), in
+    `MetalDriver.submit` (`Download`), and in the bridge's `dg_upload` and `dg_fill` (`newBufferWithBytes` per
+    call).
+  - **Validation and handles:** `ComputeDevice` (spi) validates and tracks handles; keep pooling below the SPI, so
+    `GpuBuffer` semantics don't change.
+  - **Replay:** encoders collect validated `ComputeDriver.Command`s (`ComputeDevice.Encoder`), and drivers record them
+    in `submit(List<Command>)`. Replay needs a driver-level "prepare once, submit many": add it to the SPI, with a
+    default that re-submits the command list.
+  - **Per-dispatch timing:**
+    - **Vulkan:** a query pool of 2 entries per dispatch around `vkCmdDispatch`.
+    - **Metal:** a `MTLCounterSampleBuffer` (common timestamp counter set) attached through
+      `MTLComputePassDescriptor.sampleBufferAttachments` at stage boundaries. Each dispatch is already its own
+      compute encoder (`dg_compute_begin`); GPU timestamps convert to nanoseconds with `sampleTimestamps`. This is
+      a bridge ABI bump.
+  - **Pipeline cache:**
+    - **Vulkan:** `vkCreateComputePipelines` passes `VK_NULL_HANDLE` today; pass a `VkPipelineCache` loaded from and
+      saved to disk.
+    - **Metal:** `MTLBinaryArchive`.
+
 ### 1.6: Runtime II, queues and synchronization
 
 - **Multiple queues:** a compute queue and a transfer queue where the device has them (Vulkan queue families; Metal
@@ -62,6 +91,15 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 - **Acceptance:**
   - A stream of uploads interleaved with dependent compute is correct on every backend.
   - On hardware with a separate transfer engine, uploads overlap compute; the overlap is measured.
+
+- **Where to start:**
+  - **Queue selection:** `VulkanProvider.family` picks the first compute-capable family. Add a transfer-only family
+    where one exists.
+  - **The queue model:** `GpuDevice.queue()` returns the single `GpuQueue`, and `ComputeDevice` keeps one pending
+    list.
+  - **Metal:** `DGDevice` holds one `MTLCommandQueue`; shared events need the bridge (ABI bump).
+  - **Test devices:** lavapipe exposes one queue family, so its tests cover the single-queue fallback, and Apple GPUs
+    test real queues.
 
 ### 1.7: Kernel kit
 
@@ -82,6 +120,18 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - Then a kernel can be compiled for a shape class instead of branching at run time.
 - **Shape-dispatched kernels:** a small registry that picks a kernel variant by shape and capability, with a
   measured heuristic, so callers keep one entry point.
+
+- **Where to start:**
+  - **The copies to unify:**
+    - in vectrix-gpu: `Kernels` (`Params`, `grid`, `matrix`, `MAX_INDEX`), `Rows` (`compile`, `placeholder`, `close`,
+      `shape`) and `EngineBuffers` (`soa`, `distinct`, `groups`);
+    - in the primitives: the `check` methods and parameter `ByteBuffer`s in `GemmF16`, `Softmax` and `AttentionF16`.
+  - **Where it goes:** a public `org.dynamisengine.gpu.api.compute.kit` package (or a `dynamis-gpu-kit` module if it
+    needs more than the API).
+  - **Validating parameter blocks:** `KernelLibrary.parameterOffsets` and `parameterTypes` already give names,
+    offsets and types to check them against.
+  - **Function constants:** `ComputeDevice` rejects Metal specialization today (ABI 1 note in
+    `docs/compute-runtime.md`). The bridge's `dg_pipeline_create` needs an `MTLFunctionConstantValues` argument.
 
 ### 1.8: GEMM family
 
@@ -112,6 +162,18 @@ backend.
   documentation cover it.
 - **Vulkan cooperative matrices:** once there is NVIDIA, AMD or Intel hardware to test on.
 
+- **Where to start:**
+  - **Existing code:** `GemmF16` (Java), `gemm_body.slang` (tiled, one entry per `Precision`) and
+    `metal/gemm_f16_simdgroup.metal` (matrix, a template).
+  - **Shape and parameter block:** `GemmF16.Shape` carries the shape, B layout and batch. The parameter block is
+    12 fields (`KernelLibrary` reports it).
+  - **The skinny kernel:** add it as a third `Algorithm`, chosen by `create` and `encode` from the shape (the 1.7
+    registry).
+  - **Epilogues:**
+    - Add an epilogue description to `Shape`, or to a new `Epilogue` record, plus optional bias and residual buffers.
+    - Absent buffers bind a placeholder (the kit).
+    - Extend `GemmF16.reference` and `referenceF16` so the tiled kernel stays bit for bit for bias, ReLU and residual.
+
 ### 1.9: Quantized weights and packing
 
 - **Weight-only quantization:**
@@ -124,6 +186,12 @@ backend.
   blocks and FP16 tiles for the matrix kernel. Activations stay in plain row-major.
 - **Quantize and dequantize kernels**, with the CPU reference bit for bit.
 
+- **Where to start:**
+  - **CPU side:** the block formats need a CPU encoder and decoder. Put them in Vectrix `nn.Formats` (which has int8
+    today) and test the GPU against them bit for bit.
+  - **Kernels:** the dequantizing kernels are new entries of the GEMM family, reading packed blocks. The packer is a
+    Java class producing the packed buffer.
+
 ### 1.10: Inference kernels
 
 - **Norms:** RMSNorm and LayerNorm, optionally fused with the residual add.
@@ -135,6 +203,12 @@ backend.
   - logits never return to the host.
 - **Reductions and scans** as public primitives.
 
+- **Where to start:**
+  - **Row kernels:** they follow `softmax_body.slang`: one 256-thread group per row, fixed-tree reductions, and
+    results in their own group variables. After 1.7 the reductions come from the Slang include library.
+  - **Twins:** vectrix-gpu has exact twins of several of these (`GpuNorms`, `GpuActivations`, `GpuSampler`). The
+    throughput versions here are bounded, tested against double references, and may be faster.
+
 ### 1.11: Attention at scale
 
 - **Flash attention:**
@@ -145,11 +219,22 @@ backend.
 - **Paged KV cache:** fixed-size pages in a pool, an append kernel, and attention over the page table.
 - **Decode attention:** one query against a long cache, split across the keys and combined.
 
+- **Where to start:**
+  - **The current version:** `AttentionF16` composes `GemmF16`, `Softmax` and `GemmF16`, and its test checks the
+    composed bound in double precision (`AttentionConformance`).
+  - **Flash attention:** replaces the composition behind the same class, and keeps that test as the oracle.
+  - **First kernel:** the Metal matrix path first (hand-written MSL, like `gemm_f16_simdgroup.metal`).
+
 ### 1.12: Training kernels
 
 - **Backward passes:** softmax, the norms, attention, and the activations.
 - **Transposed-A GEMM** (from 1.8), and gradient accumulation with float atomics (`ATOMIC_FLOAT32_ADD`).
 - **Optimizers:** AdamW and SGD as throughput kernels. The exact twins stay in vectrix-gpu.
+
+- **Where to start:**
+  - **Exact versions:** vectrix-gpu's `GpuOptim`, `GpuLoss` and `GpuNorms` hold exact versions of several of these.
+    Use them as references where they apply.
+  - **Gradient checks:** compare finite differences in double against the forward kernels.
 
 ## Flowing into Vectrix
 
