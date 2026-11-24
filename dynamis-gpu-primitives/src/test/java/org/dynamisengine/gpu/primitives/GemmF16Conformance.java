@@ -86,8 +86,8 @@ abstract class GemmF16Conformance {
             short[] exact = cH.clone(); GemmF16.referenceF16(a, b, exact, s);
             for (int i = 0; i < cLength; i++) if (exact[i] != got.getShort(2 * i)) differ++;
         }
-        String what = gemm.algorithm() + " " + output + " " + s;
-        if (gemm.algorithm() == Algorithm.TILED) assertEquals(0, differ, "elements differing from the reference for " + what);
+        String what = gemm.algorithm(s) + " " + output + " " + s;
+        if (gemm.algorithm(s) == Algorithm.TILED) assertEquals(0, differ, "elements differing from the reference for " + what);
         else System.out.println("gemm " + gemm.algorithm() + " " + output + " " + s.m() + "x" + s.n() + "x" + s.k() + "x" + s.batch()
                 + (s.transposeB() ? " B^T" : "") + " differs from reference in " + differ + " of " + cLength);
         double worst = 0;
@@ -184,6 +184,66 @@ abstract class GemmF16Conformance {
         assertThrows(IllegalArgumentException.class, () -> new Shape(2, 2, 4, 4, 3, 2, 1, 0, true, 1, 0, 0, 0)); // ldb < k
         assertThrows(IllegalArgumentException.class, () -> Shape.of(4, 4, 4, 1, 0).withBatch(2, 16, 16, 8)); // C overlaps
         assertThrows(IllegalArgumentException.class, () -> Shape.of(4, 4, 4, 1, 0).withBatch(0, 16, 16, 16));
+    }
+
+    /**
+     * Shape dispatch: the default instance runs the registry's choice per shape, and every registered variant the
+     * device supports fits the compiled pipeline's and the device's limits.
+     */
+    @Test void dispatchesByShapeWithinLimits() {
+        if (!GemmF16.supports(device, Algorithm.TILED)) return;
+        var shapes = new Shape[] {Shape.of(8, 300, 200, 1, 0), Shape.ofTransposedB(8, 300, 200, 1, 0), Shape.ofTransposedB(40, 300, 200, 1, 0),
+                Shape.of(128, 160, 96, 1, 0), Shape.ofTransposedB(96, 64, 72, 1, 0)};
+        for (var s : shapes) assertEquals(java.util.List.of(), GemmF16.REGISTRY.checkLimits(device, s), "limits for " + s);
+        try (var g = GemmF16.create(device)) {
+            gemm = g;
+            for (var s : shapes) {
+                assertEquals(GemmF16.REGISTRY.select(device, s), g.algorithm(s), s.toString());
+                if (!GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX)) assertEquals(Algorithm.TILED, g.algorithm(s));
+                check(s, s.m() * 31L + s.n(), false);   // bit for bit where the registry picks TILED, else within the bound
+            }
+            if (GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX)) {
+                assertEquals(Algorithm.TILED, g.algorithm(shapes[0]), "skinny: tiled");
+                assertEquals(Algorithm.SIMDGROUP_MATRIX, g.algorithm(shapes[1]), "skinny with B transposed, m <= 16: matrix");
+                assertEquals(Algorithm.TILED, g.algorithm(shapes[2]), "m = 40, B transposed: tiled");
+                assertEquals(Algorithm.SIMDGROUP_MATRIX, g.algorithm(shapes[3]), "m >= 64: matrix");
+            }
+        } finally { gemm = null; }
+    }
+
+    /** GPU nanoseconds per multiply of {@code s} with {@code g}: the best of 4 rounds of back-to-back dispatches. */
+    double nanosPer(GemmF16 g, Shape s) {
+        try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
+            int reps = (int) Math.max(4, Math.min(2000, 4e10 / s.flops()));
+            double best = Double.MAX_VALUE;
+            for (int round = 0; round < 4; round++) {
+                try (var e = device.encoder()) {
+                    for (int i = 0; i < reps; i++) g.encode(e, ga, gb, gc, s);
+                    try (var sub = device.queue().submit(e)) {
+                        assertTrue(sub.await(WAIT));
+                        best = Math.min(best, sub.gpuTime().orElseThrow().toNanos() / (double) reps);
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
+    /** -Dgemm.shapes=true: both algorithms over decode, small and attention shapes, for the shape registry's heuristic. */
+    @Test void shapeSweep() {
+        Assumptions.assumeTrue(Boolean.getBoolean("gemm.shapes"), "set -Dgemm.shapes=true");
+        Assumptions.assumeTrue(GemmF16.supports(device, GemmF16.Algorithm.SIMDGROUP_MATRIX), "needs both algorithms");
+        try (var tiled = GemmF16.create(device, GemmF16.Algorithm.TILED); var matrix = GemmF16.create(device, GemmF16.Algorithm.SIMDGROUP_MATRIX)) {
+            int[][] shapes = {{1, 4096, 4096}, {4, 4096, 4096}, {16, 4096, 4096}, {32, 4096, 4096}, {64, 4096, 4096},
+                    {64, 64, 64}, {128, 128, 128}, {256, 256, 256}, {512, 512, 512}, {32, 2048, 128}, {2048, 2048, 128}, {8, 8, 4096}};
+            for (int[] m : shapes) {
+                for (var shape : new Shape[] {Shape.of(m[0], m[1], m[2], 1, 0), Shape.ofTransposedB(m[0], m[1], m[2], 1, 0)}) {
+                    double t = nanosPer(tiled, shape), x = nanosPer(matrix, shape);
+                    System.out.printf("gemm shape %d x %d x %d %s: TILED %.1f us, SIMDGROUP_MATRIX %.1f us (%.2fx)%n", m[0], m[1], m[2],
+                            shape.transposeB() ? "B^T" : "B", t / 1e3, x / 1e3, t / x);
+                }
+            }
+        }
     }
 
     /** -Dgemm.benchmark=true: GFLOP/s for square multiplies over back-to-back dispatches, by GPU time and by wall time. */

@@ -93,6 +93,34 @@ var shared = GemmF16.Shape.of(m, n, k, 1f, 0f).withBatch(count, m * k, 0, m * n)
     with FP32 rounding.
   - **Not promised:** Apple does not document this, and other GPU generations are unverified.
 
+### Shape dispatch (1.7.0)
+
+`GemmF16.create(device)` compiles both algorithms where the device has matrix hardware, and `encode` picks one per
+shape (`algorithm(shape)`) from `GemmF16.REGISTRY`, a kit `ShapeRegistry`.
+- **Reproducible mode:** it is TILED only.
+- **An explicit algorithm:** `create(device, algorithm, output)` still runs that algorithm for every shape.
+- **The rule:** measured on an Apple M4 Max with `-Dgemm.shapes=true`. The figures are GPU time per multiply, and
+  the ratio is TILED over the matrix kernel:
+
+  | Shape (m x n x k) | B | TILED | SIMDGROUP_MATRIX | Ratio |
+  |---|---|---|---|---|
+  | 1 x 4096 x 4096 | as stored | 510 us | 764 us | 0.67 |
+  | 1 x 4096 x 4096 | transposed | 640 us | 424 us | 1.51 |
+  | 32 x 4096 x 4096 | as stored | 519 us | 979 us | 0.53 |
+  | 32 x 4096 x 4096 | transposed | 636 us | 697 us | 0.91 |
+  | 64 x 4096 x 4096 | as stored | 531 us | 305 us | 1.74 |
+  | 32 x 2048 x 128 | as stored | 14.7 us | 20.6 us | 0.71 |
+  | 512 x 512 x 512 | as stored | 70.2 us | 34.5 us | 2.04 |
+  | 2048 x 2048 x 128 | as stored | 227 us | 101 us | 2.24 |
+
+  - **Why:** the matrix kernel's 64 x 64 tiles waste most of their work when `m < 64`.
+  - **So the registry picks:** the matrix kernel from `m = 64`, and below that only with B transposed and
+    `m <= 16`; TILED otherwise.
+  - **Not yet fast:** the `m = 1` decode products run at about 64 GB/s, far below the memory bandwidth. They wait for
+    1.8's skinny GEMM.
+- **Checking it:** `REGISTRY.checkLimits(device, shape)` compiles every variant the device supports and checks it
+  against the pipeline's and the device's limits. The tests run it on every backend.
+
 ### Performance
 
 Measured on an Apple M4 Max (40-core GPU, macOS 27). The figures are GPU time (`GpuSubmission.gpuTime`) over

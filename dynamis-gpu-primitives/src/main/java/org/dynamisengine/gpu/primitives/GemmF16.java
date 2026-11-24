@@ -4,6 +4,8 @@ import org.dynamisengine.gpu.api.compute.*;
 import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.Checks;
 import org.dynamisengine.gpu.api.compute.kit.KitOptions;
+import org.dynamisengine.gpu.api.compute.kit.PipelineSet;
+import org.dynamisengine.gpu.api.compute.kit.ShapeRegistry;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +23,8 @@ import java.util.Set;
  * <p>
  * <b>Algorithms.</b> {@link Algorithm#TILED} runs everywhere and is reproducible; {@link Algorithm#SIMDGROUP_MATRIX}
  * uses Apple GPU matrix hardware ({@link GpuCapabilities#SUBGROUP_MATRIX_F16} on native Metal) and is faster, within
- * the same bound but summing in the hardware's order. {@link #create(GpuDevice)} picks the fastest the device has.
+ * the same bound but summing in the hardware's order. {@link #create(GpuDevice)} picks the fastest per shape
+ * ({@link #REGISTRY}; 1.7.0), or TILED in reproducible mode.
  * <p>
  * <b>Reproducibility.</b> The tiled algorithm gives the same bits on every device that rounds FP32 add and multiply
  * correctly (tested on native Metal, MoltenVK and lavapipe):
@@ -114,28 +117,62 @@ public final class GemmF16 implements AutoCloseable {
         long bIndex(int z, int q, int j) { return z * strideB + (transposeB ? (long) j * ldb + q : (long) q * ldb + j); }
     }
 
+    /**
+     * The algorithms by shape (1.7.0). Costs are relative GPU times measured on an Apple M4 Max (the
+     * {@code -Dgemm.shapes=true} sweep): the matrix kernel's 64 x 64 tiles waste most of their work when {@code m < 64},
+     * where TILED runs 1.5 to 1.9 times faster, except that with B transposed the matrix kernel still wins up to
+     * {@code m = 16}; from {@code m = 64} the matrix kernel runs 1.2 to 2.5 times faster.
+     */
+    public static final ShapeRegistry<Shape, Algorithm> REGISTRY = ShapeRegistry.<Shape, Algorithm>builder()
+            .add("gemm.tiled", Algorithm.TILED, (d, s) -> supports(d, Algorithm.TILED), (d, s) -> 1.0,
+                    (d, s) -> descriptor(d, Algorithm.TILED, Precision.FP32))
+            .add("gemm.simdgroup", Algorithm.SIMDGROUP_MATRIX, (d, s) -> supports(d, Algorithm.SIMDGROUP_MATRIX),
+                    (d, s) -> s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5,
+                    (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Precision.FP32))
+            .build();
+
     private final GpuDevice device;
     private final GpuComputePipeline pipeline;
+    /** With shape dispatch (the default create on a device with both algorithms): the TILED pipeline; else null. */
+    private final GpuComputePipeline tiled;
     private final Algorithm algorithm;
     private final Precision output;
     private final ParameterLayout layout;
 
-    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, Algorithm algorithm, Precision output) {
-        this.device = device; this.pipeline = pipeline; this.algorithm = algorithm; this.output = output;
+    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, GpuComputePipeline tiled, Algorithm algorithm, Precision output) {
+        this.device = device; this.pipeline = pipeline; this.tiled = tiled; this.algorithm = algorithm; this.output = output;
         this.layout = ParameterLayout.of(KERNELS, kernel(output));   // the simdgroup kernel shares the block
     }
 
-    /** Compiles the fastest algorithm {@code device} supports, with an FP32 C. */
-    public static GemmF16 create(GpuDevice device) { return create(device, fastest(device), Precision.FP32); }
+    /** As {@link #create(GpuDevice, Precision)} with an FP32 C. */
+    public static GemmF16 create(GpuDevice device) { return create(device, Precision.FP32); }
 
-    /** Compiles the fastest algorithm {@code device} supports, with C of type {@code output}. */
-    public static GemmF16 create(GpuDevice device, Precision output) { return create(device, fastest(device), output); }
+    /**
+     * The fastest GEMM for each shape, with C of type {@code output}: where the device has both algorithms, both are
+     * compiled and {@link #encode} picks one per shape from {@link #REGISTRY} ({@link #algorithm(Shape)}). In
+     * reproducible mode ({@code KitOptions}) it is TILED only.
+     */
+    public static GemmF16 create(GpuDevice device, Precision output) {
+        Algorithm best = fastest(device);
+        if (best == Algorithm.TILED) return create(device, Algorithm.TILED, output);
+        var primary = device.pipeline(descriptor(device, best, output));
+        try {
+            return new GemmF16(device, primary, device.pipeline(descriptor(device, Algorithm.TILED, output)), best, output);
+        } catch (RuntimeException e) {
+            primary.close();
+            throw e;
+        }
+    }
 
     /** Compiles {@code algorithm} with an FP32 C. */
     public static GemmF16 create(GpuDevice device, Algorithm algorithm) { return create(device, algorithm, Precision.FP32); }
 
     /** Compiles {@code algorithm} with C of type {@code output}; throws {@code UNSUPPORTED} where the device lacks it. */
     public static GemmF16 create(GpuDevice device, Algorithm algorithm, Precision output) {
+        return new GemmF16(device, device.pipeline(descriptor(device, algorithm, output)), null, algorithm, output);
+    }
+
+    private static PipelineDescriptor descriptor(GpuDevice device, Algorithm algorithm, Precision output) {
         var types = Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16);
         var accesses = List.of(Access.READ, Access.READ, Access.READ_WRITE);
         PipelineDescriptor descriptor = switch (algorithm) {
@@ -150,7 +187,7 @@ public final class GemmF16 implements AutoCloseable {
                         Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
             }
         };
-        return new GemmF16(device, device.pipeline(descriptor), algorithm, output);
+        return descriptor;
     }
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "gemm_f16" : "gemm_f16_h"; }
@@ -206,6 +243,9 @@ public final class GemmF16 implements AutoCloseable {
     /** The algorithm this instance runs. */
     public Algorithm algorithm() { return algorithm; }
 
+    /** The algorithm {@link #encode} runs for {@code s}: with shape dispatch, the registry's choice. @since 1.7.0 */
+    public Algorithm algorithm(Shape s) { return tiled == null ? algorithm : REGISTRY.select(device, s); }
+
     /** The element type of C. */
     public Precision output() { return output; }
 
@@ -217,7 +257,9 @@ public final class GemmF16 implements AutoCloseable {
                 .u32("ldc", s.ldc()).f32("alpha", s.alpha()).f32("beta", s.beta()).bool("transB", s.transposeB())
                 .u32("strideA", s.strideA()).u32("strideB", s.strideB()).u32("strideC", s.strideC()).bytes();
         var groups = new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
-        return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), params, groups, algorithm == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
+        Algorithm run = algorithm(s);
+        var p = run == algorithm ? pipeline : tiled;
+        return encoder.dispatch(p, Map.of(0, a, 1, b, 2, c), params, groups, run == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
     }
 
     private static float product(short[] a, short[] b, Shape s, int z, int i, int j) {
@@ -263,5 +305,5 @@ public final class GemmF16 implements AutoCloseable {
     /** The device this multiply runs on. */
     public GpuDevice device() { return device; }
 
-    @Override public void close() { pipeline.close(); }
+    @Override public void close() { PipelineSet.closeAll(pipeline, tiled); }
 }

@@ -182,21 +182,21 @@ hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers abov
 
 ### 1.7: Kernel kit
 
-**Progress (branch `feat/kernel-kit`):** done so far:
+**Status: complete on branch `feat/kernel-kit`, ready to release as 1.7.0.** Done:
 - the Java kit (`ParameterLayout`, `StridedView`, `Grid`, `PipelineSet`, `Checks`);
 - specialization on Metal (function constants, bridge ABI 6);
 - device and pipeline limits;
 - the Slang include library;
-- `AccuracyContract`;
-- `Elementwise`, `Reduce`, `Scan` and `NanCheck` with tripwires.
-
-Also done:
-- debug kernel builds (`DG_DEBUG`, `dg_in_range`);
+- `AccuracyContract`, with contracts for every primitive;
+- `Elementwise`, `Reduce`, `Scan` and `NanCheck` with tripwires;
+- debug builds (`DG_DEBUG`);
 - reproducible mode (`KitOptions`);
-- the cross-backend harness (`CrossBackend`, in CI on Metal against MoltenVK);
-- contracts for `GemmF16`, `Softmax` and `AttentionF16`.
+- the cross-backend harness (`CrossBackend`);
+- `ShapeRegistry`, with `GemmF16` dispatching per shape from a measured rule.
 
-Next comes the shape registry, then the 1.7.0 release.
+Not done, deliberately:
+- **Moving vectrix-gpu's helpers onto the kit:** that is the Vectrix flow, after the stack.
+- **A shader printf:** there is no portable channel for it, so the error buffer remains the channel.
 
 - **Shared plumbing:**
   - **Parameter-block builder:** fields named and checked against the manifest.
