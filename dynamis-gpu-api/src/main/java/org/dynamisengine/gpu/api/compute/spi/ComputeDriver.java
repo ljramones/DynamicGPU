@@ -41,6 +41,13 @@ public interface ComputeDriver extends AutoCloseable {
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
     Job submit(List<Command> commands);
+    /** The hardware queue for transfers (queue 0 is compute), or -1 if transfers share queue 0. */
+    default int transferQueue() { return -1; }
+    /** Submits on hardware queue {@code queue} (0 compute, or {@link #transferQueue()}: transfers and fills only). */
+    default Job submit(int queue, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        if (queue != 0) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "no transfer queue on this backend");
+        return submit(commands, profile, waits, signals);
+    }
     /** A fence operation of a submission: wait for, or signal, {@code value} on a driver fence. */
     record FenceOp(Object fence, long value) { }
     /** A new timeline fence at 0, or UNSUPPORTED. */

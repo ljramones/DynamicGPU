@@ -92,11 +92,16 @@ final class MetalDriver implements ComputeDriver {
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
     @Override public Job submit(List<Command> commands, boolean profile) {
         int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
-        return submitBatch(commands, profile ? dispatches : 0, List.of(), List.of());
+        return submitBatch(0, commands, profile ? dispatches : 0, List.of(), List.of());
     }
     @Override public Job submit(List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
-        return submitBatch(commands, profile ? dispatches : 0, waits, signals);
+        return submitBatch(0, commands, profile ? dispatches : 0, waits, signals);
+    }
+    @Override public int transferQueue() { return 1; }
+    @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
+        return submitBatch(q, commands, profile ? dispatches : 0, waits, signals);
     }
     @Override public Job submit(Prepared prepared, List<Command> commands, List<FenceOp> waits, List<FenceOp> signals) {
         return submit(commands, prepared instanceof Unprepared u && u.profile(), waits, signals);
@@ -109,8 +114,8 @@ final class MetalDriver implements ComputeDriver {
         int r = n.integer("dg_event_wait", (MemorySegment) fence, value, nanos); if (r < 0) throw n.error("event wait"); return r == 1;
     }
     @Override public void releaseFence(Object fence) { n.release("dg_event_release", (MemorySegment) fence); }
-    private Job submitBatch(List<Command> commands, int profiled, List<FenceOp> waits, List<FenceOp> signals) {
-        var batch = n.pointer("dg_batch_create", device);
+    private Job submitBatch(int q, List<Command> commands, int profiled, List<FenceOp> waits, List<FenceOp> signals) {
+        var batch = n.pointer("dg_batch_create_on", device, q);
         for (var w : waits) n.check("dg_batch_wait_event", batch, (MemorySegment) w.fence(), w.value());
         // a device without stage-boundary counters runs unprofiled
         final int timed = profiled > 0 && n.integer("dg_batch_profile", batch, profiled) == 0 ? profiled : 0;

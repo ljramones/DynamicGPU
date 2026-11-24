@@ -383,6 +383,65 @@ public abstract class ComputeConformance {
         }
     }
 
+    /**
+     * The transfer queue takes transfers and fills, not dispatches or recordings. With fences, a streaming pipeline
+     * runs correctly: each round uploads on the transfer queue and signals; the compute queue waits, then computes.
+     */
+    @Test void transferQueueStreamsWithFences() {
+        var transfer = device.queue(QueueKind.TRANSFER);
+        assertEquals(QueueKind.TRANSFER, transfer.kind()); assertEquals(QueueKind.COMPUTE, device.queue().kind());
+        int n = 1024;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n)) {
+            try (var e = device.encoder()) {
+                e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> transfer.submit(e)).code());
+            }
+            System.out.println("transfer queue dedicated=" + transfer.dedicated() + " on " + device.adapter().name());
+            GpuFence f;
+            try { f = device.fence(); } catch (ComputeException e) { return; }   // no fences (the mock): stop here
+            try (f) {
+                for (int round = 1; round <= 6; round++) {
+                    final int k = round;
+                    try (var up = device.encoder()) {
+                        up.upload(a, floats(n, i -> i + k)).upload(b, floats(n, i -> 1000 * k)).signal(f, round);
+                        transfer.submit(up);
+                    }
+                    GpuReadback r; GpuSubmission s;
+                    try (var e = device.encoder()) {
+                        e.waitFor(f, round).dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+                        r = e.download(c); s = device.queue().submit(e);
+                    }
+                    await(s);
+                    var got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+                    for (int i = 0; i < n; i++) assertEquals(i + k + 1000f * k, got.getFloat(4 * i), "round " + round + " element " + i);
+                }
+                assertEquals(6, transfer.stats().submitted());
+            }
+        }
+    }
+
+    /** -Dcompute.benchmark=true: a 64 MiB upload on the transfer queue alongside long compute, against the two in turn. */
+    @Test void transferOverlapBenchmark() {
+        Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");
+        int n = 65535 * 64; byte[] data = new byte[64 << 20];   // the largest 1D grid every backend allows
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE);
+             var big = buffer(data.length, Placement.PRIVATE); var p = pipeline(n)) {
+            for (int round = 0; round < 3; round++) {
+                long t0 = System.nanoTime();
+                try (var e = device.encoder()) { for (int i = 0; i < 40; i++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1)); e.upload(big, data); await(device.queue().submit(e)); }
+                long serial = System.nanoTime() - t0;
+                long t1 = System.nanoTime();
+                GpuSubmission up, compute;
+                try (var u = device.encoder()) { u.upload(big, data); up = device.queue(QueueKind.TRANSFER).submit(u); }
+                try (var e = device.encoder()) { for (int i = 0; i < 40; i++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1)); compute = device.queue().submit(e); }
+                await(compute); await(up);
+                long overlapped = System.nanoTime() - t1;
+                System.out.printf("transfer overlap on %s (dedicated=%b): serial %.2f ms, two queues %.2f ms%n", device.adapter().name(),
+                        device.queue(QueueKind.TRANSFER).dedicated(), serial / 1e6, overlapped / 1e6);
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

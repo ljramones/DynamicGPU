@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-struct DGDevice { id<MTLDevice> device; id<MTLCommandQueue> queue; };
+struct DGDevice { id<MTLDevice> device; id<MTLCommandQueue> queue; id<MTLCommandQueue> transfer; };
 struct DGBuffer { id<MTLBuffer> buffer; };
 struct DGPipeline { id<MTLComputePipelineState> pipeline; };
 // ABI 5: timeline fences as MTLSharedEvents. Host waits use a shared event listener and a semaphore, not polling.
@@ -66,7 +66,7 @@ int dg_event_wait(DGEvent *e, uint64_t value, int64_t nanos) { START
     return r == 0 || e->event.signaledValue >= value ? 1 : 0;
 END(-1) }
 void dg_event_release(DGEvent *e) { START if (e) { [e->event release]; free(e); } END() }
-void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->device release]; free(d); } END() }
+void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->transfer release]; [d->device release]; free(d); } END() }
 DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { START
     id<MTLBuffer> b = [d->device newBufferWithLength:bytes options:privateStorage ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared];
     if (!b) { error(@"Metal buffer allocation failed (size/storage unsupported or memory exhausted)"); return NULL; }
@@ -107,6 +107,18 @@ DGPipeline *dg_pipeline_create(DGDevice *d, const void *bytes, uint64_t size, in
 END(NULL) }
 uint64_t dg_pipeline_threads(DGPipeline *p) { START return p->pipeline.maxTotalThreadsPerThreadgroup; END(0) }
 void dg_pipeline_release(DGPipeline *p) { START if (p) { [p->pipeline release]; free(p); } END() }
+// ABI 5: a batch on queue q (0 compute, 1 transfer). The transfer queue is a second command queue, made on first use;
+// Metal runs command queues concurrently, and blit work can use the copy engine.
+DGBatch *dg_batch_create_on(DGDevice *d, int q) { START
+    id<MTLCommandQueue> target = d->queue;
+    if (q == 1) {
+        if (!d->transfer) { d->transfer = [d->device newCommandQueue]; if (!d->transfer) { error(@"newCommandQueue failed"); return NULL; } }
+        target = d->transfer;
+    }
+    DGBatch *b = calloc(1, sizeof(*b)); if (!b) { error(@"Batch allocation failed"); return NULL; }
+    b->device = d; b->command = [[target commandBuffer] retain];
+    if (!b->command) { error(@"Metal command buffer allocation failed"); free(b); return NULL; } return b;
+END(NULL) }
 DGBatch *dg_batch_create(DGDevice *d) { START
     DGBatch *b = calloc(1, sizeof(*b)); if (!b) { error(@"Batch allocation failed"); return NULL; }
     b->device = d; b->command = [[d->queue commandBuffer] retain];

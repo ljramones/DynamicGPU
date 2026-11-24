@@ -10,7 +10,10 @@ import java.util.*;
 import static org.lwjgl.vulkan.VK10.*;
 import static org.dynamisengine.gpu.vulkan.compute.VulkanProvider.check;
 
-/** Submission-scoped headless compute. A single queue family avoids ownership transfers. */
+/**
+ * Headless compute on Vulkan: a compute queue, and a transfer queue where the device has a dedicated transfer family.
+ * Buffers are then shared concurrently between the two families.
+ */
 final class VulkanComputeDriver implements ComputeDriver {
     /** A pool block: one VkBuffer over its own memory, persistently mapped when host-visible (mapped != 0). */
     private record Block(long buffer, long memory, long bytes, boolean coherent, long mapped) { }
@@ -28,6 +31,13 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkDevice device;
     private final VkQueue queue;
     private final long pool;
+    /** The transfer queue and its command pool (null/0 when transfers share the compute queue). */
+    private final VkQueue transfer;
+    private final long transferPool;
+    private final int computeFamily, transferFamily;
+    /** Whether the transfer family runs transfers only (no compute stage in its barriers). */
+    private final boolean transferOnly;
+    private final int transferTimestampBits;
     private final VulkanFeatures features;
     /** The device's VkPipelineCache, and the file it is loaded from and saved to (null: in memory only). */
     private final long pipelineCache;
@@ -51,13 +61,34 @@ final class VulkanComputeDriver implements ComputeDriver {
             if (index < 0 || index >= devices.size()) throw new ComputeException(ComputeException.Code.UNAVAILABLE, "Selected Vulkan adapter disappeared");
             physical = devices.get(index); int family = VulkanProvider.family(physical);
             if (family < 0) throw new ComputeException(ComputeException.Code.UNAVAILABLE, "No compute-capable Vulkan queue");
-            var qi = VkDeviceQueueCreateInfo.calloc(1, stack); qi.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1));
+            computeFamily = family;
+            // the transfer queue: a family with transfers but no graphics or compute (a DMA engine, as discrete GPUs
+            // have), else none, and transfers share the compute queue. A second queue of the compute family is not
+            // used: no device available for testing exposes one (MoltenVK and lavapipe expose a single queue).
+            var familyCount = stack.ints(0); vkGetPhysicalDeviceQueueFamilyProperties(physical, familyCount, null);
+            var families = VkQueueFamilyProperties.calloc(familyCount.get(0), stack); vkGetPhysicalDeviceQueueFamilyProperties(physical, familyCount, families);
+            int tf = -1, transferIndex = 0;
+            for (int i = 0; i < families.capacity(); i++) {
+                int flags = families.get(i).queueFlags();
+                if (i != family && families.get(i).queueCount() > 0 && (flags & VK_QUEUE_TRANSFER_BIT) != 0 && (flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0) { tf = i; break; }
+            }
+            transferFamily = tf;
+            transferOnly = tf >= 0 && tf != family;
+            VkDeviceQueueCreateInfo.Buffer qi;
+            if (tf >= 0) {
+                qi = VkDeviceQueueCreateInfo.calloc(2, stack);
+                qi.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1));
+                qi.get(1).sType$Default().queueFamilyIndex(tf).pQueuePriorities(stack.floats(1));
+            } else {
+                qi = VkDeviceQueueCreateInfo.calloc(1, stack); qi.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1));
+            }
             features = VulkanFeatures.query(physical);
             var limits = VkPhysicalDeviceProperties.calloc(stack); vkGetPhysicalDeviceProperties(physical, limits);
             timestampPeriod = limits.limits().timestampPeriod();
             long align = Math.max(256, Math.max(limits.limits().minStorageBufferOffsetAlignment(), limits.limits().minUniformBufferOffsetAlignment()));
             alignment = Long.highestOneBit(align) == align ? align : Long.highestOneBit(align) << 1;
             timestampBits = timestampPeriod > 0 ? VulkanProvider.timestampBits(physical, family) : 0;
+            transferTimestampBits = timestampPeriod > 0 && tf >= 0 ? VulkanProvider.timestampBits(physical, tf) : 0;
             var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
             List<String> extensions = new ArrayList<>(features.extensions());
             memoryBudget = VulkanProvider.extension(physical, "VK_EXT_memory_budget");
@@ -75,6 +106,10 @@ final class VulkanComputeDriver implements ComputeDriver {
             pipelineCache = createPipelineCache(stack, pipelineCacheFile);
             var poolInfo = VkCommandPoolCreateInfo.calloc(stack).sType$Default().flags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(family);
             var handle = stack.mallocLong(1); check(vkCreateCommandPool(device, poolInfo, null, handle), "create compute command pool"); pool = createdPool = handle.get(0);
+            if (tf >= 0) {
+                vkGetDeviceQueue(device, tf, transferIndex, out); transfer = new VkQueue(out.get(0), device);
+                poolInfo.queueFamilyIndex(tf); check(vkCreateCommandPool(device, poolInfo, null, handle), "create transfer command pool"); transferPool = handle.get(0);
+            } else { transfer = null; transferPool = 0; }
         } catch (RuntimeException | Error ex) {
             if (createdPool != 0) vkDestroyCommandPool(created, createdPool, null);
             if (created != null) vkDestroyDevice(created, null); vkDestroyInstance(instance, null); throw ex;
@@ -145,6 +180,7 @@ final class VulkanComputeDriver implements ComputeDriver {
         try (var stack = MemoryStack.stackPush()) {
             int usages = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             var info = VkBufferCreateInfo.calloc(stack).sType$Default().size(bytes).usage(usages).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+            if (transferOnly) info.sharingMode(VK_SHARING_MODE_CONCURRENT).pQueueFamilyIndices(stack.ints(computeFamily, transferFamily));
             var out = stack.mallocLong(1); check(vkCreateBuffer(device, info, null, out), "create buffer"); buffer = out.get(0);
             var requirements = VkMemoryRequirements.calloc(stack); vkGetBufferMemoryRequirements(device, buffer, requirements);
             var properties = VkPhysicalDeviceMemoryProperties.calloc(stack); vkGetPhysicalDeviceMemoryProperties(physical, properties);
@@ -268,8 +304,10 @@ final class VulkanComputeDriver implements ComputeDriver {
      * writes made before submission are visible through vkQueueSubmit, so the host stage only appears in the final
      * barrier ({@code host}), which makes GPU writes visible to the host readbacks.
      */
-    private static void barrier(VkCommandBuffer cmd, boolean host, MemoryStack stack) {
-        int stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    private static void barrier(VkCommandBuffer cmd, boolean host, MemoryStack stack) { barrier(cmd, host, false, stack); }
+    /** As above; a transfer-only queue has no compute stage. */
+    private static void barrier(VkCommandBuffer cmd, boolean host, boolean transferOnly, MemoryStack stack) {
+        int stages = transferOnly ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
         var memory = VkMemoryBarrier.calloc(1, stack); memory.get(0).sType$Default()
                 .srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)
                 .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT
@@ -293,9 +331,17 @@ final class VulkanComputeDriver implements ComputeDriver {
         List<Command> recorded;            // the commands the command buffer holds
         final boolean profile;             // a timestamp pair around each dispatch, after the submission's pair
         int queryCount;
+        final VkQueue target;              // the queue it is submitted to, and the pool its command buffer comes from
+        final long commandPool;
+        final boolean transferStages;
+        final int bits;                    // valid timestamp bits on that queue
 
-        Batch(List<Command> commands, boolean profile) {
+        Batch(List<Command> commands, boolean profile) { this(commands, profile, 0); }
+        Batch(List<Command> commands, boolean profile, int q) {
             this.profile = profile;
+            boolean onTransfer = q == 1 && transfer != null;
+            target = onTransfer ? transfer : queue; commandPool = onTransfer ? transferPool : pool;
+            transferStages = onTransfer && transferOnly; bits = onTransfer ? transferTimestampBits : timestampBits;
             try (var stack = MemoryStack.stackPush()) {
                 int n = commands.size(), dispatches = 0, descriptors = 0;
                 sets = new long[n]; stages = new Allocation[n];
@@ -324,13 +370,13 @@ final class VulkanComputeDriver implements ComputeDriver {
                         default -> { }
                     }
                 }
-                if (timestampBits > 0) {
+                if (bits > 0) {
                     queryCount = 2 + (profile ? 2 * dispatches : 0);
                     var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(queryCount);
                     check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
                 }
                 check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
-                var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(pool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
+                var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(commandPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
                 var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer");
                 cmd = new VkCommandBuffer(pointer.get(0), device);
                 record(commands);
@@ -357,7 +403,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                 int dispatchNumber = 0;
                 for (int i = 0; i < commands.size(); i++) {
                     try (var local = MemoryStack.stackPush()) {
-                        barrier(cmd, false, local);
+                        barrier(cmd, false, transferStages, local);
                         switch (commands.get(i)) {
                             case Fill f -> vkCmdFillBuffer(cmd, buffer(f.destination()), offset(f.destination()), f.destination().bytes(), f.pattern());
                             case Copy c -> copy(cmd, buffer(c.source()), offset(c.source()), buffer(c.destination()), offset(c.destination()), c.source().bytes(), local);
@@ -381,7 +427,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                     }
                 }
                 if (queries != 0) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
-                barrier(cmd, true, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
+                barrier(cmd, true, transferStages, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
                 recorded = List.copyOf(commands);
             }
         }
@@ -414,7 +460,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                     submit.pNext(timeline.address()).waitSemaphoreCount(waits.size()).pWaitSemaphores(waitSemaphores).pWaitDstStageMask(stages)
                             .pSignalSemaphores(signalSemaphores);
                 }
-                check(vkQueueSubmit(queue, submit, fence), "submit compute commands");
+                check(vkQueueSubmit(target, submit, fence), "submit compute commands");
             }
             return new Job() {
                 private OptionalLong gpuNanos = OptionalLong.empty();
@@ -431,7 +477,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                         try (var stack = MemoryStack.stackPush()) {
                             var ticks = stack.mallocLong(queryCount);
                             if (vkGetQueryPoolResults(device, queries, 0, queryCount, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-                                long mask = timestampBits >= 64 ? -1L : (1L << timestampBits) - 1;
+                                long mask = bits >= 64 ? -1L : (1L << bits) - 1;
                                 gpuNanos = OptionalLong.of(Math.round(((ticks.get(1) - ticks.get(0)) & mask) * timestampPeriod));
                                 if (profile) {
                                     dispatchNanos = new long[(queryCount - 2) / 2];
@@ -453,13 +499,18 @@ final class VulkanComputeDriver implements ComputeDriver {
         @Override public void close() {
             if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
             if (queries != 0) { vkDestroyQueryPool(device, queries, null); queries = 0; }
-            if (cmd != null) { vkFreeCommandBuffers(device, pool, cmd); cmd = null; }
+            if (cmd != null) { vkFreeCommandBuffers(device, commandPool, cmd); cmd = null; }
             if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
             if (stages != null) { for (var st : stages) if (st != null) releaseBuffer(st); stages = null; }
         }
     }
 
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
+    @Override public int transferQueue() { return transfer != null ? 1 : -1; }
+    @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
+        var batch = new Batch(commands, profile, q);
+        try { return batch.submit(commands, true, waits, signals); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
+    }
     @Override public Job submit(List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         var batch = new Batch(commands, profile);
         try { return batch.submit(commands, true, waits, signals); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
@@ -504,6 +555,7 @@ final class VulkanComputeDriver implements ComputeDriver {
     @Override public void close() {
         pools.values().forEach(MemoryPool::destroyAll);
         savePipelineCache(); vkDestroyPipelineCache(device, pipelineCache, null);
+        if (transferPool != 0 && transferPool != pool) vkDestroyCommandPool(device, transferPool, null);
         vkDestroyCommandPool(device, pool, null); vkDestroyDevice(device, null); vkDestroyInstance(instance, null);
     }
 }

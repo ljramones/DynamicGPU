@@ -15,11 +15,12 @@ public final class ComputeDevice implements GpuDevice {
     private final Thread owner = Thread.currentThread();
     private final Set<Resource> resources = Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<AutoCloseable> handles = Collections.newSetFromMap(new IdentityHashMap<>());
-    private final List<Submission> pending = new ArrayList<>();
+    /** Per queue (0 compute, 1 transfer), its submissions in submission order. */
+    private final List<ArrayDeque<Submission>> queuesPending = List.of(new ArrayDeque<>(), new ArrayDeque<>());
+    private Queue computeQueue, transferQueue;
     private ComputeException queueFailure;
     /** Live buffers and requested bytes per memory class (BufferDescriptor.label). */
     private final Map<String, long[]> memoryClasses = new TreeMap<>();
-    private long submittedCount, completedCount, failedCount;
     private boolean closed;
     private Set<String> measuredFeatures; // null until FeatureProbe has run on this device
 
@@ -109,17 +110,30 @@ public final class ComputeDevice implements GpuDevice {
     }
     private record FenceUse(Fence fence, long value) { FenceOp op() { return new FenceOp(fence.nativeObject, value); } }
     private static List<FenceOp> ops(List<FenceUse> uses) { return uses.stream().map(FenceUse::op).toList(); }
-    @Override public GpuQueue queue() {
+    @Override public GpuQueue queue() { check(); return queue(QueueKind.COMPUTE); }
+    @Override public GpuQueue queue(QueueKind kind) {
         check();
-        return new GpuQueue() {
-            @Override public GpuSubmission submit(GpuCommandEncoder encoder) { return ComputeDevice.this.submit(encoder); }
-            @Override public GpuSubmission submit(GpuRecording recording) { return ComputeDevice.this.submit(recording); }
-            @Override public QueueStats stats() {
-                check(); progress();   // non-blocking: polls fences and command buffers, never waits
-                long bytes = 0; for (var s : pending) bytes += s.transferBytes;
-                return new QueueStats(pending.size(), submittedCount, completedCount, failedCount, bytes);
-            }
-        };
+        if (kind == QueueKind.COMPUTE) { if (computeQueue == null) computeQueue = new Queue(QueueKind.COMPUTE, 0, 0); return computeQueue; }
+        if (transferQueue == null) { int hw = driver.transferQueue(); transferQueue = new Queue(QueueKind.TRANSFER, hw < 0 ? 0 : hw, 1); }
+        return transferQueue;
+    }
+    /** A queue: its kind, the driver's hardware queue, its pending list, and its counters. */
+    private final class Queue implements GpuQueue {
+        final QueueKind kind; final int hardware, index;
+        long submitted, completed, failed;
+        Queue(QueueKind kind, int hardware, int index) { this.kind = kind; this.hardware = hardware; this.index = index; }
+        @Override public QueueKind kind() { return kind; }
+        @Override public boolean dedicated() { return kind == QueueKind.COMPUTE || hardware != 0; }
+        @Override public GpuSubmission submit(GpuCommandEncoder encoder) { return ComputeDevice.this.submit(this, encoder); }
+        @Override public GpuSubmission submit(GpuRecording recording) {
+            if (kind != QueueKind.COMPUTE) throw new ComputeException(UNSUPPORTED, "Recordings run on the compute queue");
+            return ComputeDevice.this.submit(recording);
+        }
+        @Override public QueueStats stats() {
+            check(); progress();   // non-blocking: polls fences and command buffers, never waits
+            var mine = queuesPending.get(index); long bytes = 0; for (var s : mine) bytes += s.transferBytes;
+            return new QueueStats(mine.size(), submitted, completed, failed, bytes);
+        }
     }
 
     private final class Resource {
@@ -296,13 +310,15 @@ public final class ComputeDevice implements GpuDevice {
         }
     }
     private boolean overlap(Buffer a, Buffer b) { return a.resource == b.resource && a.offset < b.offset + b.bytes && b.offset < a.offset + a.bytes; }
-    private GpuSubmission submit(GpuCommandEncoder encoder) {
+    private GpuSubmission submit(Queue q, GpuCommandEncoder encoder) {
         check(); progress(); if (queueFailure != null) throw queueFailure;
         require(encoder instanceof ComputeDevice.Encoder && handles.contains(encoder), "Foreign or consumed encoder");
         Encoder e = (Encoder) encoder; e.valid();
+        if (q.kind == QueueKind.TRANSFER)
+            require(e.commands.stream().noneMatch(c -> c instanceof Dispatch), "The transfer queue runs transfers and fills, not dispatches");
         Job job;
         var fences = new ArrayList<Fence>(); e.waits.forEach(u -> fences.add(u.fence())); e.signals.forEach(u -> fences.add(u.fence()));
-        try { job = driver.submit(List.copyOf(e.commands), e.profile, ops(e.waits), ops(e.signals)); }
+        try { job = driver.submit(q.hardware, List.copyOf(e.commands), e.profile, ops(e.waits), ops(e.signals)); }
         catch (RuntimeException ex) {
             var reads = e.commands.stream().filter(c -> c instanceof Download).map(c -> ((Download) c).result()).toList();
             e.close();
@@ -316,7 +332,7 @@ public final class ComputeDevice implements GpuDevice {
         fences.forEach(Fence::retain);
         Submission submission = new Submission(e.errorChecks, e.commands, () -> { e.release(); e.commands.clear(); fences.forEach(Fence::release); }, job);
         submission.name = e.name; submission.labels = List.copyOf(e.dispatchLabels); submission.transferBytes = transferBytes(e.commands);
-        submittedCount++; pending.add(submission); return submission;
+        submission.queue = q; q.submitted++; queuesPending.get(q.index).add(submission); return submission;
     }
     private final class Submission implements GpuSubmission {
         final List<GpuReadback> errorChecks;
@@ -326,6 +342,7 @@ public final class ComputeDevice implements GpuDevice {
         String name = "";
         List<String> labels = List.of();
         long transferBytes;
+        Queue queue;
         Status state = Status.PENDING;
         ComputeException error;
         java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
@@ -357,7 +374,7 @@ public final class ComputeDevice implements GpuDevice {
                 state = Status.FAILED; error = ex; queueFailure = ex;
                 for (var c : commands) if (c instanceof Download d) d.result().fail(ex);
             }
-            if (state == Status.COMPLETE) completedCount++; else failedCount++;
+            if (queue != null) { if (state == Status.COMPLETE) queue.completed++; else queue.failed++; }
             try { job.close(); } finally { done.run(); }
         }
         @Override public Status status() { thread(); if (state == Status.PENDING) progress(); return state; }
@@ -488,7 +505,8 @@ public final class ComputeDevice implements GpuDevice {
         fences.forEach(Fence::retain);
         Submission submission = new Submission(List.of(), List.of(), () -> { for (var res : inUse) res.recorded--; fences.forEach(Fence::release); }, job);
         submission.name = r.name; submission.labels = r.labels; submission.transferBytes = transferBytes(r.commands);
-        submittedCount++; r.running = submission; pending.add(submission); return submission;
+        var q = (Queue) queue(QueueKind.COMPUTE);
+        submission.queue = q; q.submitted++; r.running = submission; queuesPending.get(0).add(submission); return submission;
     }
     private static long transferBytes(List<Command> commands) {
         long bytes = 0;
@@ -499,16 +517,19 @@ public final class ComputeDevice implements GpuDevice {
         return bytes;
     }
     private void progress() {
-        while (!pending.isEmpty()) {
-            Submission s = pending.getFirst(); s.poll();
-            if (s.state == GpuSubmission.Status.PENDING) break;
-            pending.removeFirst();
+        for (var queuePending : queuesPending) {
+            while (!queuePending.isEmpty()) {
+                Submission s = queuePending.getFirst(); s.poll();
+                if (s.state == GpuSubmission.Status.PENDING) break;
+                queuePending.removeFirst();
+            }
         }
     }
     @Override public void close() {
         thread(); if (closed) return;
         ComputeException failure = queueFailure;
-        for (var s : List.copyOf(pending)) {
+        List<Submission> all = new ArrayList<>(); queuesPending.forEach(all::addAll);
+        for (var s : all) {
             try { if (!s.await(Duration.ofSeconds(30))) throw new ComputeException(TIMEOUT, "Device drain timed out; retry close after completion"); }
             catch (ComputeException ex) { if (s.state == GpuSubmission.Status.PENDING) throw ex; failure = ex; }
         }

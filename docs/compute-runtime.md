@@ -259,6 +259,22 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Queues (1.6.0).** `GpuDevice.queue(QueueKind.TRANSFER)` is a queue for uploads, downloads, copies and fills. It
+rejects dispatches and recordings.
+- **Which hardware queue:** `GpuQueue.dedicated()` says whether it runs on its own hardware queue.
+  - **Native Metal:** a second command queue.
+  - **Vulkan:** a dedicated transfer family where the device has one, as discrete GPUs do; buffers are then shared
+    concurrently between the families.
+  - **Otherwise:** transfers share the compute queue. That is the case on MoltenVK by default and on lavapipe.
+- **Ordering:** within a queue it is automatic. Across queues, order work with fences, for example an upload that
+  signals and a dispatch that waits.
+- **Not used:** a second queue within the compute family, because no device available for testing exposes one.
+- **Testing the dedicated Vulkan path:** MoltenVK runs it with `MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1`, which
+  exposes a transfer-only family. CI runs the Vulkan suite that way too.
+- **Measured overlap on an M4 Max:** a 64 MiB upload next to 40 large dispatches took about 16–18 ms either way. On
+  unified memory the copy engine and the shaders share one memory system, and staging is a CPU copy in both cases.
+  The gain belongs to discrete GPUs with DMA engines, which were not available for measurement.
+
 **Timeline fences (1.6.0).** `GpuDevice.fence()` makes a `GpuFence`: a 64-bit value that only grows.
 - **On the GPU:** `encoder.waitFor(fence, v)` holds a submission, before its first command, until the value reaches
   `v`; `encoder.signal(fence, v)` sets it once the commands complete.

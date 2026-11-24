@@ -7,6 +7,12 @@ public interface GpuDevice extends AutoCloseable {
     GpuComputePipeline pipeline(PipelineDescriptor descriptor);
     GpuCommandEncoder encoder();
     GpuQueue queue();
+    /**
+     * The queue of {@code kind}. {@link QueueKind#COMPUTE} is {@link #queue()}. {@link QueueKind#TRANSFER} takes only
+     * transfers and fills; {@link GpuQueue#dedicated()} says whether it runs concurrently with the compute queue or
+     * shares it. Order work across queues with fences. @since 1.6.0
+     */
+    default GpuQueue queue(QueueKind kind) { return queue(); }
     /** A new timeline fence starting at 0 (see {@link GpuFence}); UNSUPPORTED where the backend has none. @since 1.6.0 */
     default GpuFence fence() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "fences are not supported here"); }
     /**
