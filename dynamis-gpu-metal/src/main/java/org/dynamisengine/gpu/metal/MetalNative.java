@@ -14,9 +14,10 @@ final class MetalNative {
     private final Map<String, MethodHandle> functions = new java.util.concurrent.ConcurrentHashMap<>();
     /**
      * The bridge ABI this code calls: 2 adds dg_device_features, 3 dg_gpu_seconds, 4 dg_wait, dg_device_memory and
-     * the profiling calls, 5 dg_compute_label, the event (fence) calls and dg_batch_create_on.
+     * the profiling calls, 5 dg_compute_label, the event (fence) calls and dg_batch_create_on, 6 function constants
+     * (dg_pipeline_create_specialized), dg_pipeline_limits and dg_device_group_memory.
      */
-    static final int ABI = 5;
+    static final int ABI = 6;
     private static MetalNative singleton;
     static synchronized MetalNative instance() {
         if (singleton == null) singleton = new MetalNative();

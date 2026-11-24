@@ -49,6 +49,16 @@ public interface ComputeDriver extends AutoCloseable {
     void unmap(Object buffer, Access access);
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
+    /**
+     * What {@code pipeline} allows (1.7.0). The default: the device's group-thread limit, the largest subgroup size,
+     * and the group-shared memory of the kernel's SPIR-V if it has one.
+     */
+    default PipelineLimits pipelineLimits(Object pipeline, PipelineDescriptor descriptor, GpuCapabilities caps) {
+        long shared = -1;
+        var spirv = descriptor.kernel().executables().get(Backend.VULKAN);
+        if (spirv != null && spirv.format() == KernelBundle.Format.SPIRV) shared = SpirvModule.workgroupBytes(spirv.bytes());
+        return new PipelineLimits(caps.maxGroupThreads(), Math.max(1, caps.maxSubgroupSize()), shared);
+    }
     Job submit(List<Command> commands);
     /** Interop: the device's native handles. */
     default GpuInterop.NativeDevice nativeDevice() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "no interop on this backend"); }

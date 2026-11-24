@@ -289,6 +289,12 @@ public final class ComputeDevice implements GpuDevice {
         Pipeline(Resource resource, PipelineDescriptor descriptor) { this.resource = resource; this.descriptor = descriptor; resource.retain(); handles.add(this); }
         @Override public GpuDevice device() { return ComputeDevice.this; }
         @Override public PipelineDescriptor descriptor() { return descriptor; }
+        private PipelineLimits limits;
+        @Override public PipelineLimits limits() {
+            check(); if (released) throw new ComputeException(CLOSED, "Pipeline is closed");
+            if (limits == null) limits = driver.pipelineLimits(resource.nativeObject, descriptor, capabilities());
+            return limits;
+        }
         @Override public void close() { thread(); if (!released) { released = true; handles.remove(this); resource.release(); } }
     }
     private final class Encoder implements GpuCommandEncoder {

@@ -66,13 +66,17 @@ final class MetalDriver implements ComputeDriver {
     @Override public ByteBuffer map(Object b, long offset, long bytes, Access access) { return contents((MetalBuffer) b, offset, bytes).asByteBuffer(); }
     @Override public void unmap(Object b, Access access) { /* Shared memory: completion + exclusive host mapping is enforced above. */ }
     @Override public Object pipeline(PipelineDescriptor d) {
-        if (!d.specialization().isEmpty()) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Metal ABI 1 has no function constants; supply a specialized executable");
         var executable = d.kernel().executable(Backend.METAL);
         if (executable.format() != KernelBundle.Format.METALLIB && executable.format() != KernelBundle.Format.MSL_SOURCE)
             throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Metal requires METALLIB or MSL_SOURCE");
         try (var arena = Arena.ofConfined()) {
             byte[] bytes = executable.bytes(); var data = arena.allocateFrom(JAVA_BYTE, bytes);
-            var p = n.pointer("dg_pipeline_create", device, data, (long) bytes.length, executable.format() == KernelBundle.Format.MSL_SOURCE ? 1 : 0, arena.allocateFrom(d.entryPoint()));
+            var constants = new java.util.TreeMap<>(d.specialization());
+            var ids = arena.allocate(JAVA_INT, Math.max(1, constants.size())); var values = arena.allocate(JAVA_INT, Math.max(1, constants.size()));
+            int i = 0;
+            for (var e : constants.entrySet()) { ids.setAtIndex(JAVA_INT, i, e.getKey()); values.setAtIndex(JAVA_INT, i++, e.getValue()); }
+            var p = n.pointer("dg_pipeline_create_specialized", device, data, (long) bytes.length,
+                    executable.format() == KernelBundle.Format.MSL_SOURCE ? 1 : 0, arena.allocateFrom(d.entryPoint()), ids, values, constants.size());
             if (d.localSize().volume() > n.number("dg_pipeline_threads", p)) {
                 n.release("dg_pipeline_release", p); throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Workgroup size exceeds Metal pipeline-specific limit");
             }
@@ -80,6 +84,12 @@ final class MetalDriver implements ComputeDriver {
         }
     }
     @Override public void releasePipeline(Object p) { n.release("dg_pipeline_release", ((MetalPipeline) p).handle()); }
+    @Override public PipelineLimits pipelineLimits(Object p, PipelineDescriptor d, GpuCapabilities caps) {
+        try (var arena = Arena.ofConfined()) {
+            var out = arena.allocate(JAVA_LONG, 3); n.check("dg_pipeline_limits", ((MetalPipeline) p).handle(), out);
+            return new PipelineLimits((int) out.getAtIndex(JAVA_LONG, 0), (int) out.getAtIndex(JAVA_LONG, 1), out.getAtIndex(JAVA_LONG, 2));
+        }
+    }
     private MemorySegment buffer(Region r) { return ((MetalBuffer) r.allocation()).handle(); }
     /** A region's offset in its block's MTLBuffer. */
     private static long offset(Region r) { return ((MetalBuffer) r.allocation()).base() + r.offset(); }

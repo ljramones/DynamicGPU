@@ -598,6 +598,51 @@ public abstract class ComputeConformance {
         }
     }
 
+    private float[] runSpecialized(GpuComputePipeline p, GpuBuffer a, GpuBuffer o, int n) {
+        try (var e = device.encoder()) {
+            e.fill(o, 0).dispatch(p, Map.of(0, a, 1, o), scalar(n), new Dimensions(n / 64, 1, 1));
+            await(device.queue().submit(e));
+        }
+        return read(o, n);
+    }
+
+    /**
+     * Specialization constants (Vulkan) and function constants (Metal), one of each type, set by name through the
+     * kernel library; and the limits each pipeline reports.
+     */
+    @Test void specializesKernelsAndReportsLimits() {
+        var lib = CapabilityTierConformance.TIERS; int n = 256;
+        var accesses = List.of(Access.READ, Access.WRITE);
+        assertEquals(List.of("OFFSET", "SCALE", "NEGATE", "BIAS"), List.copyOf(lib.constants("specialize").keySet()));
+        assertThrows(IllegalArgumentException.class, () -> lib.pipeline("specialize", accesses, Set.of("FP32"), Set.of(), Map.of("NOPE", 1)));
+        assertThrows(IllegalArgumentException.class, () -> lib.pipeline("specialize", accesses, Set.of("FP32"), Set.of(), Map.of("OFFSET", -1)));
+        assertTrue(device.capabilities().maxGroupSharedBytes() >= GpuCapabilities.MIN_GROUP_SHARED_BYTES);
+        var full = lib.pipeline("specialize", accesses, Set.of("FP32"), Set.of(), Map.of("OFFSET", 7, "SCALE", 2.5f, "NEGATE", true, "BIAS", -3));
+        if (device.adapter().backend() == Backend.MOCK) {
+            assertThrows(ComputeException.class, () -> device.pipeline(full), "the mock models no specialized kernels");
+            return;
+        }
+        try (var a = buffer(n * 4, Placement.PRIVATE); var o = buffer(n * 4, Placement.PRIVATE);
+             var plain = device.pipeline(lib.pipeline("specialize", accesses, Set.of("FP32"), Set.of()));
+             var special = device.pipeline(full);
+             var partial = device.pipeline(lib.pipeline("specialize", accesses, Set.of("FP32"), Set.of(), Map.of("SCALE", 0.5f)))) {
+            try (var e = device.encoder()) { e.upload(a, floats(n, i -> i)); await(device.queue().submit(e)); }
+            float[] f = runSpecialized(plain, a, o, n);
+            for (int i = 0; i < n; i++) assertEquals((float) i, f[i], "defaults, element " + i);
+            f = runSpecialized(special, a, o, n);
+            for (int i = 0; i < n; i++) assertEquals(-(2.5f * i + 4f), f[i], "all four constants, element " + i);
+            f = runSpecialized(partial, a, o, n);
+            for (int i = 0; i < n; i++) assertEquals(0.5f * i, f[i], "one constant, element " + i);
+            var limits = special.limits();
+            assertTrue(limits.maxThreads() >= 64 && limits.maxThreads() <= device.capabilities().maxGroupThreads(), limits.toString());
+            assertTrue(limits.executionWidth() >= 1, limits.toString());
+            assertEquals(256, limits.groupSharedBytes(), "64 floats of group-shared staging: " + limits);
+            assertEquals(256, lib.groupSharedBytes("specialize"));
+            System.out.println("pipeline limits on " + device.adapter().name() + ": " + limits + ", device group-shared " + device.capabilities().maxGroupSharedBytes());
+            try (var p = pipeline(n)) { assertEquals(0, p.limits().groupSharedBytes(), "vector_add declares none"); }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

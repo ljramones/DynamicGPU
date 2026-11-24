@@ -152,6 +152,68 @@ public final class KernelLibrary {
         return end;
     }
 
+    /**
+     * The kernel's specialization constants by name: their ids ({@code [vk::constant_id(n)]} in Slang, which is also
+     * the Metal function-constant index) and scalar types ({@code uint32}, {@code int32}, {@code float32},
+     * {@code bool}). Empty for a kernel without any. @since 1.7.0
+     */
+    public Map<String, Constant> constants(String kernel) {
+        entryPoint(kernel);
+        Map<String, Constant> m = new LinkedHashMap<>();
+        String v = manifest.getProperty(kernel + ".constants", "");
+        if (v.isEmpty()) return Map.of();
+        for (String f : v.split(",")) {
+            String[] p = f.split(":");
+            m.put(p[0], new Constant(p[0], Integer.parseInt(p[1]), p[2]));
+        }
+        return Collections.unmodifiableMap(m);
+    }
+
+    /** A specialization constant. @since 1.7.0 */
+    public record Constant(String name, int id, String type) {
+        /** {@code value} as the constant's 32 bits: a {@link Number} for numeric types, a {@link Boolean} for bool. */
+        public int bits(Object value) {
+            return switch (type) {
+                case "uint32" -> {
+                    long v = ((Number) value).longValue();
+                    if (v < 0 || v > 0xFFFF_FFFFL) throw new IllegalArgumentException(name + " does not fit uint32: " + v);
+                    yield (int) v;
+                }
+                case "int32" -> Math.toIntExact(((Number) value).longValue());
+                case "float32" -> Float.floatToRawIntBits(((Number) value).floatValue());
+                case "bool" -> ((Boolean) value) ? 1 : 0;
+                default -> throw new IllegalArgumentException(name + " has unsupported type " + type);
+            };
+        }
+    }
+
+    /**
+     * The group-shared memory the kernel declares, from its SPIR-V (see {@code SpirvModule.workgroupBytes}); -1 for a
+     * kernel built without SPIR-V. @since 1.7.0
+     */
+    public long groupSharedBytes(String kernel) {
+        var spirv = bundle(kernel).executables().get(Backend.VULKAN);
+        return spirv == null ? -1 : org.dynamisengine.gpu.api.compute.spi.SpirvModule.workgroupBytes(spirv.bytes());
+    }
+
+    /**
+     * As {@link #pipeline(String, List, Set, Set)}, specialized: {@code constants} maps constant names to values
+     * (see {@link Constant#bits}); constants left out keep their defaults. The pipeline compiles that variant of the
+     * kernel (Vulkan specialization constants, Metal function constants). @since 1.7.0
+     */
+    public PipelineDescriptor pipeline(String kernel, List<Access> accesses, Set<String> dataTypes, Set<String> features,
+            Map<String, ?> constants) {
+        var declared = constants(kernel);
+        Map<Integer, Integer> values = new java.util.TreeMap<>();
+        for (var e : constants.entrySet()) {
+            Constant c = declared.get(e.getKey());
+            if (c == null) throw new IllegalArgumentException(kernel + " has no specialization constant " + e.getKey() + "; it has " + declared.keySet());
+            values.put(c.id(), c.bits(e.getValue()));
+        }
+        var d = pipeline(kernel, accesses, dataTypes, features);
+        return new PipelineDescriptor(d.kernel(), d.entryPoint(), d.layout(), d.localSize(), values, d.requiredDataTypes(), d.requiredFeatures());
+    }
+
     private List<String[]> fields(String kernel) {
         List<String[]> list = new ArrayList<>();
         String v = get(kernel + ".params");

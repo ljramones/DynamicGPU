@@ -182,11 +182,30 @@ code; the adapter's capabilities never include them.
 - **Using it:** list it in `PipelineDescriptor.requiredFeatures` and pipeline creation fails with `UNSUPPORTED` where it
   is absent. Only such pipelines trigger the probe.
 
-Metal additionally checks each
-pipeline's maximum threads. Vulkan verifies the SPIR-V entry point and fixed
-`LocalSize`; `LocalSizeId` is explicitly unsupported. Vulkan supports 32-bit
-specialization constants; Metal ABI 1 rejects specialization requests and accepts
-pre-specialized executables.
+Metal additionally checks each pipeline's maximum threads. Vulkan verifies the SPIR-V entry point and fixed
+`LocalSize`; `LocalSizeId` is explicitly unsupported.
+
+**Specialization (1.7.0).** A kernel declares constants with `[vk::constant_id(n)] const uint TILE = 4;` in Slang.
+- **Manifest:** ShaderBuild records them (`<kernel>.constants=name:id:type`).
+- **Specializing:** `KernelLibrary.pipeline(kernel, accesses, types, features, Map.of("TILE", 8))` sets them by name.
+  Constants left out keep their defaults. Supported types are `uint32`, `int32`, `float32` and `bool`.
+- **Backends:** Vulkan uses specialization constants. Metal uses function constants (bridge ABI 6): Slang emits
+  them with their defaults, and the bridge sets each value as the type the function declares. The mock has none.
+- **Use:** specialize control flow and loop trip counts, which the backend compiler then folds. Constants cannot
+  size group-shared arrays portably, because Metal function constants cannot.
+
+**Limits (1.7.0).**
+- **`GpuCapabilities.maxGroupSharedBytes()`:** the most group-shared memory a kernel may declare. That is Vulkan
+  `maxComputeSharedMemorySize` or Metal `maxThreadgroupMemoryLength`; both are 32 KiB on an M4 Max and on lavapipe.
+- **`GpuComputePipeline.limits()`** (`PipelineLimits`): what the compiled pipeline allows.
+  - **Metal:** `maxTotalThreadsPerThreadgroup` (it reflects register pressure), `threadExecutionWidth` and
+    `staticThreadgroupMemoryLength`.
+  - **Vulkan:** the device's thread limit and subgroup size, and the group-shared bytes of the SPIR-V module's
+    Workgroup variables (`SpirvModule.workgroupBytes`).
+  - **Measured:** a kernel with 64 floats of staging reports 256 bytes on all three backends. Its execution width is
+    32 on Apple GPUs and 4 on lavapipe.
+- **`KernelLibrary.groupSharedBytes(kernel)`** gives the same figure without a device, so tile choices can be
+  checked in portable tests.
 
 Floating point follows IEEE 754 by default, so a kernel computes what its source says: no reassociation, NaN and
 infinities preserved, and a product rounded before it is added unless the source asks for a fused multiply-add. On

@@ -10,3 +10,4 @@ subgroup_ballot subgroup_ballot.slang subgroup_ballot
 subgroup_vote subgroup_vote.slang subgroup_vote
 atomic_float_add atomic_float_add.slang atomic_float_add
 atomic_int64 atomic_int64.slang atomic_int64
+specialize specialize.slang specialize

@@ -52,6 +52,12 @@ void *dg_buffer_contents(DGBuffer *buffer);
 void dg_buffer_release(DGBuffer *buffer);
 DGPipeline *dg_pipeline_create(DGDevice *device, const void *bytes, uint64_t size, int source, const char *entry);
 uint64_t dg_pipeline_threads(DGPipeline *pipeline);
+/* ABI 6: function constants; pipeline limits (max threads, execution width, static threadgroup memory); device
+   threadgroup memory. */
+DGPipeline *dg_pipeline_create_specialized(DGDevice *device, const void *bytes, uint64_t size, int source, const char *entry,
+        const uint32_t *ids, const uint32_t *values, uint32_t count);
+int dg_pipeline_limits(DGPipeline *pipeline, uint64_t *out);
+uint64_t dg_device_group_memory(DGDevice *device);
 void dg_pipeline_release(DGPipeline *pipeline);
 DGBatch *dg_batch_create(DGDevice *device);
 int dg_copy(DGBatch *batch, DGBuffer *src, uint64_t srcOffset, DGBuffer *dst, uint64_t dstOffset, uint64_t bytes);

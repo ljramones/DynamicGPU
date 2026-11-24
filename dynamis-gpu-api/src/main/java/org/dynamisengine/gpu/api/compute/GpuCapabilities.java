@@ -19,11 +19,16 @@ import java.util.Set;
  * @param timestamps whether {@link GpuSubmission#gpuTime()} measures submissions on this device (1.3.0)
  * @param minSubgroupSize the smallest subgroup (SIMD-group) size a kernel can run with; 0 without subgroups
  * @param maxSubgroupSize the largest; equal to {@code minSubgroupSize} where the size is fixed
+ * @param maxGroupSharedBytes the most group-shared (threadgroup) memory a kernel may declare: Vulkan
+ *        {@code maxComputeSharedMemorySize}, Metal {@code maxThreadgroupMemoryLength} (1.7.0). Forms without it assume
+ *        {@link #MIN_GROUP_SHARED_BYTES}.
  */
 public record GpuCapabilities(long maxBufferBytes, long maxStorageRange, int storageOffsetAlignment,
         int maxBufferBindings, int maxParameterBytes, Dimensions maxGroupSize, int maxGroupThreads,
         Dimensions maxGroupCount, Set<String> dataTypes, Set<String> shaderFeatures, boolean timestamps,
-        int minSubgroupSize, int maxSubgroupSize) {
+        int minSubgroupSize, int maxSubgroupSize, long maxGroupSharedBytes) {
+    /** The group-shared memory every Vulkan and Metal compute device offers: 16 KiB. @since 1.7.0 */
+    public static final long MIN_GROUP_SHARED_BYTES = 16384;
     /** Data type: 32-bit float, always present. */
     public static final String FP32 = "FP32";
     /** Data type: 32-bit integers, always present. */
@@ -75,6 +80,16 @@ public record GpuCapabilities(long maxBufferBytes, long maxStorageRange, int sto
         dataTypes = Set.copyOf(dataTypes); shaderFeatures = Set.copyOf(shaderFeatures);
         if (minSubgroupSize < 0 || maxSubgroupSize < minSubgroupSize)
             throw new IllegalArgumentException("subgroup sizes " + minSubgroupSize + ".." + maxSubgroupSize);
+        if (maxGroupSharedBytes < 0) throw new IllegalArgumentException("negative group-shared memory " + maxGroupSharedBytes);
+    }
+    /** Capabilities with subgroups and the minimum group-shared memory (the 1.2 form). */
+    public GpuCapabilities(long maxBufferBytes, long maxStorageRange, int storageOffsetAlignment,
+            int maxBufferBindings, int maxParameterBytes, Dimensions maxGroupSize, int maxGroupThreads,
+            Dimensions maxGroupCount, Set<String> dataTypes, Set<String> shaderFeatures, boolean timestamps,
+            int minSubgroupSize, int maxSubgroupSize) {
+        this(maxBufferBytes, maxStorageRange, storageOffsetAlignment, maxBufferBindings, maxParameterBytes, maxGroupSize,
+                maxGroupThreads, maxGroupCount, dataTypes, shaderFeatures, timestamps, minSubgroupSize, maxSubgroupSize,
+                MIN_GROUP_SHARED_BYTES);
     }
 
     /** Capabilities without subgroups (the 1.1 form). */
@@ -90,7 +105,7 @@ public record GpuCapabilities(long maxBufferBytes, long maxStorageRange, int sto
         var all = new java.util.HashSet<>(shaderFeatures); all.addAll(features);
         return new GpuCapabilities(maxBufferBytes, maxStorageRange, storageOffsetAlignment, maxBufferBindings,
                 maxParameterBytes, maxGroupSize, maxGroupThreads, maxGroupCount, dataTypes, all, timestamps,
-                minSubgroupSize, maxSubgroupSize);
+                minSubgroupSize, maxSubgroupSize, maxGroupSharedBytes);
     }
     public void validateGroups(Dimensions local, Dimensions groups) {
         if (local.x() > maxGroupSize.x() || local.y() > maxGroupSize.y() || local.z() > maxGroupSize.z()

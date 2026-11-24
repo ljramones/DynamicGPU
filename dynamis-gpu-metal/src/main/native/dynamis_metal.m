@@ -25,7 +25,7 @@ static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
 #define START @autoreleasepool { @try { errorText[0] = 0;
 #define END(value) } @catch (NSException *e) { error(e.reason); return value; } }
-uint32_t dg_abi(void) { return 5; }
+uint32_t dg_abi(void) { return 6; }
 const char *dg_error(void) { return errorText; }
 int dg_device_count(void) { START NSArray *a = MTLCopyAllDevices(); int n = (int)a.count; [a release]; return n; END(-1) }
 DGDevice *dg_device_open(int index) { START
@@ -39,6 +39,8 @@ const char *dg_device_name(DGDevice *d) { START snprintf(deviceName, sizeof(devi
 int dg_device_caps(DGDevice *d, uint64_t *out) { START
     MTLSize t = d->device.maxThreadsPerThreadgroup; out[0] = d->device.maxBufferLength; out[1] = t.width; out[2] = t.height; out[3] = t.depth; return 0;
 END(-1) }
+// ABI 6: the most threadgroup memory a kernel may use.
+uint64_t dg_device_group_memory(DGDevice *d) { START return d->device.maxThreadgroupMemoryLength; END(0) }
 int dg_device_features(DGDevice *d, uint64_t *out) { START
     uint64_t f = 0; id<MTLDevice> m = d->device;
     if ([m supportsFamily:MTLGPUFamilyApple7]) f |= 1;
@@ -79,7 +81,11 @@ DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { ST
 END(NULL) }
 void *dg_buffer_contents(DGBuffer *b) { START return b->buffer.contents; END(NULL) }
 void dg_buffer_release(DGBuffer *b) { START if (b) { [b->buffer release]; free(b); } END() }
-DGPipeline *dg_pipeline_create(DGDevice *d, const void *bytes, uint64_t size, int source, const char *entry) { START
+// ABI 6: a pipeline with function constants: ids[i] (the function-constant index) set to the 32 bits values[i],
+// interpreted as the constant's declared type (uint, int, float or bool). A function declaring constants is always
+// specialized, so constants without values take the defaults the source gives them.
+DGPipeline *dg_pipeline_create_specialized(DGDevice *d, const void *bytes, uint64_t size, int source, const char *entry,
+        const uint32_t *ids, const uint32_t *values, uint32_t count) { START
     NSError *e = nil; id<MTLLibrary> library;
     if (source) {
         NSString *text = [[NSString alloc] initWithBytes:bytes length:size encoding:NSUTF8StringEncoding];
@@ -104,13 +110,41 @@ DGPipeline *dg_pipeline_create(DGDevice *d, const void *bytes, uint64_t size, in
         library = [d->device newLibraryWithData:data error:&e]; dispatch_release(data);
     }
     if (!library) { error(e.localizedDescription); return NULL; }
-    id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:entry]]; [library release];
-    if (!function) { error([NSString stringWithFormat:@"Metal entry point not found: %s", entry]); return NULL; }
+    NSString *name = [NSString stringWithUTF8String:entry];
+    id<MTLFunction> function = [library newFunctionWithName:name];
+    if (!function) { [library release]; error([NSString stringWithFormat:@"Metal entry point not found: %s", entry]); return NULL; }
+    NSDictionary<NSString *, MTLFunctionConstant *> *declared = function.functionConstantsDictionary;
+    if (count > 0 || declared.count > 0) {
+        MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new];
+        for (uint32_t i = 0; i < count; i++) {
+            MTLFunctionConstant *c = nil;
+            for (MTLFunctionConstant *k in declared.allValues) if (k.index == ids[i]) { c = k; break; }
+            if (!c) { [cv release]; [function release]; [library release]; error([NSString stringWithFormat:@"%s has no function constant %u", entry, ids[i]]); return NULL; }
+            uint32_t v = values[i]; bool b = v != 0;
+            switch (c.type) {
+                case MTLDataTypeUInt: case MTLDataTypeInt: case MTLDataTypeFloat: [cv setConstantValue:&v type:c.type atIndex:ids[i]]; break;
+                case MTLDataTypeBool: [cv setConstantValue:&b type:MTLDataTypeBool atIndex:ids[i]]; break;
+                default: [cv release]; [function release]; [library release]; error([NSString stringWithFormat:@"function constant %u has an unsupported type", ids[i]]); return NULL;
+            }
+        }
+        [function release];
+        function = [library newFunctionWithName:name constantValues:cv error:&e]; [cv release];
+        if (!function) { [library release]; error(e.localizedDescription); return NULL; }
+    }
+    [library release];
     id<MTLComputePipelineState> p = [d->device newComputePipelineStateWithFunction:function error:&e]; [function release];
     if (!p) { error(e.localizedDescription); return NULL; }
     DGPipeline *v = calloc(1, sizeof(*v)); if (!v) { [p release]; error(@"Pipeline wrapper allocation failed"); return NULL; } v->pipeline = p; return v;
 END(NULL) }
+DGPipeline *dg_pipeline_create(DGDevice *d, const void *bytes, uint64_t size, int source, const char *entry) {
+    return dg_pipeline_create_specialized(d, bytes, size, source, entry, NULL, NULL, 0);
+}
 uint64_t dg_pipeline_threads(DGPipeline *p) { START return p->pipeline.maxTotalThreadsPerThreadgroup; END(0) }
+// ABI 6: max threads per group (register-limited), the SIMD-group width, and the static threadgroup memory.
+int dg_pipeline_limits(DGPipeline *p, uint64_t *out) { START
+    out[0] = p->pipeline.maxTotalThreadsPerThreadgroup; out[1] = p->pipeline.threadExecutionWidth;
+    out[2] = p->pipeline.staticThreadgroupMemoryLength; return 0;
+END(-1) }
 void dg_pipeline_release(DGPipeline *p) { START if (p) { [p->pipeline release]; free(p); } END() }
 // ABI 5: a batch on queue q (0 compute, 1 transfer). The transfer queue is a second command queue, made on first use;
 // Metal runs command queues concurrently, and blit work can use the copy engine.

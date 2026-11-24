@@ -23,7 +23,8 @@ public final class MetalProvider implements GpuProvider {
                 var tiers = Tiers.of(families.getAtIndex(JAVA_LONG, 0));
                 var caps = new GpuCapabilities(values.getAtIndex(JAVA_LONG, 0), values.getAtIndex(JAVA_LONG, 0), 16, 30, 128,
                         size, size.x(), new Dimensions(Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE), tiers.dataTypes(),
-                        tiers.shaderFeatures(), true, tiers.minSubgroupSize(), tiers.maxSubgroupSize());
+                        tiers.shaderFeatures(), true, tiers.minSubgroupSize(), tiers.maxSubgroupSize(),
+                        n.number("dg_device_group_memory", device));
                 result.add(new Adapter(i, name, caps));
             } finally { n.release("dg_device_release", device); }
         }

@@ -31,7 +31,8 @@ import java.util.stream.Stream;
  * </ul>
  * The manifest has one {@code key=value} line per entry, sorted: {@code slangc.version}, {@code source.sha256} (over
  * every {@code .slang} file in the hash directories) and, per kernel, {@code entry}, {@code local}, {@code buffers}
- * ({@code name:slot}), {@code params} ({@code name:offset:type}), {@code spirv.sha256} and {@code metal.sha256}.
+ * ({@code name:slot}), {@code params} ({@code name:offset:type}), {@code constants} ({@code name:id:type}, kernels with
+ * specialization constants only), {@code spirv.sha256} and {@code metal.sha256}.
  * <p>
  * Usage: {@code ShaderBuild --src DIR --out DIR --kernels FILE [--manifest NAME] [--include DIR]... [--hash DIR]...
  * [--slangc PATH]}. The kernels file has one {@code name source entry [targets]} line per kernel ({@code #} starts a
@@ -151,6 +152,10 @@ public final class ShaderBuild {
                         .collect(Collectors.joining(",")));
                 manifest.put(k.name() + ".params", abi.parameters().stream()
                         .map(p -> p.name() + ":" + p.offset() + ":" + p.scalarType()).collect(Collectors.joining(",")));
+                if (!abi.constants().isEmpty()) {
+                    manifest.put(k.name() + ".constants", abi.constants().stream()
+                            .map(p -> p.name() + ":" + p.id() + ":" + p.scalarType()).collect(Collectors.joining(",")));
+                }
                 if (spv != null) manifest.put(k.name() + ".spirv.sha256", sha256(spv));
                 if (metal != null) manifest.put(k.name() + ".metal.sha256", sha256(metal.getBytes(StandardCharsets.UTF_8)));
                 System.out.printf("%s: %s SPIR-V, %s Metal, local %s, buffers %s%n", k.name(),

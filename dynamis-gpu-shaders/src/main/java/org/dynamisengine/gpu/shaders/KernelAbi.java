@@ -14,24 +14,32 @@ import java.util.Map;
  * @param parameters the block's fields in declaration order
  * @param localSize the fixed group size
  */
-public record KernelAbi(List<Buffer> buffers, String parameterName, List<Parameter> parameters, int[] localSize) {
+public record KernelAbi(List<Buffer> buffers, String parameterName, List<Parameter> parameters, int[] localSize,
+        List<Constant> constants) {
     /** A storage buffer binding. */
     public record Buffer(String name, int slot) { }
 
     /** A field of the parameter block. */
     public record Parameter(String name, int offset, String scalarType) { }
+    /** A specialization constant: Vulkan {@code constant_id} and Metal {@code function_constant} index (1.7.0). */
+    public record Constant(String name, int id, String scalarType) { }
 
     @SuppressWarnings("unchecked")
     static KernelAbi fromReflection(String json, String entry) {
         Map<String, Object> r = (Map<String, Object>) Json.parse(json);
         List<Buffer> buffers = new ArrayList<>();
         List<Parameter> params = new ArrayList<>();
+        List<Constant> constants = new ArrayList<>();
         String paramName = null;
         for (Object o : (List<Object>) r.get("parameters")) {
             Map<String, Object> p = (Map<String, Object>) o;
             Map<String, Object> binding = (Map<String, Object>) p.get("binding");
             String kind = (String) binding.get("kind");
-            if ("descriptorTableSlot".equals(kind)) {
+            if ("specializationConstant".equals(kind)) {
+                Map<String, Object> type = (Map<String, Object>) p.get("type");
+                constants.add(new Constant((String) p.get("name"), ((Double) binding.get("index")).intValue(),
+                        (String) type.get("scalarType")));
+            } else if ("descriptorTableSlot".equals(kind)) {
                 buffers.add(new Buffer((String) p.get("name"), ((Double) binding.get("index")).intValue()));
             } else if ("pushConstantBuffer".equals(kind)) {
                 paramName = (String) p.get("name");
@@ -53,7 +61,8 @@ public record KernelAbi(List<Buffer> buffers, String parameterName, List<Paramet
                 List<Object> size = (List<Object>) ep.get("threadGroupSize");
                 int[] local = new int[size.size()];
                 for (int k = 0; k < local.length; k++) local[k] = ((Double) size.get(k)).intValue();
-                return new KernelAbi(List.copyOf(buffers), paramName, List.copyOf(params), local);
+                return new KernelAbi(List.copyOf(buffers), paramName, List.copyOf(params), local,
+                        constants.stream().sorted(Comparator.comparingInt(Constant::id)).toList());
             }
         }
         throw new IllegalArgumentException("entry point " + entry + " not in the reflection");

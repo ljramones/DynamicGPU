@@ -127,7 +127,7 @@ public final class VulkanProvider implements GpuProvider {
                         new Dimensions(l.maxComputeWorkGroupSize(0), l.maxComputeWorkGroupSize(1), l.maxComputeWorkGroupSize(2)), l.maxComputeWorkGroupInvocations(),
                         new Dimensions(l.maxComputeWorkGroupCount(0), l.maxComputeWorkGroupCount(1), l.maxComputeWorkGroupCount(2)),
                         features.dataTypes(), features.shaderFeatures(), timestampBits(physical, family(physical)) > 0 && l.timestampPeriod() > 0,
-                        features.minSubgroupSize(), features.maxSubgroupSize());
+                        features.minSubgroupSize(), features.maxSubgroupSize(), Integer.toUnsignedLong(l.maxComputeSharedMemorySize()));
                 result.add(new Adapter(i, p.deviceNameString(), p.vendorID(), p.deviceID(), p.apiVersion(), p.driverVersion(), caps));
             }
             return List.copyOf(result);
