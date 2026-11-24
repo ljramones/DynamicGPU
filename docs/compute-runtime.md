@@ -252,6 +252,29 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Submission costs (1.5.0).** Measured on an M4 Max for one submission of 50 small dependent dispatches, in steady
+state:
+
+| | Record | Submit | Wait | GPU time |
+|---|---|---|---|---|
+| Native Metal | 18 µs | 49 µs | 320 µs | 195 µs |
+| MoltenVK | 14 µs | 191 µs | 582 µs | 415 µs |
+
+- **Blocking waits:** `await` blocks on the driver's completion signal instead of polling every 100 µs, which on macOS
+  overshot.
+  - **Vulkan:** `vkWaitForFences`.
+  - **Metal:** a command-buffer completion handler and a semaphore, `dg_wait`, bridge ABI 4.
+  - **Effect:** the wait beyond GPU time fell from 203 to 124 µs on Metal and from 205 to 167 µs on MoltenVK. A 4 KiB
+    upload-and-download round trip fell from 155 to 103 µs on Metal and from 249 to 202 µs on MoltenVK.
+- **Metal encoders:** consecutive dispatches share one serial compute encoder, which is ended before a blit and at
+  commit. In serial dispatch each dispatch completes, with its writes visible, before the next begins.
+  - **GPU time:** unchanged. About 4 µs per small dependent dispatch is the floor of a serial chain on Apple GPUs.
+- **Vulkan barriers:** they cover compute and transfer stages, not all commands and the host. Host writes made before
+  submission are visible through `vkQueueSubmit`.
+  - **MoltenVK:** no change, since it ends a Metal encoder at every barrier, about 8 µs per dispatch.
+- **Host cost:** on native Metal it is now about 67 µs of a 390 µs submission. On MoltenVK, submitting (descriptor
+  pools, command buffers, fences per submission) is the largest host cost, which recorded replay addresses.
+
 Devices and children are confined to the creating thread. Each encoder snapshots
 upload/parameter bytes at recording time and retains allocations/pipelines.
 Slices retain storage independently. Closing a handle is idempotent and invalidates

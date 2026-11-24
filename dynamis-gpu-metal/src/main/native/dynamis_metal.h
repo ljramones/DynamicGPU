@@ -19,6 +19,8 @@ int dg_device_caps(DGDevice *device, uint64_t *out); /* max buffer, max threads 
 int dg_device_features(DGDevice *device, uint64_t *out);
 /* ABI 3: GPU execution time of a completed batch in seconds (GPUEndTime - GPUStartTime), or -1 if unknown. */
 double dg_gpu_seconds(DGBatch *batch);
+/* ABI 4: block until a committed batch completes or nanos pass: 1 completed, 0 timed out, -1 error. */
+int dg_wait(DGBatch *batch, int64_t nanos);
 void dg_device_release(DGDevice *device);
 DGBuffer *dg_buffer_create(DGDevice *device, uint64_t bytes, int privateStorage);
 void *dg_buffer_contents(DGBuffer *buffer);

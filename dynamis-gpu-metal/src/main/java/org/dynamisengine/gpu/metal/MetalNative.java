@@ -12,8 +12,8 @@ final class MetalNative {
     private final Arena libraryArena = Arena.ofShared();
     private final SymbolLookup symbols;
     private final Map<String, MethodHandle> functions = new java.util.concurrent.ConcurrentHashMap<>();
-    /** The bridge ABI this code calls; 2 adds dg_device_features, 3 dg_gpu_seconds. */
-    static final int ABI = 3;
+    /** The bridge ABI this code calls; 2 adds dg_device_features, 3 dg_gpu_seconds, 4 dg_wait. */
+    static final int ABI = 4;
     private static MetalNative singleton;
     static synchronized MetalNative instance() {
         if (singleton == null) singleton = new MetalNative();

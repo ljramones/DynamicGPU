@@ -121,6 +121,9 @@ final class MetalDriver implements ComputeDriver {
         return new Job() {
             private java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
             @Override public java.util.OptionalLong gpuNanos() { return gpuNanos; }
+            @Override public boolean await(long nanos) {
+                int r = n.integer("dg_wait", batch, nanos); if (r < 0) throw n.error("command buffer wait"); return r == 1;
+            }
             @Override public GpuSubmission.Status poll() {
                 int status = n.integer("dg_status", batch); if (status < 0) throw n.error("command buffer completion");
                 if (status == 0) return GpuSubmission.Status.PENDING;

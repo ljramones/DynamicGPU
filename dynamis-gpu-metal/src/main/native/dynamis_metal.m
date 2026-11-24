@@ -7,13 +7,13 @@
 struct DGDevice { id<MTLDevice> device; id<MTLCommandQueue> queue; };
 struct DGBuffer { id<MTLBuffer> buffer; };
 struct DGPipeline { id<MTLComputePipelineState> pipeline; };
-struct DGBatch { DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; };
+struct DGBatch { DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; dispatch_semaphore_t done; int completed; };
 static _Thread_local char errorText[4096];
 static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
 #define START @autoreleasepool { @try { errorText[0] = 0;
 #define END(value) } @catch (NSException *e) { error(e.reason); return value; } }
-uint32_t dg_abi(void) { return 3; }
+uint32_t dg_abi(void) { return 4; }
 const char *dg_error(void) { return errorText; }
 int dg_device_count(void) { START NSArray *a = MTLCopyAllDevices(); int n = (int)a.count; [a release]; return n; END(-1) }
 DGDevice *dg_device_open(int index) { START
@@ -82,7 +82,11 @@ DGBatch *dg_batch_create(DGDevice *d) { START
     b->device = d; b->command = [[d->queue commandBuffer] retain];
     if (!b->command) { error(@"Metal command buffer allocation failed"); free(b); return NULL; } return b;
 END(NULL) }
+// Consecutive dispatches share one compute encoder (serial dispatch: each completes, and its writes are visible,
+// before the next begins); it is ended before a blit and at commit. One encoder per dispatch cost the GPU ~4 us each.
+static void end_compute(DGBatch *b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; b->encoder = nil; } }
 int dg_copy(DGBatch *b, DGBuffer *src, uint64_t so, DGBuffer *dst, uint64_t off, uint64_t bytes) { START
+    end_compute(b);
     id<MTLBlitCommandEncoder> e = [b->command blitCommandEncoder]; if (!e) { error(@"Blit encoder unavailable"); return -1; }
     [e copyFromBuffer:src->buffer sourceOffset:so toBuffer:dst->buffer destinationOffset:off size:bytes]; [e endEncoding]; return 0;
 END(-1) }
@@ -98,16 +102,32 @@ int dg_fill(DGBatch *b, DGBuffer *dst, uint64_t offset, uint64_t bytes, uint32_t
     DGBuffer source = {stage}; int result = dg_copy(b, &source, 0, dst, offset, bytes); [stage release]; return result;
 END(-1) }
 int dg_compute_begin(DGBatch *b, DGPipeline *p) { START
-    b->encoder = [[b->command computeCommandEncoder] retain]; if (!b->encoder) { error(@"Compute encoder unavailable"); return -1; }
+    if (!b->encoder) {
+        b->encoder = [[b->command computeCommandEncoder] retain]; if (!b->encoder) { error(@"Compute encoder unavailable"); return -1; }
+    }
     [b->encoder setComputePipelineState:p->pipeline]; return 0;
 END(-1) }
 int dg_compute_buffer(DGBatch *b, DGBuffer *buffer, uint64_t offset, uint32_t slot) { START [b->encoder setBuffer:buffer->buffer offset:offset atIndex:slot]; return 0; END(-1) }
 int dg_compute_parameters(DGBatch *b, const void *data, uint64_t bytes, uint32_t slot) { START [b->encoder setBytes:data length:bytes atIndex:slot]; return 0; END(-1) }
 int dg_compute_dispatch(DGBatch *b, uint32_t gx, uint32_t gy, uint32_t gz, uint32_t lx, uint32_t ly, uint32_t lz) { START
     [b->encoder dispatchThreadgroups:MTLSizeMake(gx, gy, gz) threadsPerThreadgroup:MTLSizeMake(lx, ly, lz)];
-    [b->encoder endEncoding]; [b->encoder release]; b->encoder = nil; return 0;
+    return 0;
 END(-1) }
-int dg_commit(DGBatch *b) { START [b->command commit]; return 0; END(-1) }
+int dg_commit(DGBatch *b) { START
+    end_compute(b);
+    // A completion handler signals a semaphore so dg_wait can block instead of polling. The handler holds its own
+    // reference to the semaphore: it may run after dg_batch_release.
+    b->done = dispatch_semaphore_create(0);
+    dispatch_semaphore_t sem = b->done; dispatch_retain(sem);
+    [b->command addCompletedHandler:^(id<MTLCommandBuffer> cb) { (void) cb; dispatch_semaphore_signal(sem); dispatch_release(sem); }];
+    [b->command commit]; return 0;
+END(-1) }
+int dg_wait(DGBatch *b, int64_t nanos) { START
+    if (b->completed) return 1;
+    if (!b->done) { error(@"batch not committed"); return -1; }
+    if (dispatch_semaphore_wait(b->done, dispatch_time(DISPATCH_TIME_NOW, nanos)) != 0) return 0;
+    b->completed = 1; return 1;
+END(-1) }
 int dg_status(DGBatch *b) { START
     if (b->command.status == MTLCommandBufferStatusError) { error(b->command.error.localizedDescription); return -1; }
     return b->command.status == MTLCommandBufferStatusCompleted ? 1 : 0;
@@ -116,4 +136,4 @@ double dg_gpu_seconds(DGBatch *b) { START
     CFTimeInterval start = b->command.GPUStartTime, end = b->command.GPUEndTime;
     return end > start ? end - start : -1.0;
 END(-1.0) }
-void dg_batch_release(DGBatch *b) { START if (b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; } [b->command release]; free(b); } END() }
+void dg_batch_release(DGBatch *b) { START if (b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; } [b->command release]; if (b->done) dispatch_release(b->done); free(b); } END() }

@@ -267,8 +267,11 @@ public final class ComputeDevice implements GpuDevice {
             long budget; try { budget = timeout.toNanos(); } catch (ArithmeticException ex) { budget = Long.MAX_VALUE; }
             long start = System.nanoTime();
             while (status() == Status.PENDING) {
-                if (System.nanoTime() - start >= budget) return false;
-                LockSupport.parkNanos(Math.min(100_000, budget - (System.nanoTime() - start)));
+                long left = budget - (System.nanoTime() - start);
+                if (left <= 0) return false;
+                // block on the driver's completion signal (a fence, a command-buffer handler), in slices so that
+                // interrupts and earlier submissions are noticed; drivers without one sleep briefly
+                job.await(Math.min(left, 10_000_000L));
                 if (Thread.currentThread().isInterrupted()) throw new ComputeException(TIMEOUT, "Interrupted while waiting; submission remains owned by device");
             }
             if (error != null) throw error; return true;

@@ -38,6 +38,16 @@ The work below fills layers 2 to 4 bottom-up. Every milestone is a release.
 ### 1.5: Runtime I, memory and replay
 
 The two biggest costs outside the kernels today are allocation and re-recording.
+
+**Progress (branch `feat/runtime-memory`):**
+- **Memory pools:** done.
+- **Measurements changed the order.** In a 50-dispatch submission on an M4 Max, recording costs only 15–18 µs. The
+  costs were polling waits (about 200 µs beyond GPU time), per-submission setup on MoltenVK (about 190 µs) and GPU
+  time per dependent dispatch.
+- **Done so far:** blocking waits, Metal encoder sharing, and narrower Vulkan barriers. The results are in
+  `docs/compute-runtime.md`, under submission costs.
+- **Next:** replay, aimed at the per-submission setup (descriptor pools and sets, command buffers, fences), then
+  per-dispatch timing and the pipeline cache.
 - **Memory pools:**
   - Sub-allocate buffers from large device allocations (a per-placement pool with size classes and a free list).
   - Recycle the staging memory that uploads and downloads use today, one fresh buffer per transfer, through a ring.

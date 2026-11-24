@@ -185,11 +185,18 @@ final class VulkanComputeDriver implements ComputeDriver {
     private static long buffer(Region r) { return ((Allocation) r.allocation()).buffer(); }
     /** A region's offset in its block's VkBuffer. */
     private static long offset(Region r) { return ((Allocation) r.allocation()).base() + r.offset(); }
+    /**
+     * The barrier between commands: compute and transfer work, earlier writes visible to later reads and writes. Host
+     * writes made before submission are visible through vkQueueSubmit, so the host stage only appears in the final
+     * barrier ({@code host}), which makes GPU writes visible to the host readbacks.
+     */
     private static void barrier(VkCommandBuffer cmd, boolean host, MemoryStack stack) {
-        var memory = VkMemoryBarrier.calloc(1, stack); memory.get(0).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT)
-                .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-                host ? VK_PIPELINE_STAGE_HOST_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, memory, null, null);
+        int stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+        var memory = VkMemoryBarrier.calloc(1, stack); memory.get(0).sType$Default()
+                .srcAccessMask(VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)
+                .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT
+                        : VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdPipelineBarrier(cmd, stages, host ? VK_PIPELINE_STAGE_HOST_BIT : stages, 0, memory, null, null);
     }
     private static void copy(VkCommandBuffer cmd, long src, long srcOffset, long dst, long dstOffset, long bytes, MemoryStack stack) {
         var region = VkBufferCopy.calloc(1, stack); region.get(0).srcOffset(srcOffset).dstOffset(dstOffset).size(bytes); vkCmdCopyBuffer(cmd, src, dst, region);
@@ -255,6 +262,10 @@ final class VulkanComputeDriver implements ComputeDriver {
         return new Job() {
             private OptionalLong gpuNanos = OptionalLong.empty();
             @Override public OptionalLong gpuNanos() { return gpuNanos; }
+            @Override public boolean await(long nanos) {
+                int r = vkWaitForFences(device, new long[] {submittedFence}, true, Math.max(0, nanos));
+                if (r == VK_TIMEOUT) return false; check(r, "wait for submission fence"); return true;
+            }
             @Override public GpuSubmission.Status poll() {
                 int status = vkGetFenceStatus(device, submittedFence); if (status == VK_NOT_READY) return GpuSubmission.Status.PENDING; check(status, "submission fence status");
                 if (submittedQueries != 0) {

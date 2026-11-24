@@ -18,6 +18,11 @@ public interface ComputeDriver extends AutoCloseable {
     interface Job extends AutoCloseable {
         /** COMPLETE includes host-read visibility and publication of every readback. */
         GpuSubmission.Status poll();
+        /**
+         * Blocks until the work completes or {@code nanos} pass, without publishing results ({@link #poll} does);
+         * true if it completed. The default sleeps briefly and reports false, so callers fall back to polling.
+         */
+        default boolean await(long nanos) { java.util.concurrent.locks.LockSupport.parkNanos(Math.min(nanos, 100_000)); return false; }
         /** The GPU execution time in nanoseconds, after {@link #poll} returned COMPLETE and before {@link #close}; empty if not measured. */
         default java.util.OptionalLong gpuNanos() { return java.util.OptionalLong.empty(); }
         @Override void close();

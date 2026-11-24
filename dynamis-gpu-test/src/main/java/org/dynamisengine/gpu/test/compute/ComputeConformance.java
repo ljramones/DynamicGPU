@@ -152,6 +152,30 @@ public abstract class ComputeConformance {
         }
     }
 
+    /** -Dcompute.benchmark=true: where a 50-dispatch submission's time goes (record, submit, wait). */
+    @Test void dispatchOverheadBenchmark() {
+        Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");
+        int n = 64, dispatches = 50, iterations = 200;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n)) {
+            for (int round = 0; round < 3; round++) {
+                long record = 0, submit = 0, wait = 0, gpu = 0;
+                for (int it = 0; it < iterations; it++) {
+                    long t0 = System.nanoTime();
+                    var e = device.encoder();
+                    for (int d = 0; d < dispatches; d++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                    long t1 = System.nanoTime();
+                    var s = device.queue().submit(e);
+                    long t2 = System.nanoTime();
+                    await(s); long t3 = System.nanoTime();
+                    gpu += s.gpuTime().map(java.time.Duration::toNanos).orElse(0L); s.close();
+                    record += t1 - t0; submit += t2 - t1; wait += t3 - t2;
+                }
+                System.out.printf("dispatch overhead on %s, %d dispatches: record %d us, submit %d us, wait %d us (GPU %d us)%n", device.adapter().name(),
+                        dispatches, record / iterations / 1000, submit / iterations / 1000, wait / iterations / 1000, gpu / iterations / 1000);
+            }
+        }
+    }
+
     /** Where the device reports timestamps, a completed submission has a positive GPU time no longer than its wall time. */
     @Test void measuresGpuTimeWhereTimestampsAreReported() {
         int n = 1 << 20;
