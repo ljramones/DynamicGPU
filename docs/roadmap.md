@@ -268,7 +268,7 @@ Not done, deliberately:
 
 ### 1.8: GEMM family
 
-**Status: complete, to be released as 1.8.0.** Done:
+**Status: complete, released as 1.8.0.** Done:
 - **Skinny GEMM** (`Algorithm.SKINNY`, `m <= 16`): a fixed split order, bit for bit `referenceSkinny` on every
   device. At `m = 1` with B transposed it streams 378-408 GB/s on an M4 Max, 77-96 % of the measured streaming-read
   bandwidth (`-Dgemm.decode=true` reports both), about 7 times the tiled kernel.
