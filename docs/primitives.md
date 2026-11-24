@@ -7,21 +7,38 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu. The first primitive is a h
 ## `GemmF16`
 
 `C = alpha * A * B + beta * C`:
-- **Layout:** A is `m x k` and B is `k x n`, both FP16; C is `m x n` in FP32. All are row-major with leading
-  dimensions in elements (`GemmF16.Shape`).
+- **Layout:**
+  - A is `m x k` in FP16.
+  - B is `k x n`, or `n x k` when transposed, in FP16.
+  - C is `m x n`, in FP32 or FP16.
+  - All are row-major with leading dimensions in elements (`GemmF16.Shape`).
 - **Use:** it is a dense layer with half-precision weights and activations.
+  - **Linear layers:** with transposed B it computes a linear layer's `x W^T`, with the weights as stored.
+  - **Attention:** with a batch, it runs the per-head products of attention in one dispatch.
 
 ```java
-try (GemmF16 gemm = GemmF16.create(device)) {              // needs GpuCapabilities.FP16
+try (GemmF16 gemm = GemmF16.create(device)) {              // FP32 C; create(device, Output.FP16) for FP16 C
     var shape = GemmF16.Shape.of(m, n, k, 1f, 0f);          // dense: lda = k, ldb = ldc = n
-    gemm.encode(encoder, a, b, c, shape);                    // a, b: >= shape.aBytes(), bBytes(); c: cBytes()
+    gemm.encode(encoder, a, b, c, shape);                    // a, b: >= shape.aBytes(), bBytes(); c: cBytes(output)
 }
+var linear = GemmF16.Shape.ofTransposedB(tokens, out, in, 1f, 0f);       // C = X W^T, W stored out x in
+var heads = GemmF16.Shape.ofTransposedB(seq, seq, headDim, scale, 0f).batched(numHeads);   // one Q K^T per head
+var shared = GemmF16.Shape.of(m, n, k, 1f, 0f).withBatch(count, m * k, 0, m * n);         // stride 0: one B for all
 ```
+
+- **Transposed B:** `Shape.ofTransposedB`, or `transposeB = true` with `ldb >= k`.
+- **Batches:** `batched(count)` packs the matrices densely one after another; `withBatch(count, strideA, strideB,
+  strideC)` sets the strides.
+  - **Sharing:** a stride of 0 shares one matrix across the batch.
+  - **Overlap:** C matrices may not overlap.
+  - **Dispatch:** the batch is the dispatch's z dimension.
+- **FP16 output:** `Output.FP16` computes in FP32 as above, then rounds the result once to the nearest half.
+  Overflow gives infinity.
 
 - **`beta == 0`:** C is not read (as in BLAS), so it may hold anything.
 - **Buffer sizes:** transfers move whole 32-bit words, so round the FP16 buffers up to a multiple of 4 bytes.
 - **Refusal:** `create` throws `UNSUPPORTED` on a device without `FP16`.
-- **Indexing:** element indices are 32-bit, so each matrix holds fewer than 2^32 elements.
+- **Indexing:** element indices are 32-bit, so each operand, batch included, spans fewer than 2^32 elements.
 
 ### Algorithms
 
@@ -29,12 +46,13 @@ try (GemmF16 gemm = GemmF16.create(device)) {              // needs GpuCapabilit
 
 | Algorithm | Runs on | Kernel |
 |---|---|---|
-| `TILED` | every device with `FP16` | Slang (`gemm_f16.slang`): shared FP32 tiles and fused multiply-adds |
-| `SIMDGROUP_MATRIX` | native Metal on Apple7+ GPUs (`SUBGROUP_MATRIX_F16`) | MSL (`metal/gemm_f16_simdgroup.metal`): 8 x 8 hardware multiply-accumulate |
+| `TILED` | every device with `FP16` | Slang (`gemm_body.slang`, one entry per output type): shared FP32 tiles and fused multiply-adds |
+| `SIMDGROUP_MATRIX` | native Metal on Apple7+ GPUs (`SUBGROUP_MATRIX_F16`) | MSL (`metal/gemm_f16_simdgroup.metal`, one entry per output type): 8 x 8 hardware multiply-accumulate |
 
 - **The matrix kernel:** a group of four SIMD-groups computes a 64 x 64 tile, each SIMD-group a 32 x 32 quarter.
   - **Interior tiles** (`k` a multiple of 8) load 8 x 8 blocks straight from device memory; the caches serve the
-    reuse.
+    reuse. Transposed B loads its blocks transposed, in a separate loop: testing the layout inside the loop cost
+    about 15 %.
   - **Edge tiles** stage zero-filled copies in threadgroup memory.
   - **Why the direct loads:** staging every tile in threadgroup memory, a half at a time, ran at 3.7 TFLOP/s.
 
