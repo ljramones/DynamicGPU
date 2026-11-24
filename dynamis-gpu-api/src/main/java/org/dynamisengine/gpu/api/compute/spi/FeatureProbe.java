@@ -1,9 +1,6 @@
 package org.dynamisengine.gpu.api.compute.spi;
 
 import org.dynamisengine.gpu.api.compute.*;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Duration;
@@ -22,20 +19,15 @@ final class FeatureProbe {
     private static final System.Logger LOG = System.getLogger(FeatureProbe.class.getName());
     private static final float X = 1 + 0x1p-12f;
     private static final int FUSED_RESIDUAL = Float.floatToRawIntBits(0x1p-24f);
+    /** fma_probe, built from src/main/slang by dynamis-gpu-shaders (scripts/build-slang-kernels.sh). */
+    static final KernelLibrary KERNELS = KernelLibrary.load(FeatureProbe.class, "kernels", "kernels.properties", "dynamisgpu.");
 
     private FeatureProbe() { }
 
     static Set<String> measure(ComputeDevice device) {
-        KernelBundle.Executable executable = switch (device.adapter().backend()) {
-            case VULKAN -> new KernelBundle.Executable(KernelBundle.Format.SPIRV, resource("fma_probe.spv"));
-            case METAL -> new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, resource("fma_probe.metal"));
-            default -> null;
-        };
-        if (executable == null) return Set.of();
-        var bundle = new KernelBundle("dynamisgpu.fma-probe", "1", Map.of(device.adapter().backend(), executable));
-        var layout = new BindingLayout(List.of(new BindingLayout.BufferBinding(0, Access.WRITE, 4)), 8);
-        var descriptor = new PipelineDescriptor(bundle, "fma_probe", layout, new Dimensions(1, 1, 1), Map.of(),
-                Set.of("FP32"), Set.of());
+        var backend = device.adapter().backend();
+        if (backend != Backend.VULKAN && backend != Backend.METAL) return Set.of();
+        var descriptor = KERNELS.pipeline("fma_probe", List.of(Access.WRITE), Set.of("FP32"), Set.of());
         float c = -(X * X);
         byte[] parameters = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putFloat(X).putFloat(c).array();
         try (var pipeline = device.pipeline(descriptor);
@@ -54,15 +46,6 @@ final class FeatureProbe {
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "fma probe failed on " + device.adapter().name() + "; reporting no fused fma", e);
             return Set.of();
-        }
-    }
-
-    private static byte[] resource(String name) {
-        try (InputStream in = FeatureProbe.class.getResourceAsStream(name)) {
-            if (in == null) throw new IllegalStateException("missing probe resource " + name);
-            return in.readAllBytes();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
         }
     }
 }

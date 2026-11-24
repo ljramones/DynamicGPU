@@ -19,6 +19,8 @@ CI (`.github/workflows/ci.yml`) runs on every push:
 
 ## Modules
 - `dynamis-gpu-api`: public GPU contracts (`org.dynamisengine.gpu.api`)
+- `dynamis-gpu-shaders`: the shader build, which compiles Slang kernels to SPIR-V and Metal with every rounding kept
+  and records their ABI for `KernelLibrary` (build-time tool)
 - `dynamis-gpu-vulkan`: LWJGL/Vulkan graphics and headless compute backend
 - `dynamis-gpu-metal`: native Metal backend using JDK 25 FFM and a versioned C bridge
 - `dynamis-gpu-test`: mock/testing implementations

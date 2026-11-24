@@ -28,6 +28,7 @@
 
   <modules>
     <module>dynamis-gpu-api</module>
+    <module>dynamis-gpu-shaders</module>
     <module>dynamis-gpu-vulkan</module>
     <module>dynamis-gpu-metal</module>
     <module>dynamis-gpu-test</module>
@@ -60,6 +61,11 @@
       <dependency>
         <groupId>org.dynamisengine</groupId>
         <artifactId>dynamis-gpu-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dynamisengine</groupId>
+        <artifactId>dynamis-gpu-shaders</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

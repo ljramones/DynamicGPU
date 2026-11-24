@@ -76,8 +76,8 @@ jobs:
           system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Metal' | head -3
           java -version
           mvn -v | head -1
-      - name: Native Metal hardware suite
-        run: mvn -B -pl dynamis-gpu-metal -am -Pmetal-native,metal-hardware test
+      - name: Native Metal hardware suite, and rebuilding the Slang kernels (the runner has slangc)
+        run: mvn -B -pl dynamis-gpu-shaders,dynamis-gpu-metal -am -Pmetal-native,metal-hardware test
       - name: MoltenVK hardware suite
         run: |
           SDK="$HOME/VulkanSDK/$VULKAN_SDK_VERSION/macOS"

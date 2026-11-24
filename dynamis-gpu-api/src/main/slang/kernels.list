@@ -1,0 +1,2 @@
+# name source entry: kernels built into src/main/resources/org/dynamisengine/gpu/api/compute/spi/kernels
+fma_probe fma_probe.slang fma_probe

@@ -214,6 +214,30 @@ categories and native operation diagnostics. No Objective-C exception crosses th
 C ABI; bridge calls scope autorelease pools and copy thread-local error text into
 Java immediately. Native handles are typed and stay inside backend implementations.
 
+## Shader toolchain: Slang and KernelLibrary
+
+Write kernels once in Slang, and build them with `dynamis-gpu-shaders` (`ShaderBuild`):
+- **Outputs:** per kernel, `name.spv` (Vulkan) and `name.metal` (Metal source), plus a manifest recording each kernel's
+  entry point, group size, buffer slots and parameter block. At runtime, `KernelLibrary` (dynamis-gpu-api) loads them
+  from the class path as `KernelBundle`s and `PipelineDescriptor`s, so the Java side never restates the ABI.
+- **Committed outputs:** they are committed, so neither the build nor CI needs slangc. A test recomputes the
+  manifest's source hash, so a stale build fails.
+- **Rounding rules:** the build keeps every rounding as written.
+  - **Optimizer:** slangc runs at `-O0`, because its optimizer folds `(x + c) - c` to `x`.
+  - **SPIR-V:** every float add, subtract and `fma` is marked `NoContraction`. Multiplies stay unmarked, because
+    SPIRV-Cross turns a marked multiply into `fma(a, b, 0)`, which loses `-0`.
+  - **Metal:** the source starts with `contract(off)`.
+- **Binding order:** the build checks that Metal buffer indices follow the slots. Declare buffers in slot order, with
+  the push-constant block last.
+- **Running it:** `java -cp dynamis-gpu-shaders.jar org.dynamisengine.gpu.shaders.ShaderBuild --src DIR --out DIR
+  --kernels FILE` (`--include DIR` and `--hash DIR` are repeatable). The kernels file has one `name source entry`
+  line per kernel. slangc is found through `$SLANGC`, `$VULKAN_SDK` or `~/VulkanSDK`.
+- **DynamisGPU's own kernels** (`fma_probe`) are built by `scripts/build-slang-kernels.sh`.
+- **Not converted:** the conformance-test kernels stay hand-written GLSL and MSL, because they test what drivers do
+  with specific SPIR-V, including unmarked arithmetic.
+- **Equivalence:** the tool is a port of vectrix-gpu's `build-kernels.py`. On vectrix-gpu's 58 kernels its output is
+  byte-identical.
+
 ## Kernel error buffers
 
 Some arguments live in device memory, such as embedding indices, joint indices and data to be quantized, so the host
