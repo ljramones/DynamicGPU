@@ -1,5 +1,6 @@
 // The skinny GEMM (m <= 16, the decode step of an LLM), shared by gemm_skinny.slang (FP32 C) and gemm_skinny_h.slang
-// (FP16 C), which define OUT_T and ENTRY. Same parameter block as gemm_body.slang. It streams B once, with every row
+// (FP16 C), which define OUT_T and ENTRY. Same parameter block and epilogue as gemm_body.slang (gemm_common.slang);
+// A is not transposed. It streams B once, with every row
 // of A per element of B, so at m = 1 it is limited by memory bandwidth.
 //
 // Two builds: VEC (gemm_skinny_v*) reads A and B as 16-byte vectors of 8 halves, for B transposed with every row of
@@ -20,31 +21,15 @@
 //   streaming-read bandwidth for n = 4096, too few groups; 16 lanes at 67%.)
 // Then r = fl(fl(alpha acc) + fl(beta c)), as in the tiled kernel.
 
-struct GemmParams
-{
-    uint m;
-    uint n;
-    uint k;
-    uint lda;
-    uint ldb;
-    uint ldc;
-    float alpha;
-    float beta;
-    uint transB;
-    uint strideA;
-    uint strideB;
-    uint strideC;
-};
-
 #ifdef VEC
 typedef uint4 Word;
 #else
 typedef uint Word;
 #endif
+// A and B come first: Slang numbers Metal buffers in declaration order.
 [[vk::binding(0, 0)]] RWStructuredBuffer<Word> a;
 [[vk::binding(1, 0)]] RWStructuredBuffer<Word> b;
-[[vk::binding(2, 0)]] RWStructuredBuffer<OUT_T> c;
-[[vk::push_constant]] ConstantBuffer<GemmParams> p;
+#include "gemm_common.slang"
 
 static const uint THREADS = 256;
 static const uint MAXM = 16;
@@ -80,12 +65,6 @@ void load8B(uint e, out float v[8])
     else { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = halfB(e + t); }
 }
 #endif
-
-void store(uint idx, float acc)
-{
-    float v = p.beta == 0.0f ? p.alpha * acc : p.alpha * acc + p.beta * float(c[idx]);
-    c[idx] = OUT_T(v);
-}
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -218,7 +197,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         if (lane == 0)
         {
             for (uint cc = 0; cc < cols; cc++)
-                if (col0 + cc < p.n) store(baseC + i * p.ldc + col0 + cc, red[cc][lid]);
+                if (col0 + cc < p.n) gemmStore(i, col0 + cc, baseC + i * p.ldc + col0 + cc, red[cc][lid]);
         }
         GroupMemoryBarrierWithGroupSync();
     }

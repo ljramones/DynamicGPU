@@ -28,6 +28,11 @@ struct GemmParams_0
     uint strideA_0;
     uint strideB_0;
     uint strideC_0;
+    uint transA_0;
+    uint bias_0;
+    uint act_0;
+    uint gated_0;
+    uint residual_0;
 };
 
 struct KernelContext_0
@@ -36,6 +41,9 @@ struct KernelContext_0
     uint4 device* b_0;
     uint4 device* a_0;
     half device* c_0;
+    half device* epBias_0;
+    half device* epGate_0;
+    half device* epResidual_0;
     array<array<float, int(256)>, int(4)> threadgroup* red_0;
 };
 
@@ -69,36 +77,138 @@ void load8A_0(uint e_1, array<float, int(8)> thread* v_1, KernelContext_0 thread
     return;
 }
 
-void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
+bool dg_is_nan_0(float x_0)
 {
-    float v_2;
-    if((kernelContext_2->p_0->beta_0) == 0.0)
+    uint _S5 = (as_type<uint>((x_0)));
+    bool _S6;
+    if((_S5 & 2139095040U) == 2139095040U)
     {
-        v_2 = kernelContext_2->p_0->alpha_0 * acc_0;
+        _S6 = (_S5 & 8388607U) != 0U;
     }
     else
     {
-        v_2 = kernelContext_2->p_0->alpha_0 * acc_0 + kernelContext_2->p_0->beta_0 * float(*(kernelContext_2->c_0+idx_0));
+        _S6 = false;
     }
-    *(kernelContext_2->c_0+idx_0) = half(v_2);
+    return _S6;
+}
+
+float dg_max_0(float a_1, float b_1)
+{
+    if(dg_is_nan_0(a_1))
+    {
+        return a_1;
+    }
+    if(dg_is_nan_0(b_1))
+    {
+        return b_1;
+    }
+    bool _S7;
+    if(a_1 == 0.0)
+    {
+        _S7 = b_1 == 0.0;
+    }
+    else
+    {
+        _S7 = false;
+    }
+    if(_S7)
+    {
+        return (as_type<float>(((as_type<uint>((a_1))) & (as_type<uint>((b_1))))));
+    }
+    float _S8;
+    if(a_1 > b_1)
+    {
+        _S8 = a_1;
+    }
+    else
+    {
+        _S8 = b_1;
+    }
+    return _S8;
+}
+
+float gemmEpilogue_0(float r_0, uint i_0, uint j_0, uint idx_0, KernelContext_0 thread* kernelContext_2)
+{
+    float _S9;
+    if((kernelContext_2->p_0->bias_0) == 1U)
+    {
+        _S9 = r_0 + float(*(kernelContext_2->epBias_0+j_0));
+    }
+    else
+    {
+        if((kernelContext_2->p_0->bias_0) == 2U)
+        {
+            _S9 = r_0 + float(*(kernelContext_2->epBias_0+i_0));
+        }
+        else
+        {
+            _S9 = r_0;
+        }
+    }
+    if((kernelContext_2->p_0->act_0) == 1U)
+    {
+        _S9 = dg_max_0(_S9, 0.0);
+    }
+    else
+    {
+        if((kernelContext_2->p_0->act_0) == 2U)
+        {
+            _S9 = 0.5 * _S9 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (_S9 + 0.04471499845385551 * _S9 * _S9 * _S9))) + 1.0)));
+        }
+        else
+        {
+            if((kernelContext_2->p_0->act_0) == 3U)
+            {
+                _S9 = _S9 / (1.0 + exp(- _S9));
+            }
+        }
+    }
+    if((kernelContext_2->p_0->gated_0) != 0U)
+    {
+        _S9 = _S9 * float(*(kernelContext_2->epGate_0+idx_0));
+    }
+    if((kernelContext_2->p_0->residual_0) != 0U)
+    {
+        _S9 = _S9 + float(*(kernelContext_2->epResidual_0+idx_0));
+    }
+    return _S9;
+}
+
+void gemmStore_0(uint i_1, uint j_1, uint idx_1, float acc_0, KernelContext_0 thread* kernelContext_3)
+{
+    float r_1;
+    if((kernelContext_3->p_0->beta_0) == 0.0)
+    {
+        r_1 = kernelContext_3->p_0->alpha_0 * acc_0;
+    }
+    else
+    {
+        r_1 = kernelContext_3->p_0->alpha_0 * acc_0 + kernelContext_3->p_0->beta_0 * float(*(kernelContext_3->c_0+idx_1));
+    }
+    half device* _S10 = kernelContext_3->c_0+idx_1;
+    float _S11 = gemmEpilogue_0(r_1, i_1, j_1, idx_1, kernelContext_3);
+    *_S10 = half(_S11);
     return;
 }
 
-[[kernel]] void gemm_skinny_vh(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], GemmParams_0 constant* p_1 [[buffer(3)]], uint4 device* b_1 [[buffer(1)]], uint4 device* a_1 [[buffer(0)]], half device* c_1 [[buffer(2)]])
+[[kernel]] void gemm_skinny_vh(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], GemmParams_0 constant* p_1 [[buffer(6)]], uint4 device* b_2 [[buffer(1)]], uint4 device* a_2 [[buffer(0)]], half device* c_1 [[buffer(2)]], half device* epBias_1 [[buffer(3)]], half device* epGate_1 [[buffer(4)]], half device* epResidual_1 [[buffer(5)]])
 {
-    thread KernelContext_0 kernelContext_3;
-    (&kernelContext_3)->p_0 = p_1;
-    (&kernelContext_3)->b_0 = b_1;
-    (&kernelContext_3)->a_0 = a_1;
-    (&kernelContext_3)->c_0 = c_1;
+    thread KernelContext_0 kernelContext_4;
+    (&kernelContext_4)->p_0 = p_1;
+    (&kernelContext_4)->b_0 = b_2;
+    (&kernelContext_4)->a_0 = a_2;
+    (&kernelContext_4)->c_0 = c_1;
+    (&kernelContext_4)->epBias_0 = epBias_1;
+    (&kernelContext_4)->epGate_0 = epGate_1;
+    (&kernelContext_4)->epResidual_0 = epResidual_1;
     threadgroup array<array<float, int(256)>, int(4)> red_1;
-    (&kernelContext_3)->red_0 = &red_1;
+    (&kernelContext_4)->red_0 = &red_1;
     uint lid_0 = local_0.x;
-    uint _S5 = group_0.z;
-    uint _S6 = _S5 * p_1->strideA_0;
-    uint _S7 = _S5 * p_1->strideB_0;
-    uint _S8 = _S5 * p_1->strideC_0;
-    uint _S9 = min(p_1->m_0, 16U);
+    uint _S12 = group_0.z;
+    uint _S13 = _S12 * p_1->strideA_0;
+    uint _S14 = _S12 * p_1->strideB_0;
+    uint _S15 = _S12 * p_1->strideC_0;
+    uint _S16 = min(p_1->m_0, 16U);
     uint k_1 = p_1->k_0;
     thread array<array<float, int(4)>, int(16)> acc_1;
     acc_1[0U][0U] = 0.0;
@@ -166,14 +276,14 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
     acc_1[15U][2U] = 0.0;
     acc_1[15U][3U] = 0.0;
     bool transB_1 = (p_1->transB_0) != 0U;
-    uint _S10;
+    uint _S17;
     if(transB_1)
     {
-        _S10 = 32U;
+        _S17 = 32U;
     }
     else
     {
-        _S10 = 16U;
+        _S17 = 16U;
     }
     uint lane_0;
     if(transB_1)
@@ -184,14 +294,14 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
     {
         lane_0 = lid_0 / 16U;
     }
-    uint _S11;
+    uint _S18;
     if(transB_1)
     {
-        _S11 = 2U;
+        _S18 = 2U;
     }
     else
     {
-        _S11 = 4U;
+        _S18 = 4U;
     }
     uint col0_0;
     if(transB_1)
@@ -202,48 +312,48 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
     {
         col0_0 = group_0.x * 64U + lid_0 % 16U * 4U;
     }
-    bool _S12;
-    if(col0_0 < ((&kernelContext_3)->p_0->n_0))
+    bool _S19;
+    if(col0_0 < ((&kernelContext_4)->p_0->n_0))
     {
-        _S12 = transB_1;
+        _S19 = transB_1;
     }
     else
     {
-        _S12 = false;
+        _S19 = false;
     }
     uint ch_0;
-    if(_S12)
+    if(_S19)
     {
-        uint _S13 = k_1 / 8U;
+        uint _S20 = k_1 / 8U;
         ch_0 = lane_0;
         for(;;)
         {
-            if(ch_0 < _S13)
+            if(ch_0 < _S20)
             {
             }
             else
             {
                 break;
             }
-            uint _S14 = ch_0 * 8U;
+            uint _S21 = ch_0 * 8U;
             thread array<array<float, int(8)>, int(2)> bv_0;
-            load8B_0(_S7 + min(col0_0, (&kernelContext_3)->p_0->n_0 - 1U) * (&kernelContext_3)->p_0->ldb_0 + _S14, &bv_0[0U], &kernelContext_3);
-            load8B_0(_S7 + min(col0_0 + 1U, (&kernelContext_3)->p_0->n_0 - 1U) * (&kernelContext_3)->p_0->ldb_0 + _S14, &bv_0[1U], &kernelContext_3);
+            load8B_0(_S14 + min(col0_0, (&kernelContext_4)->p_0->n_0 - 1U) * (&kernelContext_4)->p_0->ldb_0 + _S21, &bv_0[0U], &kernelContext_4);
+            load8B_0(_S14 + min(col0_0 + 1U, (&kernelContext_4)->p_0->n_0 - 1U) * (&kernelContext_4)->p_0->ldb_0 + _S21, &bv_0[1U], &kernelContext_4);
             for(;;)
             {
-                int _S15;
+                int _S22;
                 for(;;)
                 {
-                    int _S16;
+                    int _S23;
                     for(;;)
                     {
-                        if(0U >= _S9)
+                        if(0U >= _S16)
                         {
-                            _S16 = int(1);
+                            _S23 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_0;
-                        load8A_0(_S6 + _S14, &av_0, &kernelContext_3);
+                        load8A_0(_S13 + _S21, &av_0, &kernelContext_4);
                         acc_1[0U][0U] = fma(av_0[0U], bv_0[0U][0U], acc_1[0U][0U]);
                         acc_1[0U][1U] = fma(av_0[0U], bv_0[1U][0U], acc_1[0U][1U]);
                         acc_1[0U][0U] = fma(av_0[1U], bv_0[0U][1U], acc_1[0U][0U]);
@@ -260,34 +370,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[0U][1U] = fma(av_0[6U], bv_0[1U][6U], acc_1[0U][1U]);
                         acc_1[0U][0U] = fma(av_0[7U], bv_0[0U][7U], acc_1[0U][0U]);
                         acc_1[0U][1U] = fma(av_0[7U], bv_0[1U][7U], acc_1[0U][1U]);
-                        _S16 = int(3);
+                        _S23 = int(3);
                         break;
                     }
-                    if(_S16 != int(3))
+                    if(_S23 != int(3))
                     {
-                        _S15 = _S16;
+                        _S22 = _S23;
                         break;
                     }
-                    _S15 = int(2);
+                    _S22 = int(2);
                     break;
                 }
-                if(_S15 != int(2))
+                if(_S22 != int(2))
                 {
                     break;
                 }
-                int _S17;
+                int _S24;
                 for(;;)
                 {
-                    int _S18;
+                    int _S25;
                     for(;;)
                     {
-                        if(1U >= _S9)
+                        if(1U >= _S16)
                         {
-                            _S18 = int(1);
+                            _S25 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_1;
-                        load8A_0(_S6 + (&kernelContext_3)->p_0->lda_0 + _S14, &av_1, &kernelContext_3);
+                        load8A_0(_S13 + (&kernelContext_4)->p_0->lda_0 + _S21, &av_1, &kernelContext_4);
                         acc_1[1U][0U] = fma(av_1[0U], bv_0[0U][0U], acc_1[1U][0U]);
                         acc_1[1U][1U] = fma(av_1[0U], bv_0[1U][0U], acc_1[1U][1U]);
                         acc_1[1U][0U] = fma(av_1[1U], bv_0[0U][1U], acc_1[1U][0U]);
@@ -304,34 +414,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[1U][1U] = fma(av_1[6U], bv_0[1U][6U], acc_1[1U][1U]);
                         acc_1[1U][0U] = fma(av_1[7U], bv_0[0U][7U], acc_1[1U][0U]);
                         acc_1[1U][1U] = fma(av_1[7U], bv_0[1U][7U], acc_1[1U][1U]);
-                        _S18 = int(3);
+                        _S25 = int(3);
                         break;
                     }
-                    if(_S18 != int(3))
+                    if(_S25 != int(3))
                     {
-                        _S17 = _S18;
+                        _S24 = _S25;
                         break;
                     }
-                    _S17 = int(2);
+                    _S24 = int(2);
                     break;
                 }
-                if(_S17 != int(2))
+                if(_S24 != int(2))
                 {
                     break;
                 }
-                int _S19;
+                int _S26;
                 for(;;)
                 {
-                    int _S20;
+                    int _S27;
                     for(;;)
                     {
-                        if(2U >= _S9)
+                        if(2U >= _S16)
                         {
-                            _S20 = int(1);
+                            _S27 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_2;
-                        load8A_0(_S6 + 2U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_2, &kernelContext_3);
+                        load8A_0(_S13 + 2U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_2, &kernelContext_4);
                         acc_1[2U][0U] = fma(av_2[0U], bv_0[0U][0U], acc_1[2U][0U]);
                         acc_1[2U][1U] = fma(av_2[0U], bv_0[1U][0U], acc_1[2U][1U]);
                         acc_1[2U][0U] = fma(av_2[1U], bv_0[0U][1U], acc_1[2U][0U]);
@@ -348,34 +458,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[2U][1U] = fma(av_2[6U], bv_0[1U][6U], acc_1[2U][1U]);
                         acc_1[2U][0U] = fma(av_2[7U], bv_0[0U][7U], acc_1[2U][0U]);
                         acc_1[2U][1U] = fma(av_2[7U], bv_0[1U][7U], acc_1[2U][1U]);
-                        _S20 = int(3);
+                        _S27 = int(3);
                         break;
                     }
-                    if(_S20 != int(3))
+                    if(_S27 != int(3))
                     {
-                        _S19 = _S20;
+                        _S26 = _S27;
                         break;
                     }
-                    _S19 = int(2);
+                    _S26 = int(2);
                     break;
                 }
-                if(_S19 != int(2))
+                if(_S26 != int(2))
                 {
                     break;
                 }
-                int _S21;
+                int _S28;
                 for(;;)
                 {
-                    int _S22;
+                    int _S29;
                     for(;;)
                     {
-                        if(3U >= _S9)
+                        if(3U >= _S16)
                         {
-                            _S22 = int(1);
+                            _S29 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_3;
-                        load8A_0(_S6 + 3U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_3, &kernelContext_3);
+                        load8A_0(_S13 + 3U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_3, &kernelContext_4);
                         acc_1[3U][0U] = fma(av_3[0U], bv_0[0U][0U], acc_1[3U][0U]);
                         acc_1[3U][1U] = fma(av_3[0U], bv_0[1U][0U], acc_1[3U][1U]);
                         acc_1[3U][0U] = fma(av_3[1U], bv_0[0U][1U], acc_1[3U][0U]);
@@ -392,34 +502,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[3U][1U] = fma(av_3[6U], bv_0[1U][6U], acc_1[3U][1U]);
                         acc_1[3U][0U] = fma(av_3[7U], bv_0[0U][7U], acc_1[3U][0U]);
                         acc_1[3U][1U] = fma(av_3[7U], bv_0[1U][7U], acc_1[3U][1U]);
-                        _S22 = int(3);
+                        _S29 = int(3);
                         break;
                     }
-                    if(_S22 != int(3))
+                    if(_S29 != int(3))
                     {
-                        _S21 = _S22;
+                        _S28 = _S29;
                         break;
                     }
-                    _S21 = int(2);
+                    _S28 = int(2);
                     break;
                 }
-                if(_S21 != int(2))
+                if(_S28 != int(2))
                 {
                     break;
                 }
-                int _S23;
+                int _S30;
                 for(;;)
                 {
-                    int _S24;
+                    int _S31;
                     for(;;)
                     {
-                        if(4U >= _S9)
+                        if(4U >= _S16)
                         {
-                            _S24 = int(1);
+                            _S31 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_4;
-                        load8A_0(_S6 + 4U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_4, &kernelContext_3);
+                        load8A_0(_S13 + 4U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_4, &kernelContext_4);
                         acc_1[4U][0U] = fma(av_4[0U], bv_0[0U][0U], acc_1[4U][0U]);
                         acc_1[4U][1U] = fma(av_4[0U], bv_0[1U][0U], acc_1[4U][1U]);
                         acc_1[4U][0U] = fma(av_4[1U], bv_0[0U][1U], acc_1[4U][0U]);
@@ -436,34 +546,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[4U][1U] = fma(av_4[6U], bv_0[1U][6U], acc_1[4U][1U]);
                         acc_1[4U][0U] = fma(av_4[7U], bv_0[0U][7U], acc_1[4U][0U]);
                         acc_1[4U][1U] = fma(av_4[7U], bv_0[1U][7U], acc_1[4U][1U]);
-                        _S24 = int(3);
+                        _S31 = int(3);
                         break;
                     }
-                    if(_S24 != int(3))
+                    if(_S31 != int(3))
                     {
-                        _S23 = _S24;
+                        _S30 = _S31;
                         break;
                     }
-                    _S23 = int(2);
+                    _S30 = int(2);
                     break;
                 }
-                if(_S23 != int(2))
+                if(_S30 != int(2))
                 {
                     break;
                 }
-                int _S25;
+                int _S32;
                 for(;;)
                 {
-                    int _S26;
+                    int _S33;
                     for(;;)
                     {
-                        if(5U >= _S9)
+                        if(5U >= _S16)
                         {
-                            _S26 = int(1);
+                            _S33 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_5;
-                        load8A_0(_S6 + 5U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_5, &kernelContext_3);
+                        load8A_0(_S13 + 5U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_5, &kernelContext_4);
                         acc_1[5U][0U] = fma(av_5[0U], bv_0[0U][0U], acc_1[5U][0U]);
                         acc_1[5U][1U] = fma(av_5[0U], bv_0[1U][0U], acc_1[5U][1U]);
                         acc_1[5U][0U] = fma(av_5[1U], bv_0[0U][1U], acc_1[5U][0U]);
@@ -480,34 +590,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[5U][1U] = fma(av_5[6U], bv_0[1U][6U], acc_1[5U][1U]);
                         acc_1[5U][0U] = fma(av_5[7U], bv_0[0U][7U], acc_1[5U][0U]);
                         acc_1[5U][1U] = fma(av_5[7U], bv_0[1U][7U], acc_1[5U][1U]);
-                        _S26 = int(3);
+                        _S33 = int(3);
                         break;
                     }
-                    if(_S26 != int(3))
+                    if(_S33 != int(3))
                     {
-                        _S25 = _S26;
+                        _S32 = _S33;
                         break;
                     }
-                    _S25 = int(2);
+                    _S32 = int(2);
                     break;
                 }
-                if(_S25 != int(2))
+                if(_S32 != int(2))
                 {
                     break;
                 }
-                int _S27;
+                int _S34;
                 for(;;)
                 {
-                    int _S28;
+                    int _S35;
                     for(;;)
                     {
-                        if(6U >= _S9)
+                        if(6U >= _S16)
                         {
-                            _S28 = int(1);
+                            _S35 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_6;
-                        load8A_0(_S6 + 6U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_6, &kernelContext_3);
+                        load8A_0(_S13 + 6U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_6, &kernelContext_4);
                         acc_1[6U][0U] = fma(av_6[0U], bv_0[0U][0U], acc_1[6U][0U]);
                         acc_1[6U][1U] = fma(av_6[0U], bv_0[1U][0U], acc_1[6U][1U]);
                         acc_1[6U][0U] = fma(av_6[1U], bv_0[0U][1U], acc_1[6U][0U]);
@@ -524,34 +634,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[6U][1U] = fma(av_6[6U], bv_0[1U][6U], acc_1[6U][1U]);
                         acc_1[6U][0U] = fma(av_6[7U], bv_0[0U][7U], acc_1[6U][0U]);
                         acc_1[6U][1U] = fma(av_6[7U], bv_0[1U][7U], acc_1[6U][1U]);
-                        _S28 = int(3);
+                        _S35 = int(3);
                         break;
                     }
-                    if(_S28 != int(3))
+                    if(_S35 != int(3))
                     {
-                        _S27 = _S28;
+                        _S34 = _S35;
                         break;
                     }
-                    _S27 = int(2);
+                    _S34 = int(2);
                     break;
                 }
-                if(_S27 != int(2))
+                if(_S34 != int(2))
                 {
                     break;
                 }
-                int _S29;
+                int _S36;
                 for(;;)
                 {
-                    int _S30;
+                    int _S37;
                     for(;;)
                     {
-                        if(7U >= _S9)
+                        if(7U >= _S16)
                         {
-                            _S30 = int(1);
+                            _S37 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_7;
-                        load8A_0(_S6 + 7U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_7, &kernelContext_3);
+                        load8A_0(_S13 + 7U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_7, &kernelContext_4);
                         acc_1[7U][0U] = fma(av_7[0U], bv_0[0U][0U], acc_1[7U][0U]);
                         acc_1[7U][1U] = fma(av_7[0U], bv_0[1U][0U], acc_1[7U][1U]);
                         acc_1[7U][0U] = fma(av_7[1U], bv_0[0U][1U], acc_1[7U][0U]);
@@ -568,34 +678,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[7U][1U] = fma(av_7[6U], bv_0[1U][6U], acc_1[7U][1U]);
                         acc_1[7U][0U] = fma(av_7[7U], bv_0[0U][7U], acc_1[7U][0U]);
                         acc_1[7U][1U] = fma(av_7[7U], bv_0[1U][7U], acc_1[7U][1U]);
-                        _S30 = int(3);
+                        _S37 = int(3);
                         break;
                     }
-                    if(_S30 != int(3))
+                    if(_S37 != int(3))
                     {
-                        _S29 = _S30;
+                        _S36 = _S37;
                         break;
                     }
-                    _S29 = int(2);
+                    _S36 = int(2);
                     break;
                 }
-                if(_S29 != int(2))
+                if(_S36 != int(2))
                 {
                     break;
                 }
-                int _S31;
+                int _S38;
                 for(;;)
                 {
-                    int _S32;
+                    int _S39;
                     for(;;)
                     {
-                        if(8U >= _S9)
+                        if(8U >= _S16)
                         {
-                            _S32 = int(1);
+                            _S39 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_8;
-                        load8A_0(_S6 + 8U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_8, &kernelContext_3);
+                        load8A_0(_S13 + 8U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_8, &kernelContext_4);
                         acc_1[8U][0U] = fma(av_8[0U], bv_0[0U][0U], acc_1[8U][0U]);
                         acc_1[8U][1U] = fma(av_8[0U], bv_0[1U][0U], acc_1[8U][1U]);
                         acc_1[8U][0U] = fma(av_8[1U], bv_0[0U][1U], acc_1[8U][0U]);
@@ -612,34 +722,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[8U][1U] = fma(av_8[6U], bv_0[1U][6U], acc_1[8U][1U]);
                         acc_1[8U][0U] = fma(av_8[7U], bv_0[0U][7U], acc_1[8U][0U]);
                         acc_1[8U][1U] = fma(av_8[7U], bv_0[1U][7U], acc_1[8U][1U]);
-                        _S32 = int(3);
+                        _S39 = int(3);
                         break;
                     }
-                    if(_S32 != int(3))
+                    if(_S39 != int(3))
                     {
-                        _S31 = _S32;
+                        _S38 = _S39;
                         break;
                     }
-                    _S31 = int(2);
+                    _S38 = int(2);
                     break;
                 }
-                if(_S31 != int(2))
+                if(_S38 != int(2))
                 {
                     break;
                 }
-                int _S33;
+                int _S40;
                 for(;;)
                 {
-                    int _S34;
+                    int _S41;
                     for(;;)
                     {
-                        if(9U >= _S9)
+                        if(9U >= _S16)
                         {
-                            _S34 = int(1);
+                            _S41 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_9;
-                        load8A_0(_S6 + 9U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_9, &kernelContext_3);
+                        load8A_0(_S13 + 9U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_9, &kernelContext_4);
                         acc_1[9U][0U] = fma(av_9[0U], bv_0[0U][0U], acc_1[9U][0U]);
                         acc_1[9U][1U] = fma(av_9[0U], bv_0[1U][0U], acc_1[9U][1U]);
                         acc_1[9U][0U] = fma(av_9[1U], bv_0[0U][1U], acc_1[9U][0U]);
@@ -656,34 +766,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[9U][1U] = fma(av_9[6U], bv_0[1U][6U], acc_1[9U][1U]);
                         acc_1[9U][0U] = fma(av_9[7U], bv_0[0U][7U], acc_1[9U][0U]);
                         acc_1[9U][1U] = fma(av_9[7U], bv_0[1U][7U], acc_1[9U][1U]);
-                        _S34 = int(3);
+                        _S41 = int(3);
                         break;
                     }
-                    if(_S34 != int(3))
+                    if(_S41 != int(3))
                     {
-                        _S33 = _S34;
+                        _S40 = _S41;
                         break;
                     }
-                    _S33 = int(2);
+                    _S40 = int(2);
                     break;
                 }
-                if(_S33 != int(2))
+                if(_S40 != int(2))
                 {
                     break;
                 }
-                int _S35;
+                int _S42;
                 for(;;)
                 {
-                    int _S36;
+                    int _S43;
                     for(;;)
                     {
-                        if(10U >= _S9)
+                        if(10U >= _S16)
                         {
-                            _S36 = int(1);
+                            _S43 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_10;
-                        load8A_0(_S6 + 10U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_10, &kernelContext_3);
+                        load8A_0(_S13 + 10U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_10, &kernelContext_4);
                         acc_1[10U][0U] = fma(av_10[0U], bv_0[0U][0U], acc_1[10U][0U]);
                         acc_1[10U][1U] = fma(av_10[0U], bv_0[1U][0U], acc_1[10U][1U]);
                         acc_1[10U][0U] = fma(av_10[1U], bv_0[0U][1U], acc_1[10U][0U]);
@@ -700,34 +810,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[10U][1U] = fma(av_10[6U], bv_0[1U][6U], acc_1[10U][1U]);
                         acc_1[10U][0U] = fma(av_10[7U], bv_0[0U][7U], acc_1[10U][0U]);
                         acc_1[10U][1U] = fma(av_10[7U], bv_0[1U][7U], acc_1[10U][1U]);
-                        _S36 = int(3);
+                        _S43 = int(3);
                         break;
                     }
-                    if(_S36 != int(3))
+                    if(_S43 != int(3))
                     {
-                        _S35 = _S36;
+                        _S42 = _S43;
                         break;
                     }
-                    _S35 = int(2);
+                    _S42 = int(2);
                     break;
                 }
-                if(_S35 != int(2))
+                if(_S42 != int(2))
                 {
                     break;
                 }
-                int _S37;
+                int _S44;
                 for(;;)
                 {
-                    int _S38;
+                    int _S45;
                     for(;;)
                     {
-                        if(11U >= _S9)
+                        if(11U >= _S16)
                         {
-                            _S38 = int(1);
+                            _S45 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_11;
-                        load8A_0(_S6 + 11U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_11, &kernelContext_3);
+                        load8A_0(_S13 + 11U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_11, &kernelContext_4);
                         acc_1[11U][0U] = fma(av_11[0U], bv_0[0U][0U], acc_1[11U][0U]);
                         acc_1[11U][1U] = fma(av_11[0U], bv_0[1U][0U], acc_1[11U][1U]);
                         acc_1[11U][0U] = fma(av_11[1U], bv_0[0U][1U], acc_1[11U][0U]);
@@ -744,34 +854,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[11U][1U] = fma(av_11[6U], bv_0[1U][6U], acc_1[11U][1U]);
                         acc_1[11U][0U] = fma(av_11[7U], bv_0[0U][7U], acc_1[11U][0U]);
                         acc_1[11U][1U] = fma(av_11[7U], bv_0[1U][7U], acc_1[11U][1U]);
-                        _S38 = int(3);
+                        _S45 = int(3);
                         break;
                     }
-                    if(_S38 != int(3))
+                    if(_S45 != int(3))
                     {
-                        _S37 = _S38;
+                        _S44 = _S45;
                         break;
                     }
-                    _S37 = int(2);
+                    _S44 = int(2);
                     break;
                 }
-                if(_S37 != int(2))
+                if(_S44 != int(2))
                 {
                     break;
                 }
-                int _S39;
+                int _S46;
                 for(;;)
                 {
-                    int _S40;
+                    int _S47;
                     for(;;)
                     {
-                        if(12U >= _S9)
+                        if(12U >= _S16)
                         {
-                            _S40 = int(1);
+                            _S47 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_12;
-                        load8A_0(_S6 + 12U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_12, &kernelContext_3);
+                        load8A_0(_S13 + 12U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_12, &kernelContext_4);
                         acc_1[12U][0U] = fma(av_12[0U], bv_0[0U][0U], acc_1[12U][0U]);
                         acc_1[12U][1U] = fma(av_12[0U], bv_0[1U][0U], acc_1[12U][1U]);
                         acc_1[12U][0U] = fma(av_12[1U], bv_0[0U][1U], acc_1[12U][0U]);
@@ -788,34 +898,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[12U][1U] = fma(av_12[6U], bv_0[1U][6U], acc_1[12U][1U]);
                         acc_1[12U][0U] = fma(av_12[7U], bv_0[0U][7U], acc_1[12U][0U]);
                         acc_1[12U][1U] = fma(av_12[7U], bv_0[1U][7U], acc_1[12U][1U]);
-                        _S40 = int(3);
+                        _S47 = int(3);
                         break;
                     }
-                    if(_S40 != int(3))
+                    if(_S47 != int(3))
                     {
-                        _S39 = _S40;
+                        _S46 = _S47;
                         break;
                     }
-                    _S39 = int(2);
+                    _S46 = int(2);
                     break;
                 }
-                if(_S39 != int(2))
+                if(_S46 != int(2))
                 {
                     break;
                 }
-                int _S41;
+                int _S48;
                 for(;;)
                 {
-                    int _S42;
+                    int _S49;
                     for(;;)
                     {
-                        if(13U >= _S9)
+                        if(13U >= _S16)
                         {
-                            _S42 = int(1);
+                            _S49 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_13;
-                        load8A_0(_S6 + 13U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_13, &kernelContext_3);
+                        load8A_0(_S13 + 13U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_13, &kernelContext_4);
                         acc_1[13U][0U] = fma(av_13[0U], bv_0[0U][0U], acc_1[13U][0U]);
                         acc_1[13U][1U] = fma(av_13[0U], bv_0[1U][0U], acc_1[13U][1U]);
                         acc_1[13U][0U] = fma(av_13[1U], bv_0[0U][1U], acc_1[13U][0U]);
@@ -832,34 +942,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[13U][1U] = fma(av_13[6U], bv_0[1U][6U], acc_1[13U][1U]);
                         acc_1[13U][0U] = fma(av_13[7U], bv_0[0U][7U], acc_1[13U][0U]);
                         acc_1[13U][1U] = fma(av_13[7U], bv_0[1U][7U], acc_1[13U][1U]);
-                        _S42 = int(3);
+                        _S49 = int(3);
                         break;
                     }
-                    if(_S42 != int(3))
+                    if(_S49 != int(3))
                     {
-                        _S41 = _S42;
+                        _S48 = _S49;
                         break;
                     }
-                    _S41 = int(2);
+                    _S48 = int(2);
                     break;
                 }
-                if(_S41 != int(2))
+                if(_S48 != int(2))
                 {
                     break;
                 }
-                int _S43;
+                int _S50;
                 for(;;)
                 {
-                    int _S44;
+                    int _S51;
                     for(;;)
                     {
-                        if(14U >= _S9)
+                        if(14U >= _S16)
                         {
-                            _S44 = int(1);
+                            _S51 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_14;
-                        load8A_0(_S6 + 14U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_14, &kernelContext_3);
+                        load8A_0(_S13 + 14U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_14, &kernelContext_4);
                         acc_1[14U][0U] = fma(av_14[0U], bv_0[0U][0U], acc_1[14U][0U]);
                         acc_1[14U][1U] = fma(av_14[0U], bv_0[1U][0U], acc_1[14U][1U]);
                         acc_1[14U][0U] = fma(av_14[1U], bv_0[0U][1U], acc_1[14U][0U]);
@@ -876,34 +986,34 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[14U][1U] = fma(av_14[6U], bv_0[1U][6U], acc_1[14U][1U]);
                         acc_1[14U][0U] = fma(av_14[7U], bv_0[0U][7U], acc_1[14U][0U]);
                         acc_1[14U][1U] = fma(av_14[7U], bv_0[1U][7U], acc_1[14U][1U]);
-                        _S44 = int(3);
+                        _S51 = int(3);
                         break;
                     }
-                    if(_S44 != int(3))
+                    if(_S51 != int(3))
                     {
-                        _S43 = _S44;
+                        _S50 = _S51;
                         break;
                     }
-                    _S43 = int(2);
+                    _S50 = int(2);
                     break;
                 }
-                if(_S43 != int(2))
+                if(_S50 != int(2))
                 {
                     break;
                 }
-                int _S45;
+                int _S52;
                 for(;;)
                 {
-                    int _S46;
+                    int _S53;
                     for(;;)
                     {
-                        if(15U >= _S9)
+                        if(15U >= _S16)
                         {
-                            _S46 = int(1);
+                            _S53 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_15;
-                        load8A_0(_S6 + 15U * (&kernelContext_3)->p_0->lda_0 + _S14, &av_15, &kernelContext_3);
+                        load8A_0(_S13 + 15U * (&kernelContext_4)->p_0->lda_0 + _S21, &av_15, &kernelContext_4);
                         acc_1[15U][0U] = fma(av_15[0U], bv_0[0U][0U], acc_1[15U][0U]);
                         acc_1[15U][1U] = fma(av_15[0U], bv_0[1U][0U], acc_1[15U][1U]);
                         acc_1[15U][0U] = fma(av_15[1U], bv_0[0U][1U], acc_1[15U][0U]);
@@ -920,18 +1030,18 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
                         acc_1[15U][1U] = fma(av_15[6U], bv_0[1U][6U], acc_1[15U][1U]);
                         acc_1[15U][0U] = fma(av_15[7U], bv_0[0U][7U], acc_1[15U][0U]);
                         acc_1[15U][1U] = fma(av_15[7U], bv_0[1U][7U], acc_1[15U][1U]);
-                        _S46 = int(3);
+                        _S53 = int(3);
                         break;
                     }
-                    if(_S46 != int(3))
+                    if(_S53 != int(3))
                     {
-                        _S45 = _S46;
+                        _S52 = _S53;
                         break;
                     }
-                    _S45 = int(2);
+                    _S52 = int(2);
                     break;
                 }
-                if(_S45 != int(2))
+                if(_S52 != int(2))
                 {
                     break;
                 }
@@ -948,21 +1058,21 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
     {
         ch_0 = 16U;
     }
-    uint i_0 = 0U;
+    uint i_2 = 0U;
     for(;;)
     {
-        if(i_0 < _S9)
+        if(i_2 < _S16)
         {
         }
         else
         {
             break;
         }
-        (*(&kernelContext_3)->red_0)[0U][lid_0] = acc_1[i_0][0U];
-        (*(&kernelContext_3)->red_0)[1U][lid_0] = acc_1[i_0][1U];
-        (*(&kernelContext_3)->red_0)[2U][lid_0] = acc_1[i_0][2U];
-        (*(&kernelContext_3)->red_0)[3U][lid_0] = acc_1[i_0][3U];
-        uint w_2 = _S10 / 2U;
+        (*(&kernelContext_4)->red_0)[0U][lid_0] = acc_1[i_2][0U];
+        (*(&kernelContext_4)->red_0)[1U][lid_0] = acc_1[i_2][1U];
+        (*(&kernelContext_4)->red_0)[2U][lid_0] = acc_1[i_2][2U];
+        (*(&kernelContext_4)->red_0)[3U][lid_0] = acc_1[i_2][3U];
+        uint w_2 = _S17 / 2U;
         for(;;)
         {
             if(w_2 > 0U)
@@ -975,21 +1085,21 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
             threadgroup_barrier(mem_flags::mem_threadgroup);
             if(lane_0 < w_2)
             {
-                if(0U < _S11)
+                if(0U < _S18)
                 {
-                    (*(&kernelContext_3)->red_0)[0U][lid_0] = (*(&kernelContext_3)->red_0)[0U][lid_0] + (*(&kernelContext_3)->red_0)[0U][lid_0 + w_2 * ch_0];
+                    (*(&kernelContext_4)->red_0)[0U][lid_0] = (*(&kernelContext_4)->red_0)[0U][lid_0] + (*(&kernelContext_4)->red_0)[0U][lid_0 + w_2 * ch_0];
                 }
-                if(1U < _S11)
+                if(1U < _S18)
                 {
-                    (*(&kernelContext_3)->red_0)[1U][lid_0] = (*(&kernelContext_3)->red_0)[1U][lid_0] + (*(&kernelContext_3)->red_0)[1U][lid_0 + w_2 * ch_0];
+                    (*(&kernelContext_4)->red_0)[1U][lid_0] = (*(&kernelContext_4)->red_0)[1U][lid_0] + (*(&kernelContext_4)->red_0)[1U][lid_0 + w_2 * ch_0];
                 }
-                if(2U < _S11)
+                if(2U < _S18)
                 {
-                    (*(&kernelContext_3)->red_0)[2U][lid_0] = (*(&kernelContext_3)->red_0)[2U][lid_0] + (*(&kernelContext_3)->red_0)[2U][lid_0 + w_2 * ch_0];
+                    (*(&kernelContext_4)->red_0)[2U][lid_0] = (*(&kernelContext_4)->red_0)[2U][lid_0] + (*(&kernelContext_4)->red_0)[2U][lid_0 + w_2 * ch_0];
                 }
-                if(3U < _S11)
+                if(3U < _S18)
                 {
-                    (*(&kernelContext_3)->red_0)[3U][lid_0] = (*(&kernelContext_3)->red_0)[3U][lid_0] + (*(&kernelContext_3)->red_0)[3U][lid_0 + w_2 * ch_0];
+                    (*(&kernelContext_4)->red_0)[3U][lid_0] = (*(&kernelContext_4)->red_0)[3U][lid_0] + (*(&kernelContext_4)->red_0)[3U][lid_0 + w_2 * ch_0];
                 }
             }
             w_2 = w_2 / 2U;
@@ -1000,22 +1110,23 @@ void store_0(uint idx_0, float acc_0, KernelContext_0 thread* kernelContext_2)
             uint cc_0 = 0U;
             for(;;)
             {
-                if(cc_0 < _S11)
+                if(cc_0 < _S18)
                 {
                 }
                 else
                 {
                     break;
                 }
-                if((col0_0 + cc_0) < ((&kernelContext_3)->p_0->n_0))
+                uint _S54 = col0_0 + cc_0;
+                if(_S54 < ((&kernelContext_4)->p_0->n_0))
                 {
-                    store_0(_S8 + i_0 * (&kernelContext_3)->p_0->ldc_0 + col0_0 + cc_0, (*(&kernelContext_3)->red_0)[cc_0][lid_0], &kernelContext_3);
+                    gemmStore_0(i_2, _S54, _S15 + i_2 * (&kernelContext_4)->p_0->ldc_0 + col0_0 + cc_0, (*(&kernelContext_4)->red_0)[cc_0][lid_0], &kernelContext_4);
                 }
                 cc_0 = cc_0 + 1U;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        i_0 = i_0 + 1U;
+        i_2 = i_2 + 1U;
     }
     return;
 }

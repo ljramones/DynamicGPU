@@ -57,11 +57,16 @@ abstract class GemmF16Conformance {
     static byte[] bytes(short[] h) { var b = ByteBuffer.allocate(2 * h.length).order(ByteOrder.nativeOrder()); for (short v : h) b.putShort(v); return b.array(); }
     static byte[] bytes(float[] f) { var b = ByteBuffer.allocate(4 * f.length).order(ByteOrder.nativeOrder()); for (float v : f) b.putFloat(v); return b.array(); }
 
+    /** Whether the kernel under test refuses {@code s}: SKINNY with m > 16 or A transposed. */
+    boolean refuses(Shape s) {
+        return gemm.algorithm(s) == Algorithm.SKINNY && (s.m() > GemmF16.SKINNY_MAX_M || s.transposeA());
+    }
+
     /** Multiplies on the GPU and checks every element of C; returns the largest error / bound. */
     double check(Shape s, long seed, boolean nanC) {
-        if (gemm.algorithm(s) == Algorithm.SKINNY && s.m() > GemmF16.SKINNY_MAX_M) {
+        if (refuses(s)) {
             try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(gemm.output()))); var e = device.encoder()) {
-                assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ga, gb, gc, s), "SKINNY refuses m > 16");
+                assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ga, gb, gc, s), "SKINNY refuses m > 16 and A^T");
             }
             return 0;
         }
@@ -106,7 +111,7 @@ abstract class GemmF16Conformance {
                 for (int j = 0; j < s.n(); j++) {
                     double sum = 0, abs = 0;
                     for (int q = 0; q < s.k(); q++) {
-                        double p = (double) Float.float16ToFloat(a[(int) (z * s.strideA() + (long) i * s.lda() + q)])
+                        double p = (double) Float.float16ToFloat(a[(int) s.aIndex(z, i, q)])
                                 * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
                         sum += p; abs += Math.abs(p);
                     }
@@ -175,6 +180,123 @@ abstract class GemmF16Conformance {
             check(Shape.ofTransposedB(3, 40, 48, 1f, 0f).withBatch(3, 3 * 48 + 1, 0, 3 * 40 + 7), seed++, false);
             check(Shape.of(2, 70, 24, 1f, 0.5f).withBatch(4, 2 * 24 + 1, 24 * 70 + 1, 2 * 70 + 3), seed++, false);
         });
+    }
+
+    /** A stored k x m (A^T B, the weight gradient): interior tiles, edges, a padded lda, B either way round, batches. */
+    @Test void transposedA() throws Exception {
+        eachKernel(() -> {
+            check(Shape.ofTransposedA(128, 128, 64, 1f, 0f), 41, false);
+            check(Shape.ofTransposedA(65, 63, 17, 1f, 0f), 42, false);
+            check(new Shape(70, 50, 90, 72, 50, 50, -0.75f, 0.5f, false, 1, 0, 0, 0, true), 43, false);
+            check(new Shape(64, 128, 96, 64, 96, 128, 1f, 0f, true, 1, 0, 0, 0, true), 44, false);   // A^T B^T
+            check(Shape.ofTransposedA(40, 33, 24, 1f, 0f).batched(3), 45, false);
+        });
+    }
+
+    static float[] floats(int count, SplittableRandom r) {
+        float[] f = new float[count];
+        for (int i = 0; i < count; i++) f[i] = (float) (r.nextDouble() * 2 - 1);
+        return f;
+    }
+
+    /**
+     * Multiplies with {@code epilogue} on the GPU and checks every element of C against the reference: bit for bit for
+     * a fixed-order kernel and an exact epilogue, else within the GEMM bound carried through the epilogue plus the
+     * device's exp error.
+     */
+    void checkEpilogue(Shape s, GemmF16.Epilogue ep, long seed) {
+        if (refuses(s)) return;
+        var r = new SplittableRandom(seed);
+        var output = gemm.output();
+        boolean fp32 = output == Precision.FP32;
+        short[] a = halves((int) (pad4(s.aBytes()) / 2), r), b = halves((int) (pad4(s.bBytes()) / 2), r);
+        int cLength = (int) (pad4(s.cBytes(output)) / output.bytes());
+        int biasLength = ep.bias() == GemmF16.Epilogue.Bias.ROW ? s.m() : s.n();
+        float[] c = floats(cLength, r), bias = floats(biasLength + 1, r), gate = floats(cLength, r), residual = floats(cLength, r);
+        if (!fp32) for (float[] f : new float[][] {c, bias, gate, residual}) for (int i = 0; i < f.length; i++) f[i] = Float.float16ToFloat(Float.floatToFloat16(f[i]));
+        ByteBuffer got;
+        try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(output)));
+             var gbias = buffer(pad4((long) output.bytes() * bias.length)); var ggate = buffer(pad4(s.cBytes(output)));
+             var gres = buffer(pad4(s.cBytes(output))); var e = device.encoder()) {
+            e.upload(ga, bytes(a)).upload(gb, bytes(b)).upload(gc, encode(c, fp32)).upload(gbias, encode(bias, fp32))
+                    .upload(ggate, encode(gate, fp32)).upload(gres, encode(residual, fp32));
+            gemm.encode(e, ga, gb, gc, s, ep, ep.bias() == GemmF16.Epilogue.Bias.NONE ? null : gbias, ep.gated() ? ggate : null,
+                    ep.residual() ? gres : null);
+            var read = e.download(gc);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
+            got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
+        }
+        Algorithm run = gemm.algorithm(s);
+        Algorithm order = run == Algorithm.SIMDGROUP_MATRIX ? Algorithm.TILED : run;
+        float[] ref = c.clone();
+        GemmF16.reference(order, a, b, ref, s, ep, bias, gate, residual);   // in FP32; rounded to half below for FP16 C
+        boolean bitwise = run != Algorithm.SIMDGROUP_MATRIX && ep.exact();
+        String what = run + " " + output + " " + ep + " " + s;
+        int differ = 0;
+        for (int i = 0; i < cLength; i++) {
+            float v = fp32 ? got.getFloat(4 * i) : Float.float16ToFloat(got.getShort(2 * i));
+            float expect = fp32 ? ref[i] : Float.float16ToFloat(Float.floatToFloat16(ref[i]));
+            if (Float.floatToRawIntBits(v) != Float.floatToRawIntBits(expect)) differ++;
+        }
+        if (bitwise) { assertEquals(0, differ, "elements differing from the reference for " + what); return; }
+        for (int z = 0; z < s.batch(); z++) {
+            for (int i = 0; i < s.m(); i++) {
+                for (int j = 0; j < s.n(); j++) {
+                    double abs = 0;
+                    for (int q = 0; q < s.k(); q++)
+                        abs += Math.abs((double) Float.float16ToFloat(a[(int) s.aIndex(z, i, q)]) * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]));
+                    int idx = (int) s.cIndex(z, i, j);
+                    // the GEMM bound, carried through bias (1), the activation (slope <= 1.13) and the gate (|gate| <= 1);
+                    // plus the device's exp and the epilogue's roundings, relative to the result
+                    double gemmBound = (s.k() + 2.0) * 0x1p-24 * (Math.abs(s.alpha()) * abs + Math.abs(s.beta() * c[idx]));
+                    double bound = 2 * gemmBound + 0x1p-17 * (Math.abs(ref[idx]) + 1);
+                    if (!fp32) bound += Math.abs(ref[idx]) * 0x1p-10 + 0x1p-24;
+                    double v = fp32 ? got.getFloat(4 * idx) : Float.float16ToFloat(got.getShort(2 * idx));
+                    assertTrue(Math.abs(v - ref[idx]) <= bound, "C[" + z + "][" + i + "][" + j + "] = " + v + ", reference " + ref[idx]
+                            + ", bound " + bound + " for " + what);
+                }
+            }
+        }
+    }
+
+    static byte[] encode(float[] f, boolean fp32) {
+        if (fp32) return bytes(f);
+        short[] h = new short[f.length + (f.length & 1)];
+        for (int i = 0; i < f.length; i++) h[i] = Float.floatToFloat16(f[i]);
+        return bytes(h);
+    }
+
+    /** Every epilogue step, alone and together, on the skinny and tiled shapes, with beta, a batch and A^T. */
+    @Test void epilogues() throws Exception {
+        var none = GemmF16.Epilogue.NONE;
+        var epilogues = new GemmF16.Epilogue[] {
+            none.withBias(GemmF16.Epilogue.Bias.COLUMN).withActivation(GemmF16.Epilogue.Activation.RELU),
+            none.withBias(GemmF16.Epilogue.Bias.ROW).withResidual(),
+            none.withActivation(GemmF16.Epilogue.Activation.GELU),
+            GemmF16.Epilogue.swiGlu(),
+            none.withBias(GemmF16.Epilogue.Bias.COLUMN).withActivation(GemmF16.Epilogue.Activation.RELU).withGate().withResidual(),
+            none.withBias(GemmF16.Epilogue.Bias.COLUMN).withActivation(GemmF16.Epilogue.Activation.GELU).withGate().withResidual(),
+        };
+        var shapes = new Shape[] {Shape.ofTransposedB(8, 70, 64, 1f, 0f), Shape.ofTransposedB(65, 70, 64, 1f, 0f),
+                new Shape(3, 66, 40, 40, 66, 70, 0.5f, 0.75f), Shape.ofTransposedB(128, 128, 64, 1f, 0f),
+                Shape.ofTransposedB(4, 40, 48, 1f, 0f).withBatch(2, 4 * 48, 0, 4 * 40 + 3), Shape.ofTransposedA(64, 64, 32, 1f, 0f)};
+        eachKernel(() -> {
+            long seed = 200;
+            for (var ep : epilogues) for (var s : shapes) checkEpilogue(s, ep, seed++);
+        });
+    }
+
+    /** The epilogue's operands are checked: given exactly when used, and large enough. */
+    @Test void rejectsMissingOrUnusedEpilogueOperands() {
+        var s = Shape.of(8, 8, 8, 1, 0);
+        var bias = GemmF16.Epilogue.NONE.withBias(GemmF16.Epilogue.Bias.COLUMN);
+        try (var g = GemmF16.create(device); var a = buffer(256); var b = buffer(256); var c = buffer(256); var small = buffer(16); var e = device.encoder()) {
+            assertThrows(IllegalArgumentException.class, () -> g.encode(e, a, b, c, s, bias, null, null, null), "bias missing");
+            assertThrows(IllegalArgumentException.class, () -> g.encode(e, a, b, c, s, bias, small, null, null), "bias too small");
+            assertThrows(IllegalArgumentException.class, () -> g.encode(e, a, b, c, s, GemmF16.Epilogue.NONE, a, null, null), "bias unused");
+            assertThrows(IllegalArgumentException.class, () -> g.encode(e, a, b, c, s, GemmF16.Epilogue.swiGlu(), null, small, null), "gate too small");
+            g.encode(e, a, b, c, s, bias, a, null, null);
+        }
     }
 
     /** A batch: dense, with B shared across the batch (stride 0), and with gaps between C matrices. */

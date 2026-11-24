@@ -1,5 +1,6 @@
 // The tiled GEMM, shared by gemm_f16.slang (FP32 C) and gemm_f16_h.slang (FP16 C), which define OUT_T and ENTRY and
-// include this file. C = alpha * A * B + beta * C, A (m x k) and B (k x n, or n x k with transB) in FP16, row-major
+// include this file. C = alpha * A * B + beta * C, A (m x k, or k x m with transA) and B (k x n, or n x k with
+// transB) in FP16, then the fused epilogue (gemm_common.slang), row-major
 // with leading dimensions lda, ldb and ldc (in elements). Group z is the batch index: matrix z of A, B and C starts
 // at z * strideA, z * strideB and z * strideC (a stride of 0 shares one matrix across the batch).
 //
@@ -17,26 +18,10 @@
 // as dynamically indexed arrays, which MoltenVK ran 14x slower (376 against 5261 GFLOP/s at 4096^3 on an M4 Max).
 // Measured alternatives on the same GPU: 128 x 128 tiles with 8 x 8 per thread, 3.6 TFLOP/s; k steps of 32,
 // 4.2 TFLOP/s; this kernel, 5.6 TFLOP/s on Metal.
-struct GemmParams
-{
-    uint m;
-    uint n;
-    uint k;
-    uint lda;
-    uint ldb;
-    uint ldc;
-    float alpha;
-    float beta;
-    uint transB;
-    uint strideA;
-    uint strideB;
-    uint strideC;
-};
-
+// A and B come first: Slang numbers Metal buffers in declaration order.
 [[vk::binding(0, 0)]] RWStructuredBuffer<half> a;
 [[vk::binding(1, 0)]] RWStructuredBuffer<half> b;
-[[vk::binding(2, 0)]] RWStructuredBuffer<OUT_T> c;
-[[vk::push_constant]] ConstantBuffer<GemmParams> p;
+#include "gemm_common.slang"
 
 static const uint BM = 64;
 static const uint BN = 64;
@@ -68,7 +53,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             uint e = lid * 4 + q;
             uint ar = e / BK, ak = e % BK;
             uint gr = row0 + ar, gk = k0 + ak;
-            tileA[ak][ar] = gr < p.m && gk < p.k ? float(a[baseA + gr * p.lda + gk]) : 0.0f;
+            uint ai = p.transA != 0 ? gk * p.lda + gr : gr * p.lda + gk;
+            tileA[ak][ar] = gr < p.m && gk < p.k ? float(a[baseA + ai]) : 0.0f;
             uint br = e / BN, bc = e % BN;
             uint hk = k0 + br, gc = col0 + bc;
             uint bi = p.transB != 0 ? gc * p.ldb + hk : hk * p.ldb + gc;
@@ -102,9 +88,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         {
             uint col = col0 + tx + 16 * j;
             if (col >= p.n) continue;
-            uint idx = baseC + r * p.ldc + col;
-            float v = p.beta == 0.0f ? p.alpha * acc[i][j] : p.alpha * acc[i][j] + p.beta * float(c[idx]);
-            c[idx] = OUT_T(v);
+            gemmStore(r, col, baseC + r * p.ldc + col, acc[i][j]);
         }
     }
 }
