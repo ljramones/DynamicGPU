@@ -108,7 +108,7 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 
 ### 1.6: Runtime II, queues and synchronization
 
-**Status: complete on branch `feat/runtime-queues`, ready to release as 1.6.0.** Done:
+**Status: complete, released as 1.6.0.** Done:
 - labels, names, tags, memory classes, queue counters and backend debug labels;
 - timeline fences (`GpuFence`);
 - the transfer queue;
