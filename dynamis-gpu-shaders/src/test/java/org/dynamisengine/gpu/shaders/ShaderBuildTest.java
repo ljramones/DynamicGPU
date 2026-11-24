@@ -13,7 +13,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Rebuilding DynamisGPU's Slang kernels (its own fma probe and the capability-tier conformance kernels) gives the
+ * Rebuilding DynamisGPU's Slang kernels (the fma probe, the capability-tier conformance kernels and the primitives) gives the
  * committed bytes: the build is deterministic and the committed outputs are current. Needs slangc, so the rebuild is
  * skipped where there is none (it runs on the Apple GPU runner).
  */
@@ -25,7 +25,9 @@ class ShaderBuildTest {
         new Library(Path.of("../dynamis-gpu-api/src/main/slang"),
             Path.of("../dynamis-gpu-api/src/main/resources/org/dynamisengine/gpu/api/compute/spi/kernels")),
         new Library(Path.of("../dynamis-gpu-test/src/main/slang"),
-            Path.of("../dynamis-gpu-test/src/main/resources/compute/tiers")));
+            Path.of("../dynamis-gpu-test/src/main/resources/compute/tiers")),
+        new Library(Path.of("../dynamis-gpu-primitives/src/main/slang"),
+            Path.of("../dynamis-gpu-primitives/src/main/resources/org/dynamisengine/gpu/primitives/kernels")));
   }
 
   @ParameterizedTest

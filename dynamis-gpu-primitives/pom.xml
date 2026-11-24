@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+           http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.dynamisengine</groupId>
+    <artifactId>dynamisgpu-parent</artifactId>
+    <version>1.1.0</version>
+  </parent>
+  <artifactId>dynamis-gpu-primitives</artifactId>
+  <name>DynamisGPU throughput primitives</name>
+  <!-- Throughput kernels (GEMM first) on the backend-neutral compute API, written in Slang and accuracy-bounded rather
+       than bit-exact. The exact twins of Vectrix's kernels are vectrix-gpu. -->
+  <dependencies>
+    <dependency><groupId>org.dynamisengine</groupId><artifactId>dynamis-gpu-api</artifactId></dependency>
+    <dependency><groupId>org.dynamisengine</groupId><artifactId>dynamis-gpu-test</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.dynamisengine</groupId><artifactId>dynamis-gpu-metal</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.dynamisengine</groupId><artifactId>dynamis-gpu-vulkan</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+  </dependencies>
+</project>

@@ -11,7 +11,7 @@ version, repository_arg = sys.argv[1:]
 repository = Path(repository_arg).resolve()
 out = repository.parent
 artifacts = ["dynamisgpu-parent", "dynamis-gpu-api", "dynamis-gpu-test",
-             "dynamis-gpu-vulkan", "dynamis-gpu-metal", "dynamis-gpu-shaders", "dynamis-gpu-vectrix"]
+             "dynamis-gpu-vulkan", "dynamis-gpu-metal", "dynamis-gpu-shaders", "dynamis-gpu-vectrix", "dynamis-gpu-primitives"]
 for artifact in artifacts:
     folder = repository / "org/dynamisengine" / artifact / version
     required = [folder / f"{artifact}-{version}.pom"]
@@ -50,6 +50,7 @@ org.dynamisengine:dynamis-gpu-vulkan:{version}.
 The dynamis-gpu-test artifact contains optional mocks and conformance tests.
 The dynamis-gpu-shaders artifact is the build-time Slang shader tool (ShaderBuild).
 The dynamis-gpu-vectrix artifact writes GPU data from Vectrix types; it depends on Vectrix.
+The dynamis-gpu-primitives artifact holds throughput kernels (GemmF16).
 Existing graphics contracts remain available. No benchmark artifact is published.
 
 Alternatively configure this directory's repository/ folder as a Maven file
@@ -75,7 +76,7 @@ set -eu
 bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$bundle"
 version=VERSION
-for artifact in dynamisgpu-parent dynamis-gpu-api dynamis-gpu-test dynamis-gpu-vulkan dynamis-gpu-metal dynamis-gpu-shaders dynamis-gpu-vectrix; do
+for artifact in dynamisgpu-parent dynamis-gpu-api dynamis-gpu-test dynamis-gpu-vulkan dynamis-gpu-metal dynamis-gpu-shaders dynamis-gpu-vectrix dynamis-gpu-primitives; do
   base="$bundle/repository/org/dynamisengine/$artifact/$version/$artifact-$version"
   if [ "$artifact" = dynamisgpu-parent ]; then
     mvn org.apache.maven.plugins:maven-install-plugin:3.2.0:install-file \\

@@ -1,0 +1,2 @@
+# name source entry: throughput kernels, built into src/main/resources/org/dynamisengine/gpu/primitives/kernels
+gemm_f16 gemm_f16.slang gemm_f16

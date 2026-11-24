@@ -22,6 +22,8 @@ CI (`.github/workflows/ci.yml`) runs on every push:
 - `dynamis-gpu-vectrix`: GPU data written from Vectrix types (transform layouts and writers, instance
   submission); the only module that depends on Vectrix. See [GPU data layouts](docs/gpu-data-layouts.md), which
   also covers `ShaderLayout` and vertex inputs in `dynamis-gpu-api`
+- `dynamis-gpu-primitives`: throughput kernels (first, `GemmF16`, a half-precision matrix multiply), accuracy-bounded;
+  see [Throughput primitives](docs/primitives.md)
 - `dynamis-gpu-shaders`: the shader build, which compiles Slang kernels to SPIR-V and Metal with every rounding kept
   and records their ABI for `KernelLibrary` (build-time tool)
 - `dynamis-gpu-vulkan`: LWJGL/Vulkan graphics and headless compute backend

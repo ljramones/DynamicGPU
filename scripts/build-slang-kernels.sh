@@ -13,3 +13,7 @@ tiers="$repo/dynamis-gpu-test/src/main/slang"
 java -cp dynamis-gpu-shaders/target/classes org.dynamisengine.gpu.shaders.ShaderBuild \
   --src "$tiers" --kernels "$tiers/kernels.list" \
   --out "$repo/dynamis-gpu-test/src/main/resources/compute/tiers"
+primitives="$repo/dynamis-gpu-primitives/src/main/slang"
+java -cp dynamis-gpu-shaders/target/classes org.dynamisengine.gpu.shaders.ShaderBuild \
+  --src "$primitives" --kernels "$primitives/kernels.list" \
+  --out "$repo/dynamis-gpu-primitives/src/main/resources/org/dynamisengine/gpu/primitives/kernels"
