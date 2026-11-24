@@ -55,8 +55,22 @@ public final class GemmF16 implements AutoCloseable {
          * report {@link GpuCapabilities#SUBGROUP_MATRIX_F16}. Within the bound; not promised bit for bit with
          * {@link #reference}.
          */
-        SIMDGROUP_MATRIX
+        SIMDGROUP_MATRIX,
+        /**
+         * The skinny GEMM for {@code m <= 16} ({@link #SKINNY_MAX_M}), the decode step of an LLM: B is streamed once
+         * with every row of A, so at {@code m = 1} it is limited by memory bandwidth. Every device with FP16; the
+         * same bits everywhere, bit for bit with {@link #referenceSkinny}, which sums in a fixed split order rather
+         * than in order of k. A and B are bound at offsets that are multiples of 4 bytes. @since 1.8.0
+         */
+        SKINNY
     }
+
+    /** The largest {@code m} {@link Algorithm#SKINNY} computes. @since 1.8.0 */
+    public static final int SKINNY_MAX_M = 16;
+    /** The skinny kernel's lanes per column: B transposed, and not (the summation order, see {@link #referenceSkinny}). */
+    static final int SKINNY_LANES_T = 32, SKINNY_LANES_N = 16, SKINNY_CHUNK_T = 8, SKINNY_CHUNK_N = 2;
+    /** Columns a group of the skinny kernel computes: B transposed, and not. */
+    static final int SKINNY_COLUMNS_T = 16, SKINNY_COLUMNS_N = 64;
 
     /**
      * A multiply's shape, scalars, B layout and batch. Leading dimensions and strides are in elements: row {@code r}
@@ -119,9 +133,15 @@ public final class GemmF16 implements AutoCloseable {
 
     /**
      * The algorithms by shape (1.7.0). Costs are relative GPU times measured on an Apple M4 Max (the
-     * {@code -Dgemm.shapes=true} sweep): the matrix kernel's 64 x 64 tiles waste most of their work when {@code m < 64},
-     * where TILED runs 1.5 to 1.9 times faster, except that with B transposed the matrix kernel still wins up to
-     * {@code m = 16}; from {@code m = 64} the matrix kernel runs 1.2 to 2.5 times faster.
+     * {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps):
+     * <ul>
+     * <li>the matrix kernel's 64 x 64 tiles waste most of their work when {@code m < 64}, where TILED runs 1.5 to 1.9
+     * times faster, except that with B transposed the matrix kernel still wins up to {@code m = 16}; from
+     * {@code m = 64} the matrix kernel runs 1.2 to 2.5 times faster;</li>
+     * <li>SKINNY (1.8.0) takes 0.14 of TILED's time at {@code m = 1} with B transposed (79% of the measured
+     * streaming-read bandwidth) and 0.5 at {@code m = 16}; without, 0.2 at {@code m = 1}, 0.8 at {@code m = 8}, and
+     * 1.55 times TILED's time at {@code m = 16}.</li>
+     * </ul>
      */
     public static final ShapeRegistry<Shape, Algorithm> REGISTRY = ShapeRegistry.<Shape, Algorithm>builder()
             .add("gemm.tiled", Algorithm.TILED, (d, s) -> supports(d, Algorithm.TILED), (d, s) -> 1.0,
@@ -129,19 +149,27 @@ public final class GemmF16 implements AutoCloseable {
             .add("gemm.simdgroup", Algorithm.SIMDGROUP_MATRIX, (d, s) -> supports(d, Algorithm.SIMDGROUP_MATRIX),
                     (d, s) -> s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5,
                     (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Precision.FP32))
+            .add("gemm.skinny", Algorithm.SKINNY, (d, s) -> supports(d, Algorithm.SKINNY) && s.m() <= SKINNY_MAX_M,
+                    (d, s) -> s.transposeB() ? 0.12 + 0.025 * s.m() : 0.1 + 0.09 * s.m(),
+                    (d, s) -> descriptor(d, Algorithm.SKINNY, Precision.FP32))
             .build();
 
     private final GpuDevice device;
-    private final GpuComputePipeline pipeline;
-    /** With shape dispatch (the default create on a device with both algorithms): the TILED pipeline; else null. */
-    private final GpuComputePipeline tiled;
+    /** The compiled algorithms: one, or with shape dispatch every algorithm the device supports. */
+    private final Map<Algorithm, GpuComputePipeline> pipelines;
+    /** With SKINNY: its vector build, for aligned operands with B transposed. */
+    private final GpuComputePipeline skinnyVector;
+    /** The single algorithm, or with shape dispatch the fastest overall (as reported by {@link #algorithm()}). */
     private final Algorithm algorithm;
+    private final boolean dispatch;
     private final Precision output;
     private final ParameterLayout layout;
 
-    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, GpuComputePipeline tiled, Algorithm algorithm, Precision output) {
-        this.device = device; this.pipeline = pipeline; this.tiled = tiled; this.algorithm = algorithm; this.output = output;
-        this.layout = ParameterLayout.of(KERNELS, kernel(output));   // the simdgroup kernel shares the block
+    private GemmF16(GpuDevice device, Map<Algorithm, GpuComputePipeline> pipelines, GpuComputePipeline skinnyVector,
+            Algorithm algorithm, boolean dispatch, Precision output) {
+        this.device = device; this.pipelines = pipelines; this.skinnyVector = skinnyVector;
+        this.algorithm = algorithm; this.dispatch = dispatch; this.output = output;
+        this.layout = ParameterLayout.of(KERNELS, kernel(output));   // every algorithm shares the block
     }
 
     /** As {@link #create(GpuDevice, Precision)} with an FP32 C. */
@@ -153,15 +181,27 @@ public final class GemmF16 implements AutoCloseable {
      * reproducible mode ({@code KitOptions}) it is TILED only.
      */
     public static GemmF16 create(GpuDevice device, Precision output) {
-        Algorithm best = fastest(device);
-        if (best == Algorithm.TILED) return create(device, Algorithm.TILED, output);
-        var primary = device.pipeline(descriptor(device, best, output));
-        try {
-            return new GemmF16(device, primary, device.pipeline(descriptor(device, Algorithm.TILED, output)), best, output);
-        } catch (RuntimeException e) {
-            primary.close();
-            throw e;
-        }
+        if (KitOptions.current().reproducible()) return create(device, Algorithm.TILED, output);
+        var algorithms = java.util.Arrays.stream(Algorithm.values()).filter(a -> supports(device, a)).toList();
+        if (algorithms.isEmpty()) return create(device, Algorithm.TILED, output);   // throws UNSUPPORTED
+        return compile(device, algorithms, fastest(device), true, output);
+    }
+
+    /** Compiles {@code algorithms} (and SKINNY's vector build) all or none. */
+    private static GemmF16 compile(GpuDevice device, List<Algorithm> algorithms, Algorithm primary, boolean dispatch, Precision output) {
+        var descriptors = new java.util.ArrayList<PipelineDescriptor>();
+        for (var a : algorithms) descriptors.add(descriptor(device, a, output));
+        boolean skinny = algorithms.contains(Algorithm.SKINNY);
+        if (skinny) descriptors.add(skinnyVectorDescriptor(output));
+        var set = PipelineSet.compile(device, descriptors);
+        var pipelines = new java.util.EnumMap<Algorithm, GpuComputePipeline>(Algorithm.class);
+        for (int i = 0; i < algorithms.size(); i++) pipelines.put(algorithms.get(i), set.get(i));
+        return new GemmF16(device, pipelines, skinny ? set.get(algorithms.size()) : null, primary, dispatch, output);
+    }
+
+    private static PipelineDescriptor skinnyVectorDescriptor(Precision output) {
+        return KERNELS.pipeline(output == Precision.FP32 ? "gemm_skinny_v" : "gemm_skinny_vh", List.of(Access.READ, Access.READ, Access.READ_WRITE),
+                Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16), Set.of());
     }
 
     /** Compiles {@code algorithm} with an FP32 C. */
@@ -169,7 +209,7 @@ public final class GemmF16 implements AutoCloseable {
 
     /** Compiles {@code algorithm} with C of type {@code output}; throws {@code UNSUPPORTED} where the device lacks it. */
     public static GemmF16 create(GpuDevice device, Algorithm algorithm, Precision output) {
-        return new GemmF16(device, device.pipeline(descriptor(device, algorithm, output)), null, algorithm, output);
+        return compile(device, List.of(algorithm), algorithm, false, output);
     }
 
     private static PipelineDescriptor descriptor(GpuDevice device, Algorithm algorithm, Precision output) {
@@ -177,6 +217,7 @@ public final class GemmF16 implements AutoCloseable {
         var accesses = List.of(Access.READ, Access.READ, Access.READ_WRITE);
         PipelineDescriptor descriptor = switch (algorithm) {
             case TILED -> KERNELS.pipeline(kernel(output), accesses, types, Set.of());
+            case SKINNY -> KERNELS.pipeline(output == Precision.FP32 ? "gemm_skinny" : "gemm_skinny_h", accesses, types, Set.of());
             case SIMDGROUP_MATRIX -> {
                 if (device.adapter().backend() != Backend.METAL)
                     throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
@@ -209,6 +250,13 @@ public final class GemmF16 implements AutoCloseable {
         String name = "GemmF16 " + algorithm + ", " + output + " C";
         var inputs = List.of("FP16", "FP16");
         String out = output + ", fl(fl(alpha acc) + fl(beta c))" + (output == Precision.FP16 ? " rounded once to half" : "");
+        if (algorithm == Algorithm.SKINNY) {
+            return new AccuracyContract(name, inputs, "FP32, k dealt to 32 lanes in chunks of 8 (B^T) or 16 lanes in chunks of 2, "
+                    + "each lane in order of k, then a fixed tree",
+                    out, AccuracyContract.Order.FIXED,
+                    new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound),
+                    output == Precision.FP32 ? "GemmF16.referenceSkinny" : "GemmF16.referenceSkinnyF16");
+        }
         if (algorithm == Algorithm.TILED) {
             return new AccuracyContract(name, inputs, "FP32, in order of k", out, AccuracyContract.Order.FIXED,
                     new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound),
@@ -225,7 +273,7 @@ public final class GemmF16 implements AutoCloseable {
     public static boolean supports(GpuDevice device, Algorithm algorithm) {
         var c = device.capabilities();
         if (!c.dataTypes().contains(GpuCapabilities.FP16)) return false;
-        return algorithm == Algorithm.TILED || device.adapter().backend() == Backend.METAL
+        return algorithm != Algorithm.SIMDGROUP_MATRIX || device.adapter().backend() == Backend.METAL
                 && c.shaderFeatures().contains(GpuCapabilities.SUBGROUP_MATRIX_F16);
     }
 
@@ -240,11 +288,11 @@ public final class GemmF16 implements AutoCloseable {
         }
     }
 
-    /** The algorithm this instance runs. */
+    /** The algorithm this instance runs: with shape dispatch, the fastest for large shapes. */
     public Algorithm algorithm() { return algorithm; }
 
     /** The algorithm {@link #encode} runs for {@code s}: with shape dispatch, the registry's choice. @since 1.7.0 */
-    public Algorithm algorithm(Shape s) { return tiled == null ? algorithm : REGISTRY.select(device, s); }
+    public Algorithm algorithm(Shape s) { return dispatch ? REGISTRY.select(device, s) : algorithm; }
 
     /** The element type of C. */
     public Precision output() { return output; }
@@ -256,10 +304,33 @@ public final class GemmF16 implements AutoCloseable {
         byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("k", s.k()).u32("lda", s.lda()).u32("ldb", s.ldb())
                 .u32("ldc", s.ldc()).f32("alpha", s.alpha()).f32("beta", s.beta()).bool("transB", s.transposeB())
                 .u32("strideA", s.strideA()).u32("strideB", s.strideB()).u32("strideC", s.strideC()).bytes();
-        var groups = new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
         Algorithm run = algorithm(s);
-        var p = run == algorithm ? pipeline : tiled;
-        return encoder.dispatch(p, Map.of(0, a, 1, b, 2, c), params, groups, run == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
+        if (run == Algorithm.SKINNY) {
+            boolean aligned = a.offset() % 4 == 0 && b.offset() % 4 == 0;
+            if (!dispatch && s.m() > SKINNY_MAX_M) throw new IllegalArgumentException("SKINNY needs m <= " + SKINNY_MAX_M + ": " + s);
+            if (!dispatch && !aligned) throw new IllegalArgumentException("SKINNY needs A and B at offsets that are multiples of 4 bytes");
+            if (!aligned) run = Algorithm.TILED;
+        }
+        var groups = switch (run) {
+            case SKINNY -> new Dimensions(Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N), 1, s.batch());
+            default -> new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
+        };
+        var pipeline = run == Algorithm.SKINNY && vectorized(s, a, b) ? skinnyVector : pipelines.get(run);
+        return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), params, groups, label(run));
+    }
+
+    /** Whether the skinny kernel's vector build applies: B transposed, every row on a multiple of 8 halves, 16-byte offsets. */
+    private static boolean vectorized(Shape s, GpuBuffer a, GpuBuffer b) {
+        return s.transposeB() && (s.k() | s.lda() | s.ldb() | s.strideA() | s.strideB()) % 8 == 0
+                && a.offset() % 16 == 0 && b.offset() % 16 == 0;
+    }
+
+    static String label(Algorithm algorithm) {
+        return switch (algorithm) {
+            case TILED -> "gemm.tiled";
+            case SIMDGROUP_MATRIX -> "gemm.simdgroup";
+            case SKINNY -> "gemm.skinny";
+        };
     }
 
     private static float product(short[] a, short[] b, Shape s, int z, int i, int j) {
@@ -288,6 +359,53 @@ public final class GemmF16 implements AutoCloseable {
         }
     }
 
+    /**
+     * The skinny kernel's sum for C[z][i][j] ({@link Algorithm#SKINNY}): element {@code q} of k goes to lane
+     * {@code (q / chunk) % L}, with {@code L} 32 and {@code chunk} 8 when B is transposed, 16 and 2 when not; each lane sums its products in order
+     * of {@code q} in FP32; then lane {@code t} takes lane {@code t + w} for {@code w = L/2, ..., 1}, and lane 0 holds
+     * the sum.
+     */
+    private static float skinnyProduct(short[] a, short[] b, Shape s, int z, int i, int j) {
+        int lanes = s.transposeB() ? SKINNY_LANES_T : SKINNY_LANES_N, chunk = s.transposeB() ? SKINNY_CHUNK_T : SKINNY_CHUNK_N;
+        float[] part = new float[lanes];
+        for (int q = 0; q < s.k(); q++) {
+            part[(q / chunk) % lanes] += Float.float16ToFloat(a[(int) (z * s.strideA() + (long) i * s.lda() + q)])
+                    * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
+        }
+        for (int w = lanes / 2; w > 0; w /= 2) for (int t = 0; t < w; t++) part[t] += part[t + w];
+        return part[0];
+    }
+
+    /**
+     * The CPU result of the {@link Algorithm#SKINNY} kernel with an FP32 C, bit for bit: as {@link #reference}, with
+     * the sum split over lanes in a fixed order (see the algorithm). @since 1.8.0
+     */
+    public static void referenceSkinny(short[] a, short[] b, float[] c, Shape s) {
+        for (int z = 0; z < s.batch(); z++) {
+            for (int i = 0; i < s.m(); i++) {
+                for (int j = 0; j < s.n(); j++) {
+                    float acc = skinnyProduct(a, b, s, z, i, j);
+                    int idx = (int) (z * s.strideC() + (long) i * s.ldc() + j);
+                    c[idx] = s.beta() == 0 ? s.alpha() * acc : s.alpha() * acc + s.beta() * c[idx];
+                }
+            }
+        }
+    }
+
+    /** As {@link #referenceSkinny}, with an FP16 C (raw bits): the FP32 result rounded once to the nearest half. @since 1.8.0 */
+    public static void referenceSkinnyF16(short[] a, short[] b, short[] c, Shape s) {
+        for (int z = 0; z < s.batch(); z++) {
+            for (int i = 0; i < s.m(); i++) {
+                for (int j = 0; j < s.n(); j++) {
+                    float acc = skinnyProduct(a, b, s, z, i, j);
+                    int idx = (int) (z * s.strideC() + (long) i * s.ldc() + j);
+                    float r = s.beta() == 0 ? s.alpha() * acc : s.alpha() * acc + s.beta() * Float.float16ToFloat(c[idx]);
+                    c[idx] = Float.floatToFloat16(r);
+                }
+            }
+        }
+    }
+
     /** As {@link #reference}, with an FP16 C (raw bits): the FP32 result rounded once to the nearest half. */
     public static void referenceF16(short[] a, short[] b, short[] c, Shape s) {
         for (int z = 0; z < s.batch(); z++) {
@@ -305,5 +423,9 @@ public final class GemmF16 implements AutoCloseable {
     /** The device this multiply runs on. */
     public GpuDevice device() { return device; }
 
-    @Override public void close() { PipelineSet.closeAll(pipeline, tiled); }
+    @Override public void close() {
+        var all = new java.util.ArrayList<AutoCloseable>(pipelines.values());
+        all.add(skinnyVector);
+        PipelineSet.closeAll(all.toArray(AutoCloseable[]::new));
+    }
 }

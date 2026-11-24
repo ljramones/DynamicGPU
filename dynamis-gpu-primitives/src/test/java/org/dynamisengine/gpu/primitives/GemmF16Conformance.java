@@ -59,6 +59,12 @@ abstract class GemmF16Conformance {
 
     /** Multiplies on the GPU and checks every element of C; returns the largest error / bound. */
     double check(Shape s, long seed, boolean nanC) {
+        if (gemm.algorithm(s) == Algorithm.SKINNY && s.m() > GemmF16.SKINNY_MAX_M) {
+            try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(gemm.output()))); var e = device.encoder()) {
+                assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ga, gb, gc, s), "SKINNY refuses m > 16");
+            }
+            return 0;
+        }
         var r = new SplittableRandom(seed);
         var output = gemm.output();
         // transfers move whole 32-bit words, so the half arrays are padded to an even length
@@ -79,15 +85,19 @@ abstract class GemmF16Conformance {
         }
         // bit for bit against the reference, every element (untouched elements must keep their initial bits)
         int differ = 0;
+        boolean skinny = gemm.algorithm(s) == Algorithm.SKINNY;
         if (fp32) {
-            float[] exact = cF.clone(); GemmF16.reference(a, b, exact, s);
+            float[] exact = cF.clone();
+            if (skinny) GemmF16.referenceSkinny(a, b, exact, s); else GemmF16.reference(a, b, exact, s);
             for (int i = 0; i < cLength; i++) if (Float.floatToRawIntBits(exact[i]) != Float.floatToRawIntBits(got.getFloat(4 * i))) differ++;
         } else {
-            short[] exact = cH.clone(); GemmF16.referenceF16(a, b, exact, s);
+            short[] exact = cH.clone();
+            if (skinny) GemmF16.referenceSkinnyF16(a, b, exact, s); else GemmF16.referenceF16(a, b, exact, s);
             for (int i = 0; i < cLength; i++) if (exact[i] != got.getShort(2 * i)) differ++;
         }
         String what = gemm.algorithm(s) + " " + output + " " + s;
-        if (gemm.algorithm(s) == Algorithm.TILED) assertEquals(0, differ, "elements differing from the reference for " + what);
+        if (gemm.contract().reproducible() || gemm.algorithm(s) != Algorithm.SIMDGROUP_MATRIX)
+            assertEquals(0, differ, "elements differing from the reference for " + what);
         else System.out.println("gemm " + gemm.algorithm() + " " + output + " " + s.m() + "x" + s.n() + "x" + s.k() + "x" + s.batch()
                 + (s.transposeB() ? " B^T" : "") + " differs from reference in " + differ + " of " + cLength);
         double worst = 0;
@@ -145,6 +155,28 @@ abstract class GemmF16Conformance {
         });
     }
 
+    /**
+     * The skinny shapes (m up to 16) every kernel computes: B either way round, k odd (the tail lane), rows that start
+     * on an odd element (read a half at a time), n odd (a half column pair), batches, and beta.
+     */
+    @Test void skinnyShapes() throws Exception {
+        eachKernel(() -> {
+            long seed = 100;
+            for (int m : new int[] {1, 2, 3, 8, 16}) {
+                check(Shape.ofTransposedB(m, 77, 301, 1f, 0f), seed++, false);
+                check(Shape.of(m, 131, 257, 1f, 0f), seed++, false);
+            }
+            check(Shape.ofTransposedB(1, 512, 4096, 1f, 0f), seed++, false);              // the vector build
+            check(Shape.ofTransposedB(5, 77, 304, -1f, 0.5f), seed++, false);
+            check(Shape.ofTransposedB(3, 40, 48, 1f, 0f).withBatch(3, 3 * 48, 0, 3 * 40 + 7), seed++, false);
+            check(Shape.of(1, 512, 1024, 1f, 0f), seed++, false);
+            check(new Shape(5, 33, 63, 65, 67, 35, -0.5f, 0.75f, true, 1, 0, 0, 0), seed++, false);   // odd lda and ldb
+            check(new Shape(4, 33, 63, 65, 35, 34, 2f, 1f), seed++, false);                         // odd lda, ldb, n
+            check(Shape.ofTransposedB(3, 40, 48, 1f, 0f).withBatch(3, 3 * 48 + 1, 0, 3 * 40 + 7), seed++, false);
+            check(Shape.of(2, 70, 24, 1f, 0.5f).withBatch(4, 2 * 24 + 1, 24 * 70 + 1, 2 * 70 + 3), seed++, false);
+        });
+    }
+
     /** A batch: dense, with B shared across the batch (stride 0), and with gaps between C matrices. */
     @Test void batches() throws Exception {
         eachKernel(() -> {
@@ -158,12 +190,12 @@ abstract class GemmF16Conformance {
     @Test void labelsItsDispatches() throws Exception {
         Assumptions.assumeTrue(device.capabilities().timestamps(), "needs timestamps");
         eachKernel(() -> {
-            var s = Shape.of(64, 64, 64, 1, 0);
+            var s = Shape.of(16, 64, 64, 1, 0);
             try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes(gemm.output())); var e = device.encoder()) {
                 e.profile().fill(ga, 0).fill(gb, 0).label("decode");
                 gemm.encode(e, ga, gb, gc, s);
                 var sub = device.queue().submit(e); assertTrue(sub.await(WAIT));
-                String expected = "decode/" + (gemm.algorithm() == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
+                String expected = "decode/" + GemmF16.label(gemm.algorithm());
                 assertEquals(expected, sub.dispatchTimings().getFirst().label());
             }
         }, Precision.FP32);
@@ -192,22 +224,21 @@ abstract class GemmF16Conformance {
      */
     @Test void dispatchesByShapeWithinLimits() {
         if (!GemmF16.supports(device, Algorithm.TILED)) return;
-        var shapes = new Shape[] {Shape.of(8, 300, 200, 1, 0), Shape.ofTransposedB(8, 300, 200, 1, 0), Shape.ofTransposedB(40, 300, 200, 1, 0),
-                Shape.of(128, 160, 96, 1, 0), Shape.ofTransposedB(96, 64, 72, 1, 0)};
+        var shapes = new Shape[] {Shape.of(16, 300, 200, 1, 0), Shape.ofTransposedB(8, 300, 200, 1, 0), Shape.ofTransposedB(40, 300, 200, 1, 0),
+                Shape.of(128, 160, 96, 1, 0), Shape.ofTransposedB(96, 64, 72, 1, 0), Shape.of(2, 300, 200, 1, 0)};
         for (var s : shapes) assertEquals(java.util.List.of(), GemmF16.REGISTRY.checkLimits(device, s), "limits for " + s);
         try (var g = GemmF16.create(device)) {
             gemm = g;
             for (var s : shapes) {
                 assertEquals(GemmF16.REGISTRY.select(device, s), g.algorithm(s), s.toString());
-                if (!GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX)) assertEquals(Algorithm.TILED, g.algorithm(s));
-                check(s, s.m() * 31L + s.n(), false);   // bit for bit where the registry picks TILED, else within the bound
+                check(s, s.m() * 31L + s.n(), false);   // bit for bit where the registry picks a fixed-order kernel
             }
-            if (GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX)) {
-                assertEquals(Algorithm.TILED, g.algorithm(shapes[0]), "skinny: tiled");
-                assertEquals(Algorithm.SIMDGROUP_MATRIX, g.algorithm(shapes[1]), "skinny with B transposed, m <= 16: matrix");
-                assertEquals(Algorithm.TILED, g.algorithm(shapes[2]), "m = 40, B transposed: tiled");
-                assertEquals(Algorithm.SIMDGROUP_MATRIX, g.algorithm(shapes[3]), "m >= 64: matrix");
-            }
+            assertEquals(Algorithm.TILED, g.algorithm(shapes[0]), "m = 16, B not transposed: tiled");
+            assertEquals(Algorithm.SKINNY, g.algorithm(shapes[1]), "m <= 16, B transposed: skinny");
+            assertEquals(Algorithm.TILED, g.algorithm(shapes[2]), "m = 40, B transposed: tiled");
+            assertEquals(Algorithm.SKINNY, g.algorithm(shapes[5]), "m = 2, B not transposed: skinny");
+            assertEquals(GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED,
+                    g.algorithm(shapes[3]), "m >= 64: matrix where available");
         } finally { gemm = null; }
     }
 
@@ -241,6 +272,62 @@ abstract class GemmF16Conformance {
                     double t = nanosPer(tiled, shape), x = nanosPer(matrix, shape);
                     System.out.printf("gemm shape %d x %d x %d %s: TILED %.1f us, SIMDGROUP_MATRIX %.1f us (%.2fx)%n", m[0], m[1], m[2],
                             shape.transposeB() ? "B^T" : "B", t / 1e3, x / 1e3, t / x);
+                }
+            }
+        }
+    }
+
+    /** GPU nanoseconds per run of {@code body}, the best of 4 rounds of {@code reps} back-to-back runs. */
+    double nanosPer(int reps, java.util.function.Consumer<GpuCommandEncoder> body) {
+        double best = Double.MAX_VALUE;
+        for (int round = 0; round < 4; round++) {
+            try (var e = device.encoder()) {
+                for (int i = 0; i < reps; i++) body.accept(e);
+                try (var sub = device.queue().submit(e)) {
+                    assertTrue(sub.await(WAIT));
+                    best = Math.min(best, sub.gpuTime().orElseThrow().toNanos() / (double) reps);
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * -Dgemm.decode=true: the decode products (m from 1 to 16) by algorithm, as GB/s of B and as a share of the
+     * device's streaming-read bandwidth, measured as a row sum (Reduce) over 256 MiB.
+     */
+    @Test void decodeBandwidth() {
+        Assumptions.assumeTrue(Boolean.getBoolean("gemm.decode"), "set -Dgemm.decode=true");
+        double stream = 0, copy;
+        long bytes = 256L << 20;
+        try (var reduce = Reduce.create(device); var x = buffer(bytes); var x2 = buffer(bytes); var y = buffer(1 << 16)) {
+            try (var e = device.encoder()) { e.fill(x, 0); try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); } }
+            for (int rows : new int[] {1 << 12, 1 << 14}) {
+                int cols = (int) (bytes / 4 / rows);
+                var xv = org.dynamisengine.gpu.api.compute.kit.StridedView.matrix(rows, cols);
+                var yv = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous(rows);
+                stream = Math.max(stream, bytes / nanosPer(8, e -> reduce.rows(e, Reduce.Op.SUM, x, xv, y, yv)));
+            }
+            copy = 2.0 * bytes / nanosPer(8, e -> e.copy(x, x2));
+        }
+        System.out.printf("gemm decode %s: streaming read %.0f GB/s (row sums), copy %.0f GB/s read + write%n", device.adapter().name(), stream, copy);
+        int[][] shapes = {{4096, 4096}, {11008, 4096}, {4096, 11008}};
+        for (var algorithm : Algorithm.values()) {
+            if (!GemmF16.supports(device, algorithm)) continue;
+            try (var g = GemmF16.create(device, algorithm)) {
+                for (int[] nk : shapes) {
+                    for (int m : new int[] {1, 2, 4, 8, 16}) {
+                        for (var shape : new Shape[] {Shape.ofTransposedB(m, nk[0], nk[1], 1, 0), Shape.of(m, nk[0], nk[1], 1, 0)}) {
+                            try (var ga = buffer(pad4(shape.aBytes())); var gb = buffer(pad4(shape.bBytes())); var gc = buffer(shape.cBytes()); var e0 = device.encoder()) {
+                                e0.fill(ga, 0).fill(gb, 0);
+                                try (var sub = device.queue().submit(e0)) { assertTrue(sub.await(WAIT)); }
+                                double ns = nanosPer(20, e -> g.encode(e, ga, gb, gc, shape));
+                                double gbs = shape.bBytes() / ns;
+                                System.out.printf("gemm decode %s m=%d n=%d k=%d %s: %.1f us, %.0f GB/s of B, %.0f%% of streaming%n", algorithm, m,
+                                        nk[0], nk[1], shape.transposeB() ? "B^T" : "B", ns / 1e3, gbs, 100 * gbs / stream);
+                            }
+                        }
+                    }
                 }
             }
         }

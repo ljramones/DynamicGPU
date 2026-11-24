@@ -1,6 +1,11 @@
 # name source entry: throughput kernels, built into src/main/resources/org/dynamisengine/gpu/primitives/kernels
 gemm_f16 gemm_f16.slang gemm_f16
 gemm_f16_h gemm_f16_h.slang gemm_f16_h
+# the GEMM family (1.8.0)
+gemm_skinny gemm_skinny.slang gemm_skinny
+gemm_skinny_h gemm_skinny_h.slang gemm_skinny_h
+gemm_skinny_v gemm_skinny_v.slang gemm_skinny_v
+gemm_skinny_vh gemm_skinny_vh.slang gemm_skinny_vh
 softmax_f32 softmax_f32.slang softmax_f32
 softmax_f16 softmax_f16.slang softmax_f16
 # kernel kit primitives (1.7.0): the operation is a specialization constant
