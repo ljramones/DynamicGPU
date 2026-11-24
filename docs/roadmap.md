@@ -60,8 +60,16 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - **Backends:** Vulkan reuses its command buffer and descriptor sets; Metal re-encodes from a frozen command list
     with nothing validated again.
   - **Use:** an LLM decode step is dozens of small dispatches per token, and this removes the per-token host cost.
+  - **Lifetime:** a recording retains every buffer and pipeline it uses until it is closed and its last submission
+    has completed, as submissions do now. Closing the host-side `GpuBuffer` while a recording holds it is legal, and
+    the storage stays until the recording lets go. Rebinding swaps what is retained.
+  - **One submission at a time:** a recording is submitted at most once at a time, and submitting it again waits for
+    the previous run. That keeps its descriptor sets and staging single-buffered.
   - **Acceptance:** replaying a 50-dispatch recording costs a small fraction of building it. The cost is measured
     and documented.
+- **Memory budget:** `MemoryStats` gains the device's budget and current usage, from `VK_EXT_memory_budget` or the
+  heap sizes on Vulkan, and `recommendedMaxWorkingSetSize` and `currentAllocatedSize` on Metal. Large-weight code can
+  then check headroom before allocating.
 - **Per-dispatch timing:**
   - Timestamps around each dispatch where the backend allows it (Vulkan everywhere; Metal at encoder boundaries on
     Apple GPUs).
@@ -98,6 +106,25 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 - **Cross-queue dependencies:** timeline semaphores on Vulkan, `MTLSharedEvent` on Metal.
   - **API:** a `GpuFence` that one submission signals and another waits on, without the host.
 - **Async transfer:** uploads of the next batch overlap compute of the current one.
+- **Indirect dispatch:** group counts read from a GPU buffer.
+  - **Use:** GPU-driven work whose size is only known on the GPU: culling, compaction, mixture-of-experts token
+    routing.
+  - **Backends:** `vkCmdDispatchIndirect`, and Metal `dispatchThreadgroupsWithIndirectBuffer`.
+- **Memory II, residency and aliasing:**
+  - **Residency** stays explicit through `Placement`: `PRIVATE` is device-resident (weights, KV pages, game resources
+    kept across frames), and `SHARED` is host-visible (staging, readbacks).
+  - **Transient arenas** are a scoped allocator whose buffers alias the same memory across scopes whose lifetimes
+    don't overlap. Examples are an attention layer's scratch reused by the next layer, or a frame's temporaries.
+    Aliasing is safe only between scopes ordered by the queue, and the arena checks that ordering. It is deliberate,
+    never implicit.
+  - **Lifetime across queues:** a buffer used by submissions on several queues is held until all of them complete.
+- **Interop with the engine (sketch, for game compute before the graphics breakup):**
+  - **Native handles:** export a buffer as `(VkBuffer, offset, size)` or `(MTLBuffer, offset, size)`, so
+    LightEngine's existing Vulkan and Metal code can bind DynamisGPU buffers. With pooling, the offset is not zero.
+  - **Vulkan, external command buffers:** record a DynamisGPU compute encoder into a command buffer the caller owns,
+    so compute runs inside a frame's command stream.
+  - **Synchronizing with graphics:** the shared fences from cross-queue dependencies, so compute and graphics
+    submissions order each other without the host.
 - **Acceptance:**
   - A stream of uploads interleaved with dependent compute is correct on every backend.
   - On hardware with a separate transfer engine, uploads overlap compute; the overlap is measured.
@@ -117,6 +144,12 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - **Parameter-block builder:** fields named and checked against the manifest.
   - **Grids:** linear-to-2D grids that respect the group-count limits.
   - **Checks:** 32-bit index limits, and extent, matrix and SoA checks.
+  - **Strided views as the norm:** a view type with a base offset, extents and per-dimension strides (in elements).
+    - **Shapes it covers:** dense, sliced, transposed, batched and interleaved or SoA layouts alike.
+    - **Checks:** one bounds check, on the largest index the view can reach.
+    - **Parameters:** parameter-block helpers that write a view's fields.
+    - **Rule:** new primitives take views; none re-implements stride arithmetic. A Slang header gives the matching
+      index arithmetic. This matters most for game data, which is often packed or interleaved.
   - **Lifecycle:** pipeline sets that compile together and close together, and placeholder buffers for absent
     optional arguments.
   - These are taken from vectrix-gpu's `Kernels`, `Rows` and `EngineBuffers` and the primitives' copies.
@@ -130,6 +163,32 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - Then a kernel can be compiled for a shape class instead of branching at run time.
 - **Shape-dispatched kernels:** a small registry that picks a kernel variant by shape and capability, with a
   measured heuristic, so callers keep one entry point.
+- **Resource limits for the heuristics:**
+  - **Device limits:** report what the shape registry and tile choices need. That is the maximum group-shared memory
+    (Vulkan `maxComputeSharedMemorySize`, Metal `maxThreadgroupMemoryLength`), the maximum threads per group, and the
+    subgroup size range.
+  - **Pipeline limits:** report what the compiled pipeline allows (Metal `maxTotalThreadsPerThreadgroup` and
+    `threadExecutionWidth`, which reflect register pressure; on Vulkan, the reflected group-shared usage).
+  - **Tests:** check that every registered variant respects them on each backend.
+- **Elementwise operations and reductions, early:** they are the building blocks that epilogues, norms and attention
+  share, so they come before the GEMM family.
+  - **Elementwise maps** (unary and binary, with broadcasting over views).
+  - **Fixed-order reductions** (sum, max, min, argmax) along an axis, and **scans**.
+  - **A NaN and infinity check.**
+  - Each is a public primitive and a Slang include. 1.10 keeps the model-specific kernels (norms, RoPE, sampling).
+- **Validation and debugging:**
+  - **A debug build of each kernel family**, selected with a system property. It adds bounds checks that report
+    through the existing kernel error buffers (`KernelErrors`), and is compiled out normally.
+  - **A reproducible mode** that forces the fixed-order algorithms (for example `GemmF16.Algorithm.TILED`) everywhere.
+  - **NaN tripwires:** the NaN check can be armed after chosen dispatches.
+  - **A cross-backend harness:** run one operation on two devices, for example native Metal and MoltenVK, and
+    report the first differing element against the operation's contract.
+  - **No printf:** shader printf is only available through Vulkan validation layers, so the error buffer is the
+    portable channel.
+- **Accuracy contracts as API:** every primitive publishes its contract as data. That is the input types, the
+  accumulation type, the output rounding, the order class (fixed and reproducible, or hardware order) and the error
+  bound, through an `AccuracyContract` record next to the documentation table. NNJava can then compare GPU results
+  (gradients included) with CPU references, using the stated tolerance instead of guessed ones.
 
 - **Where to start:**
   - **The copies to unify:**
@@ -168,6 +227,11 @@ backend.
   - BF16 inputs, converted exactly to FP32 in the kernel.
 
   BF16 is never narrowed to FP16, whose exponent range is smaller.
+- **Accumulation policy:**
+  - Every form states its accumulation type and order class in its `AccuracyContract`.
+  - FP32 accumulation is the default for FP16, BF16 and quantized inputs.
+  - Any narrower accumulation is a separate, explicitly named variant, never a silent choice.
+  - Fused epilogues state where their rounding happens: in FP32, before the output rounding.
 - **Column-major:** no new kernels. `C^T = B^T A^T` maps column-major onto the row-major forms; a helper and the
   documentation cover it.
 - **Vulkan cooperative matrices:** once there is NVIDIA, AMD or Intel hardware to test on.
@@ -211,7 +275,7 @@ backend.
 - **Sampling on the GPU:**
   - argmax, top-k, top-p and temperature, with a seeded generator;
   - logits never return to the host.
-- **Reductions and scans** as public primitives.
+- **Reductions and scans:** these arrive in 1.7; here they gain model-oriented fused forms such as a log-sum-exp.
 
 - **Where to start:**
   - **Row kernels:** they follow `softmax_body.slang`: one 256-thread group per row, fixed-tree reductions, and
@@ -269,6 +333,20 @@ These follow as the layers land.
   - graphics pipelines and the swapchain;
   - the LightEngine breakup;
   - more backends (an OpenGL fallback, WebGPU).
+
+## Review notes (2026-11-24)
+
+An independent review of this roadmap raised seven points, all adopted.
+
+| Point | Where it went |
+|---|---|
+| Strided, offset-rich views | 1.7 (kit) |
+| Residency and aliasing | 1.5 (recording lifetime, budget), 1.6 (arenas) |
+| Validation and debugging | 1.7 |
+| Elementwise operations and reductions earlier | 1.7 |
+| Resource limits | 1.7 |
+| Accumulation policy as contract | 1.7 (`AccuracyContract`), 1.8 (per form) |
+| Coexistence with game compute | 1.6 (indirect dispatch, native handles, external command buffers, shared fences) |
 
 ## Rules that hold throughout
 
