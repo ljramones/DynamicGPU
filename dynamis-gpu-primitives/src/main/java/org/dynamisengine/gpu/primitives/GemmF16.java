@@ -78,6 +78,46 @@ public final class GemmF16 implements AutoCloseable {
 
     static final int SMALL_TILE = 16;
 
+    /**
+     * The element type of A and B (1.8.0). Every algorithm takes FP16 and FP32; all but SIMDGROUP_MATRIX take BF16.
+     * FP16 and BF16 widen exactly to FP32 in the kernel, and their products are exact in FP32, so the fixed-order
+     * algorithms are bit for bit their references everywhere. FP32 products round, so each step is one fused
+     * multiply-add: bit for bit the references (which use {@code Math.fma}) on devices that report
+     * {@link GpuCapabilities#FUSED_FMA}, within the same bound elsewhere. BF16 is never narrowed to FP16, whose
+     * exponent range is smaller. Devices that flush FP32 subnormals (Apple GPUs) flush BF16 subnormal inputs too.
+     */
+    public enum Input {
+        FP16(2, "f16"), BF16(2, "bf16"), FP32(4, "f32");
+        private final int bytes;
+        private final String suffix;
+        Input(int bytes, String suffix) { this.bytes = bytes; this.suffix = suffix; }
+        /** Bytes per element. */
+        public int bytes() { return bytes; }
+        /** Whether a product of two elements is exact in FP32, so fma and a multiply then an add agree. */
+        public boolean exactProducts() { return this != FP32; }
+    }
+
+    /** Reads element {@code index} of A or B as FP32, exactly, for the CPU references. @since 1.8.0 */
+    @FunctionalInterface
+    public interface Elements {
+        float at(long index);
+        /** Halves given as raw bits. */
+        static Elements fp16(short[] h) { return i -> Float.float16ToFloat(h[Math.toIntExact(i)]); }
+        /** BF16 values given as raw bits (the upper half of an FP32). */
+        static Elements bf16(short[] b) { return i -> bf16ToFloat(b[Math.toIntExact(i)]); }
+        static Elements fp32(float[] f) { return i -> f[Math.toIntExact(i)]; }
+    }
+
+    /** The FP32 value of BF16 bits: exact. @since 1.8.0 */
+    public static float bf16ToFloat(short bits) { return Float.intBitsToFloat((bits & 0xFFFF) << 16); }
+
+    /** {@code value} rounded to the nearest BF16 (ties to even), as raw bits; NaN stays a quiet NaN. @since 1.8.0 */
+    public static short floatToBf16(float value) {
+        int x = Float.floatToRawIntBits(value);
+        if (Float.isNaN(value)) return (short) ((x >>> 16) | 0x40);
+        return (short) ((x + 0x7FFF + ((x >>> 16) & 1)) >>> 16);
+    }
+
     /** The largest {@code m} {@link Algorithm#SKINNY} computes. @since 1.8.0 */
     public static final int SKINNY_MAX_M = 16;
     /** The skinny kernel's lanes per column: B transposed, and not (the summation order, see {@link #referenceSkinny}). */
@@ -158,6 +198,9 @@ public final class GemmF16 implements AutoCloseable {
         public long aBytes() { return 2 * aElements(); }
         public long bBytes() { return 2 * bElements(); }
         public long cBytes() { return 4 * cElements(); }
+        /** The bytes A and B must hold for {@code input}. @since 1.8.0 */
+        public long aBytes(Input input) { return input.bytes() * aElements(); }
+        public long bBytes(Input input) { return input.bytes() * bElements(); }
         /** The bytes C must hold for {@code output}. */
         public long cBytes(Precision output) { return output.bytes() * cElements(); }
         /** Floating-point operations: {@code 2 m n k} per multiply. */
@@ -302,13 +345,13 @@ public final class GemmF16 implements AutoCloseable {
     /** The algorithms by shape: each supported one with its estimated time ({@link Costs}); 1.7.0, costs 1.8.0. */
     public static final ShapeRegistry<Shape, Algorithm> REGISTRY = ShapeRegistry.<Shape, Algorithm>builder()
             .add("gemm.tiled", Algorithm.TILED, (d, s) -> supports(d, Algorithm.TILED), (d, s) -> Costs.tiled(s),
-                    (d, s) -> descriptor(d, Algorithm.TILED, Precision.FP32))
+                    (d, s) -> descriptor(d, Algorithm.TILED, Input.FP16, Precision.FP32))
             .add("gemm.simdgroup", Algorithm.SIMDGROUP_MATRIX, (d, s) -> supports(d, Algorithm.SIMDGROUP_MATRIX),
-                    (d, s) -> Costs.simdgroup(s), (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Precision.FP32))
+                    (d, s) -> Costs.simdgroup(s), (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Input.FP16, Precision.FP32))
             .add("gemm.skinny", Algorithm.SKINNY, (d, s) -> supports(d, Algorithm.SKINNY) && Costs.skinnyApplies(s),
-                    (d, s) -> Costs.skinny(s), (d, s) -> descriptor(d, Algorithm.SKINNY, Precision.FP32))
+                    (d, s) -> Costs.skinny(s), (d, s) -> descriptor(d, Algorithm.SKINNY, Input.FP16, Precision.FP32))
             .add("gemm.small", Algorithm.SMALL, (d, s) -> supports(d, Algorithm.SMALL), (d, s) -> Costs.small(s),
-                    (d, s) -> descriptor(d, Algorithm.SMALL, Precision.FP32))
+                    (d, s) -> descriptor(d, Algorithm.SMALL, Input.FP16, Precision.FP32))
             .build();
 
     private final GpuDevice device;
@@ -319,6 +362,7 @@ public final class GemmF16 implements AutoCloseable {
     /** The single algorithm, or with shape dispatch the fastest overall (as reported by {@link #algorithm()}). */
     private final Algorithm algorithm;
     private final boolean dispatch;
+    private final Input input;
     private final Precision output;
     private final ParameterLayout layout;
     /** Binds the absent epilogue operands. */
@@ -328,9 +372,9 @@ public final class GemmF16 implements AutoCloseable {
     private ParameterLayout groupedLayout;
 
     private GemmF16(GpuDevice device, Map<Algorithm, GpuComputePipeline> pipelines, GpuComputePipeline skinnyVector,
-            Algorithm algorithm, boolean dispatch, Precision output) {
+            Algorithm algorithm, boolean dispatch, Input input, Precision output) {
         this.device = device; this.pipelines = pipelines; this.skinnyVector = skinnyVector;
-        this.algorithm = algorithm; this.dispatch = dispatch; this.output = output;
+        this.algorithm = algorithm; this.dispatch = dispatch; this.input = input; this.output = output;
         this.layout = ParameterLayout.of(KERNELS, kernel(output));   // every algorithm shares the block
     }
 
@@ -342,28 +386,44 @@ public final class GemmF16 implements AutoCloseable {
      * compiled and {@link #encode} picks one per shape from {@link #REGISTRY} ({@link #algorithm(Shape)}). In
      * reproducible mode ({@code KitOptions}) it is TILED only.
      */
-    public static GemmF16 create(GpuDevice device, Precision output) {
-        if (KitOptions.current().reproducible()) return create(device, Algorithm.TILED, output);
-        var algorithms = java.util.Arrays.stream(Algorithm.values()).filter(a -> supports(device, a)).toList();
-        if (algorithms.isEmpty()) return create(device, Algorithm.TILED, output);   // throws UNSUPPORTED
-        return compile(device, algorithms, fastest(device), true, output);
+    public static GemmF16 create(GpuDevice device, Precision output) { return create(device, Input.FP16, output); }
+
+    /**
+     * As {@link #create(GpuDevice, Precision)} with A and B of type {@code input}: every algorithm the device runs for
+     * that input is compiled, and {@link #encode} picks one per shape. For FP32 inputs the matrix algorithm is left
+     * out: on an M4 Max its FP32 SIMD-group matrices ran at 2.7 to 3.0 TFLOP/s at 4096^3, against the tiled kernel's
+     * 4.9 to 5.3 (create it explicitly to use it). @since 1.8.0
+     */
+    public static GemmF16 create(GpuDevice device, Input input, Precision output) {
+        if (KitOptions.current().reproducible()) return create(device, Algorithm.TILED, input, output);
+        var algorithms = java.util.Arrays.stream(Algorithm.values()).filter(a -> supports(device, a, input))
+                .filter(a -> a != Algorithm.SIMDGROUP_MATRIX || input != Input.FP32).toList();
+        if (algorithms.isEmpty()) return create(device, Algorithm.TILED, input, output);   // throws UNSUPPORTED
+        return compile(device, algorithms, fastest(device, input), true, input, output);
     }
 
     /** Compiles {@code algorithms} (and SKINNY's vector build) all or none. */
-    private static GemmF16 compile(GpuDevice device, List<Algorithm> algorithms, Algorithm primary, boolean dispatch, Precision output) {
+    private static GemmF16 compile(GpuDevice device, List<Algorithm> algorithms, Algorithm primary, boolean dispatch, Input input,
+            Precision output) {
         var descriptors = new java.util.ArrayList<PipelineDescriptor>();
-        for (var a : algorithms) descriptors.add(descriptor(device, a, output));
+        for (var a : algorithms) descriptors.add(descriptor(device, a, input, output));
         boolean skinny = algorithms.contains(Algorithm.SKINNY);
-        if (skinny) descriptors.add(skinnyVectorDescriptor(output));
+        if (skinny) descriptors.add(KERNELS.pipeline(kernel("gemm_skinny_v", input, output), ACCESSES, types(input, output), Set.of()));
         var set = PipelineSet.compile(device, descriptors);
         var pipelines = new java.util.EnumMap<Algorithm, GpuComputePipeline>(Algorithm.class);
         for (int i = 0; i < algorithms.size(); i++) pipelines.put(algorithms.get(i), set.get(i));
-        return new GemmF16(device, pipelines, skinny ? set.get(algorithms.size()) : null, primary, dispatch, output);
+        return new GemmF16(device, pipelines, skinny ? set.get(algorithms.size()) : null, primary, dispatch, input, output);
     }
 
-    private static PipelineDescriptor skinnyVectorDescriptor(Precision output) {
-        return KERNELS.pipeline(output == Precision.FP32 ? "gemm_skinny_v" : "gemm_skinny_vh", ACCESSES,
-                Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16), Set.of());
+    /** A kernel's name: the family, then the input type unless FP16 (the tiled family always names it), then _h for an FP16 C. */
+    static String kernel(String family, Input input, Precision output) {
+        String in = family.equals("gemm") ? "_" + input.suffix : input == Input.FP16 ? "" : "_" + input.suffix;
+        return family + in + (output == Precision.FP16 ? "_h" : "");
+    }
+
+    /** The data types a kernel needs: FP16 only for FP16 inputs or C. */
+    private static Set<String> types(Input input, Precision output) {
+        return input == Input.FP16 || output == Precision.FP16 ? Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16) : Set.of(GpuCapabilities.FP32);
     }
 
     /** Compiles {@code algorithm} with an FP32 C. */
@@ -371,25 +431,32 @@ public final class GemmF16 implements AutoCloseable {
 
     /** Compiles {@code algorithm} with C of type {@code output}; throws {@code UNSUPPORTED} where the device lacks it. */
     public static GemmF16 create(GpuDevice device, Algorithm algorithm, Precision output) {
-        return compile(device, List.of(algorithm), algorithm, false, output);
+        return create(device, algorithm, Input.FP16, output);
+    }
+
+    /** Compiles {@code algorithm} for {@code input} and {@code output}; {@code UNSUPPORTED} where the device lacks it. @since 1.8.0 */
+    public static GemmF16 create(GpuDevice device, Algorithm algorithm, Input input, Precision output) {
+        if (algorithm == Algorithm.SIMDGROUP_MATRIX && input == Input.BF16)
+            throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the SIMD-group matrix GEMM takes FP16 or FP32 inputs, not BF16");
+        return compile(device, List.of(algorithm), algorithm, false, input, output);
     }
 
     /** A, B, C, then the epilogue's bias, gate and residual. */
     private static final List<Access> ACCESSES = List.of(Access.READ, Access.READ, Access.READ_WRITE, Access.READ, Access.READ, Access.READ);
 
-    private static PipelineDescriptor descriptor(GpuDevice device, Algorithm algorithm, Precision output) {
-        var types = Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16);
+    private static PipelineDescriptor descriptor(GpuDevice device, Algorithm algorithm, Input input, Precision output) {
+        var types = types(input, output);
         var accesses = ACCESSES;
         PipelineDescriptor descriptor = switch (algorithm) {
-            case TILED -> KERNELS.pipeline(kernel(output), accesses, types, Set.of());
-            case SKINNY -> KERNELS.pipeline(output == Precision.FP32 ? "gemm_skinny" : "gemm_skinny_h", accesses, types, Set.of());
-            case SMALL -> KERNELS.pipeline(output == Precision.FP32 ? "gemm_small" : "gemm_small_h", accesses, types, Set.of());
+            case TILED -> KERNELS.pipeline(kernel("gemm", input, output), accesses, types, Set.of());
+            case SKINNY -> KERNELS.pipeline(kernel("gemm_skinny", input, output), accesses, types, Set.of());
+            case SMALL -> KERNELS.pipeline(kernel("gemm_small", input, output), accesses, types, Set.of());
             case SIMDGROUP_MATRIX -> {
                 if (device.adapter().backend() != Backend.METAL)
                     throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
                 var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
                 for (int i = 0; i < ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, ACCESSES.get(i), 4));
-                yield new PipelineDescriptor(simdgroupBundle(), kernel(output) + "_simdgroup",
+                yield new PipelineDescriptor(simdgroupBundle(), kernel("gemm", input, output) + "_simdgroup",
                         new BindingLayout(b, KERNELS.parameterBytes(kernel(output))), new Dimensions(128, 1, 1), Map.of(), types,
                         Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
             }
@@ -399,10 +466,10 @@ public final class GemmF16 implements AutoCloseable {
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "gemm_f16" : "gemm_f16_h"; }
 
-    /** The fastest algorithm, or TILED in reproducible mode ({@link KitOptions#reproducible()}). */
-    private static Algorithm fastest(GpuDevice device) {
+    /** The fastest algorithm for large shapes, or TILED in reproducible mode ({@link KitOptions#reproducible()}). */
+    private static Algorithm fastest(GpuDevice device, Input input) {
         if (KitOptions.current().reproducible()) return Algorithm.TILED;
-        return supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED;
+        return input != Input.FP32 && supports(device, Algorithm.SIMDGROUP_MATRIX, input) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED;
     }
 
     /**
@@ -419,16 +486,25 @@ public final class GemmF16 implements AutoCloseable {
      * GELU and SiLU add the device's {@code exp} error, propagated through the activation. @since 1.8.0
      */
     public static AccuracyContract contract(Algorithm algorithm, Precision output, Epilogue epilogue) {
-        Checks.notNull(epilogue, "epilogue");
+        return contract(algorithm, Input.FP16, output, epilogue);
+    }
+
+    /**
+     * The accuracy contract of {@code algorithm} with A and B of type {@code input}. With FP32 inputs a fixed-order
+     * algorithm is bit for bit its reference only where the device fuses fma ({@link GpuCapabilities#FUSED_FMA}), so
+     * the contract states the bound, with exactness under that condition. @since 1.8.0
+     */
+    public static AccuracyContract contract(Algorithm algorithm, Input input, Precision output, Epilogue epilogue) {
+        Checks.notNull(epilogue, "epilogue"); Checks.notNull(input, "input");
         String bound = "before alpha and beta, |C - exact| <= k 2^-24 sum |a b|"
                 + (epilogue.equals(Epilogue.NONE) ? "" : "; then the epilogue in FP32 (" + epilogue + ")")
                 + (epilogue.exact() ? "" : ", whose activation uses the device's exp")
                 + (output == Precision.FP16 ? "; then one rounding to half" : "");
-        String name = "GemmF16 " + algorithm + ", " + output + " C" + (epilogue.equals(Epilogue.NONE) ? "" : ", " + epilogue);
-        var inputs = List.of("FP16", "FP16");
+        String name = "GemmF16 " + algorithm + ", " + input + " A and B, " + output + " C" + (epilogue.equals(Epilogue.NONE) ? "" : ", " + epilogue);
+        var inputs = List.of(input.name(), input.name());
         String out = output + ", epilogue(fl(fl(alpha acc) + fl(beta c)))" + (output == Precision.FP16 ? " rounded once to half" : "");
         String accumulation = switch (algorithm) {
-            case TILED, SMALL -> "FP32, in order of k";
+            case TILED, SMALL -> "FP32, in order of k" + (input.exactProducts() ? "" : ", one fused multiply-add per step");
             case SKINNY -> "FP32, k dealt to 32 lanes in chunks of 8 (B^T) or 16 lanes in chunks of 2, each lane in order of k, then a fixed tree";
             case SIMDGROUP_MATRIX -> "FP32, the hardware's order";
         };
@@ -438,22 +514,36 @@ public final class GemmF16 implements AutoCloseable {
                 ? algorithm != Algorithm.SKINNY ? (output == Precision.FP32 ? "GemmF16.reference" : "GemmF16.referenceF16")
                         : (output == Precision.FP32 ? "GemmF16.referenceSkinny" : "GemmF16.referenceSkinnyF16")
                 : output == Precision.FP32 ? "GemmF16.reference(Algorithm, ...)" : "GemmF16.referenceF16(Algorithm, ...)";
-        var b = epilogue.exact() ? new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound)
+        var b = epilogue.exact() && input.exactProducts()
+                ? new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound)
+                : epilogue.exact() ? AccuracyContract.Bound.formula(bound + "; bit for bit the reference where the device reports FUSED_FMA")
                 : AccuracyContract.Bound.formula(bound);
         return new AccuracyContract(name, inputs, accumulation, out, AccuracyContract.Order.FIXED, b, reference);
     }
 
     /** This instance's accuracy contract. @since 1.7.0 */
-    public AccuracyContract contract() { return contract(algorithm, output); }
+    public AccuracyContract contract() { return contract(algorithm, input, output, Epilogue.NONE); }
 
     /** This instance's accuracy contract with {@code epilogue}. @since 1.8.0 */
-    public AccuracyContract contract(Epilogue epilogue) { return contract(algorithm, output, epilogue); }
+    public AccuracyContract contract(Epilogue epilogue) { return contract(algorithm, input, output, epilogue); }
 
-    /** Whether {@code device} can run {@code algorithm}. */
-    public static boolean supports(GpuDevice device, Algorithm algorithm) {
+    /** The element type of A and B. @since 1.8.0 */
+    public Input input() { return input; }
+
+    /** Whether {@code device} can run {@code algorithm} with FP16 inputs. */
+    public static boolean supports(GpuDevice device, Algorithm algorithm) { return supports(device, algorithm, Input.FP16); }
+
+    /**
+     * Whether {@code device} can run {@code algorithm} with {@code input} (and an FP32 C; an FP16 C also needs
+     * {@link GpuCapabilities#FP16}). The matrix algorithm needs native Metal's SIMD-group matrices and takes FP16 or
+     * FP32. @since 1.8.0
+     */
+    public static boolean supports(GpuDevice device, Algorithm algorithm, Input input) {
         var c = device.capabilities();
-        if (!c.dataTypes().contains(GpuCapabilities.FP16)) return false;
-        return algorithm != Algorithm.SIMDGROUP_MATRIX || device.adapter().backend() == Backend.METAL
+        boolean fp16 = c.dataTypes().contains(GpuCapabilities.FP16);
+        if (input == Input.FP16 && !fp16) return false;
+        if (algorithm != Algorithm.SIMDGROUP_MATRIX) return true;
+        return input != Input.BF16 && fp16 && device.adapter().backend() == Backend.METAL
                 && c.shaderFeatures().contains(GpuCapabilities.SUBGROUP_MATRIX_F16);
     }
 
@@ -472,7 +562,11 @@ public final class GemmF16 implements AutoCloseable {
     public Algorithm algorithm() { return algorithm; }
 
     /** The algorithm {@link #encode} runs for {@code s}: with shape dispatch, the registry's choice. @since 1.7.0 */
-    public Algorithm algorithm(Shape s) { return dispatch ? REGISTRY.select(device, s) : algorithm; }
+    public Algorithm algorithm(Shape s) {
+        if (!dispatch) return algorithm;
+        for (var e : REGISTRY.ranked(device, s)) if (pipelines.containsKey(e.variant())) return e.variant();
+        return Algorithm.TILED;
+    }
 
     /** The element type of C. */
     public Precision output() { return output; }
@@ -490,7 +584,7 @@ public final class GemmF16 implements AutoCloseable {
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer a, GpuBuffer b, GpuBuffer c, Shape s, Epilogue epilogue,
             GpuBuffer bias, GpuBuffer gate, GpuBuffer residual) {
         Checks.notNull(epilogue, "epilogue");
-        Checks.range(a, 0, s.aElements(), 2, "A"); Checks.range(b, 0, s.bElements(), 2, "B");
+        Checks.range(a, 0, s.aElements(), input.bytes(), "A"); Checks.range(b, 0, s.bElements(), input.bytes(), "B");
         Checks.range(c, 0, s.cElements(), output.bytes(), "C");
         bias = operand(bias, epilogue.bias() != Epilogue.Bias.NONE, epilogue.bias() == Epilogue.Bias.ROW ? s.m() : s.n(), "bias");
         gate = operand(gate, epilogue.gated(), s.cElements(), "gate");
@@ -536,17 +630,17 @@ public final class GemmF16 implements AutoCloseable {
         if (epilogue.gated()) cLength = Math.min(cLength, gate.bytes() / output.bytes());
         if (epilogue.residual()) cLength = Math.min(cLength, residual.bytes() / output.bytes());
         if (grouped == null) {
-            String kernel = output == Precision.FP32 ? "gemm_grouped" : "gemm_grouped_h";
+            String kernel = kernel("gemm_grouped", input, output);
             var accesses = new java.util.ArrayList<>(ACCESSES);
             accesses.add(Access.READ); accesses.add(Access.READ_WRITE);
-            grouped = device.pipeline(KERNELS.pipeline(kernel, accesses, Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16), Set.of()));
+            grouped = device.pipeline(KERNELS.pipeline(kernel, accesses, types(input, output), Set.of()));
             groupedLayout = ParameterLayout.of(KERNELS, kernel);
         }
         byte[] params = groupedLayout.block().u32("m", g.maxM()).u32("n", g.maxN()).u32("k", 0).u32("lda", 0).u32("ldb", 0).u32("ldc", 0)
                 .f32("alpha", g.alpha()).f32("beta", g.beta()).bool("transB", g.transposeB()).u32("strideA", 0).u32("strideB", 0)
                 .u32("strideC", 0).bool("transA", g.transposeA()).u32("bias", epilogue.bias().ordinal())
                 .u32("act", epilogue.activation().ordinal()).bool("gated", epilogue.gated()).bool("residual", epilogue.residual())
-                .u32("count", g.count()).u32("aLength", Math.min(a.bytes() / 2, MAX_INDEX)).u32("bLength", Math.min(b.bytes() / 2, MAX_INDEX))
+                .u32("count", g.count()).u32("aLength", Math.min(a.bytes() / input.bytes(), MAX_INDEX)).u32("bLength", Math.min(b.bytes() / input.bytes(), MAX_INDEX))
                 .u32("cLength", Math.min(cLength, MAX_INDEX)).u32("biasLength", Math.min(bias.bytes() / output.bytes(), MAX_INDEX)).bytes();
         var groups = new Dimensions(Math.ceilDiv(g.maxN(), TILE), Math.ceilDiv(g.maxM(), TILE), g.count());
         // a fresh error buffer per dispatch: closing the handle keeps it alive for the recorded commands
@@ -587,10 +681,11 @@ public final class GemmF16 implements AutoCloseable {
     }
 
     /** The fixed-order sum of {@code algorithm} for C[z][i][j], from halves given as raw bits. */
-    private static float sum(Algorithm algorithm, short[] a, short[] b, Shape s, int z, int i, int j) {
+    private static float sum(Algorithm algorithm, Elements a, Elements b, Shape s, int z, int i, int j) {
+        // one fused multiply-add per step, as the kernels: for FP16 and BF16 the products are exact, so it is acc + a b
         if (algorithm == Algorithm.TILED || algorithm == Algorithm.SMALL) {
             float acc = 0;
-            for (int q = 0; q < s.k(); q++) acc += Float.float16ToFloat(a[(int) s.aIndex(z, i, q)]) * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
+            for (int q = 0; q < s.k(); q++) acc = Math.fma(a.at(s.aIndex(z, i, q)), b.at(s.bIndex(z, q, j)), acc);
             return acc;
         }
         if (algorithm != Algorithm.SKINNY) throw new IllegalArgumentException(algorithm + " sums in the hardware's order: it has no reference");
@@ -598,7 +693,8 @@ public final class GemmF16 implements AutoCloseable {
         int lanes = s.transposeB() ? SKINNY_LANES_T : SKINNY_LANES_N, chunk = s.transposeB() ? SKINNY_CHUNK_T : SKINNY_CHUNK_N;
         float[] part = new float[lanes];
         for (int q = 0; q < s.k(); q++) {
-            part[(q / chunk) % lanes] += Float.float16ToFloat(a[(int) s.aIndex(z, i, q)]) * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
+            int l = (q / chunk) % lanes;
+            part[l] = Math.fma(a.at(s.aIndex(z, i, q)), b.at(s.bIndex(z, q, j)), part[l]);
         }
         for (int w = lanes / 2; w > 0; w /= 2) for (int t = 0; t < w; t++) part[t] += part[t + w];
         return part[0];
@@ -639,6 +735,16 @@ public final class GemmF16 implements AutoCloseable {
      */
     public static void reference(Algorithm algorithm, short[] a, short[] b, float[] c, Shape s, Epilogue epilogue,
             float[] bias, float[] gate, float[] residual) {
+        reference(algorithm, Elements.fp16(a), Elements.fp16(b), c, s, epilogue, bias, gate, residual);
+    }
+
+    /**
+     * As {@link #reference(Algorithm, short[], short[], float[], Shape, Epilogue, float[], float[], float[])} for any
+     * {@link Input}: A and B are read through {@code a} and {@code b}, and every step is one fused multiply-add.
+     * @since 1.8.0
+     */
+    public static void reference(Algorithm algorithm, Elements a, Elements b, float[] c, Shape s, Epilogue epilogue,
+            float[] bias, float[] gate, float[] residual) {
         for (int z = 0; z < s.batch(); z++) {
             for (int i = 0; i < s.m(); i++) {
                 for (int j = 0; j < s.n(); j++) {
@@ -656,6 +762,12 @@ public final class GemmF16 implements AutoCloseable {
      * FP16 C and FP16 operands (raw bits): the FP32 result rounded once to the nearest half. @since 1.8.0
      */
     public static void referenceF16(Algorithm algorithm, short[] a, short[] b, short[] c, Shape s, Epilogue epilogue,
+            short[] bias, short[] gate, short[] residual) {
+        referenceF16(algorithm, Elements.fp16(a), Elements.fp16(b), c, s, epilogue, bias, gate, residual);
+    }
+
+    /** As {@link #referenceF16(Algorithm, short[], short[], short[], Shape, Epilogue, short[], short[], short[])} for any {@link Input}. @since 1.8.0 */
+    public static void referenceF16(Algorithm algorithm, Elements a, Elements b, short[] c, Shape s, Epilogue epilogue,
             short[] bias, short[] gate, short[] residual) {
         for (int z = 0; z < s.batch(); z++) {
             for (int i = 0; i < s.m(); i++) {
@@ -706,6 +818,12 @@ public final class GemmF16 implements AutoCloseable {
      */
     public static void referenceGrouped(short[] a, short[] b, float[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
             float[] bias, float[] gate, float[] residual) {
+        referenceGrouped(Elements.fp16(a), Elements.fp16(b), c, problems, g, epilogue, bias, gate, residual);
+    }
+
+    /** As {@link #referenceGrouped(short[], short[], float[], List, Grouped, Epilogue, float[], float[], float[])} for any {@link Input}. @since 1.8.0 */
+    public static void referenceGrouped(Elements a, Elements b, float[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
+            float[] bias, float[] gate, float[] residual) {
         for (var q : problems) {
             for (int i = 0; i < q.m(); i++) {
                 for (int j = 0; j < q.n(); j++) {
@@ -722,6 +840,12 @@ public final class GemmF16 implements AutoCloseable {
     /** As {@link #referenceGrouped} with an FP16 C and FP16 operands (raw bits), rounded once to half. @since 1.8.0 */
     public static void referenceGroupedF16(short[] a, short[] b, short[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
             short[] bias, short[] gate, short[] residual) {
+        referenceGroupedF16(Elements.fp16(a), Elements.fp16(b), c, problems, g, epilogue, bias, gate, residual);
+    }
+
+    /** As {@link #referenceGroupedF16(short[], short[], short[], List, Grouped, Epilogue, short[], short[], short[])} for any {@link Input}. @since 1.8.0 */
+    public static void referenceGroupedF16(Elements a, Elements b, short[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
+            short[] bias, short[] gate, short[] residual) {
         for (var q : problems) {
             for (int i = 0; i < q.m(); i++) {
                 for (int j = 0; j < q.n(); j++) {
@@ -735,12 +859,12 @@ public final class GemmF16 implements AutoCloseable {
         }
     }
 
-    private static float groupedSum(short[] a, short[] b, Problem q, Grouped g, int i, int j) {
+    private static float groupedSum(Elements a, Elements b, Problem q, Grouped g, int i, int j) {
         float acc = 0;
         for (int t = 0; t < q.k(); t++) {
             long ai = q.offsetA() + (g.transposeA() ? (long) t * q.lda() + i : (long) i * q.lda() + t);
             long bi = q.offsetB() + (g.transposeB() ? (long) j * q.ldb() + t : (long) t * q.ldb() + j);
-            acc += Float.float16ToFloat(a[(int) ai]) * Float.float16ToFloat(b[(int) bi]);
+            acc = Math.fma(a.at(ai), b.at(bi), acc);
         }
         return acc;
     }

@@ -1,4 +1,5 @@
-// GEMM with FP16 A, B and C (FP32 accumulation, one rounding to half): the tiled kernel in gemm_body.slang.
+// GEMM, tiled kernel: FP16 A and B, FP16 C (gemm_body.slang). Generated with the kernel list.
+#define IN_KIND 0
 #define OUT_T half
 #define ENTRY gemm_f16_h
 #include "gemm_body.slang"

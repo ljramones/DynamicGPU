@@ -30,17 +30,44 @@ abstract class GemmF16Conformance {
     @AfterEach void close() { device.close(); }
 
     interface Body { void run() throws Exception; }
-    /** Runs {@code body} with {@link #gemm} set to each supported algorithm and each output in {@code outputs}. */
+    /**
+     * Runs {@code body} with {@link #gemm} set to each supported algorithm, for each input type and each output in
+     * {@code outputs}.
+     */
     void eachKernel(Body body, Precision... outputs) throws Exception {
         for (var algorithm : Algorithm.values()) {
-            for (var output : outputs) {
-                if (!GemmF16.supports(device, algorithm)) {
-                    assertThrows(ComputeException.class, () -> GemmF16.create(device, algorithm, output), algorithm + " refused");
-                    continue;
+            for (var input : GemmF16.Input.values()) {
+                for (var output : outputs) {
+                    if (!GemmF16.supports(device, algorithm, input)) {
+                        assertThrows(ComputeException.class, () -> GemmF16.create(device, algorithm, input, output), algorithm + " " + input + " refused");
+                        continue;
+                    }
+                    try (var g = GemmF16.create(device, algorithm, input, output)) { gemm = g; body.run(); } finally { gemm = null; }
                 }
-                try (var g = GemmF16.create(device, algorithm, output)) { gemm = g; body.run(); } finally { gemm = null; }
             }
         }
+    }
+
+    /** Values of A or B for the kernel under test's input type: the bytes to upload and how the references read them. */
+    record Data(byte[] bytes, GemmF16.Elements elements) { float at(long i) { return elements.at(i); } }
+
+    /** {@code count} random elements in [-1, 1] of {@code input} (count even for 2-byte types, so whole words move). */
+    static Data data(GemmF16.Input input, int count, SplittableRandom r) {
+        switch (input) {
+            case FP16 -> { short[] h = halves(count, r); return new Data(bytes(h), GemmF16.Elements.fp16(h)); }
+            case BF16 -> {
+                short[] h = new short[count];
+                for (int i = 0; i < count; i++) h[i] = GemmF16.floatToBf16((float) (r.nextDouble() * 2 - 1));
+                return new Data(bytes(h), GemmF16.Elements.bf16(h));
+            }
+            default -> { float[] f = floats(count, r); return new Data(bytes(f), GemmF16.Elements.fp32(f)); }
+        }
+    }
+
+    /** Whether the kernel under test must match its reference bit for bit on this device for {@code s}. */
+    boolean bitwise(Shape s) {
+        return gemm.algorithm(s) != Algorithm.SIMDGROUP_MATRIX
+                && (gemm.input().exactProducts() || device.capabilities().shaderFeatures().contains(GpuCapabilities.FUSED_FMA));
     }
     void eachKernel(Body body) throws Exception { eachKernel(body, Precision.values()); }
 
@@ -65,15 +92,17 @@ abstract class GemmF16Conformance {
     /** Multiplies on the GPU and checks every element of C; returns the largest error / bound. */
     double check(Shape s, long seed, boolean nanC) {
         if (refuses(s)) {
-            try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(gemm.output()))); var e = device.encoder()) {
+            try (var ga = buffer(pad4(s.aBytes(gemm.input()))); var gb = buffer(pad4(s.bBytes(gemm.input()))); var gc = buffer(pad4(s.cBytes(gemm.output())));
+                 var e = device.encoder()) {
                 assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, ga, gb, gc, s), "SKINNY refuses m > 16 and A^T");
             }
             return 0;
         }
         var r = new SplittableRandom(seed);
         var output = gemm.output();
-        // transfers move whole 32-bit words, so the half arrays are padded to an even length
-        short[] a = halves((int) (pad4(s.aBytes()) / 2), r), b = halves((int) (pad4(s.bBytes()) / 2), r);
+        var in = gemm.input();
+        // transfers move whole 32-bit words, so 2-byte arrays are padded to an even length
+        Data a = data(in, (int) (pad4(s.aBytes(in)) / in.bytes()), r), b = data(in, (int) (pad4(s.bBytes(in)) / in.bytes()), r);
         int cLength = (int) (pad4(s.cBytes(output)) / output.bytes());
         float[] cF = new float[cLength]; short[] cH = new short[cLength];
         for (int i = 0; i < cLength; i++) {
@@ -82,28 +111,28 @@ abstract class GemmF16Conformance {
         }
         boolean fp32 = output == Precision.FP32;
         ByteBuffer got;
-        try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(output))); var e = device.encoder()) {
-            e.upload(ga, bytes(a)).upload(gb, bytes(b)).upload(gc, fp32 ? bytes(cF) : bytes(cH));
+        try (var ga = buffer(a.bytes().length); var gb = buffer(b.bytes().length); var gc = buffer(pad4(s.cBytes(output))); var e = device.encoder()) {
+            e.upload(ga, a.bytes()).upload(gb, b.bytes()).upload(gc, fp32 ? bytes(cF) : bytes(cH));
             gemm.encode(e, ga, gb, gc, s); var read = e.download(gc);
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
             got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
         }
         // bit for bit against the reference, every element (untouched elements must keep their initial bits)
         int differ = 0;
-        boolean skinny = gemm.algorithm(s) == Algorithm.SKINNY;
+        Algorithm order = gemm.algorithm(s) == Algorithm.SIMDGROUP_MATRIX ? Algorithm.TILED : gemm.algorithm(s);
+        var none = GemmF16.Epilogue.NONE;
         if (fp32) {
             float[] exact = cF.clone();
-            if (skinny) GemmF16.referenceSkinny(a, b, exact, s); else GemmF16.reference(a, b, exact, s);
+            GemmF16.reference(order, a.elements(), b.elements(), exact, s, none, null, null, null);
             for (int i = 0; i < cLength; i++) if (Float.floatToRawIntBits(exact[i]) != Float.floatToRawIntBits(got.getFloat(4 * i))) differ++;
         } else {
             short[] exact = cH.clone();
-            if (skinny) GemmF16.referenceSkinnyF16(a, b, exact, s); else GemmF16.referenceF16(a, b, exact, s);
+            GemmF16.referenceF16(order, a.elements(), b.elements(), exact, s, none, null, null, null);
             for (int i = 0; i < cLength; i++) if (exact[i] != got.getShort(2 * i)) differ++;
         }
-        String what = gemm.algorithm(s) + " " + output + " " + s;
-        if (gemm.contract().reproducible() || gemm.algorithm(s) != Algorithm.SIMDGROUP_MATRIX)
-            assertEquals(0, differ, "elements differing from the reference for " + what);
-        else System.out.println("gemm " + gemm.algorithm() + " " + output + " " + s.m() + "x" + s.n() + "x" + s.k() + "x" + s.batch()
+        String what = gemm.algorithm(s) + " " + in + " " + output + " " + s;
+        if (bitwise(s)) assertEquals(0, differ, "elements differing from the reference for " + what);
+        else System.out.println("gemm " + gemm.algorithm(s) + " " + in + " " + output + " " + s.m() + "x" + s.n() + "x" + s.k() + "x" + s.batch()
                 + (s.transposeB() ? " B^T" : "") + " differs from reference in " + differ + " of " + cLength);
         double worst = 0;
         for (int z = 0; z < s.batch(); z++) {
@@ -111,8 +140,7 @@ abstract class GemmF16Conformance {
                 for (int j = 0; j < s.n(); j++) {
                     double sum = 0, abs = 0;
                     for (int q = 0; q < s.k(); q++) {
-                        double p = (double) Float.float16ToFloat(a[(int) s.aIndex(z, i, q)])
-                                * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
+                        double p = (double) a.at(s.aIndex(z, i, q)) * b.at(s.bIndex(z, q, j));
                         sum += p; abs += Math.abs(p);
                     }
                     int idx = (int) (z * s.strideC() + (long) i * s.ldc() + j);
@@ -209,16 +237,17 @@ abstract class GemmF16Conformance {
         var r = new SplittableRandom(seed);
         var output = gemm.output();
         boolean fp32 = output == Precision.FP32;
-        short[] a = halves((int) (pad4(s.aBytes()) / 2), r), b = halves((int) (pad4(s.bBytes()) / 2), r);
+        var in = gemm.input();
+        Data a = data(in, (int) (pad4(s.aBytes(in)) / in.bytes()), r), b = data(in, (int) (pad4(s.bBytes(in)) / in.bytes()), r);
         int cLength = (int) (pad4(s.cBytes(output)) / output.bytes());
         int biasLength = ep.bias() == GemmF16.Epilogue.Bias.ROW ? s.m() : s.n();
         float[] c = floats(cLength, r), bias = floats(biasLength + 1, r), gate = floats(cLength, r), residual = floats(cLength, r);
         if (!fp32) for (float[] f : new float[][] {c, bias, gate, residual}) for (int i = 0; i < f.length; i++) f[i] = Float.float16ToFloat(Float.floatToFloat16(f[i]));
         ByteBuffer got;
-        try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(output)));
+        try (var ga = buffer(a.bytes().length); var gb = buffer(b.bytes().length); var gc = buffer(pad4(s.cBytes(output)));
              var gbias = buffer(pad4((long) output.bytes() * bias.length)); var ggate = buffer(pad4(s.cBytes(output)));
              var gres = buffer(pad4(s.cBytes(output))); var e = device.encoder()) {
-            e.upload(ga, bytes(a)).upload(gb, bytes(b)).upload(gc, encode(c, fp32)).upload(gbias, encode(bias, fp32))
+            e.upload(ga, a.bytes()).upload(gb, b.bytes()).upload(gc, encode(c, fp32)).upload(gbias, encode(bias, fp32))
                     .upload(ggate, encode(gate, fp32)).upload(gres, encode(residual, fp32));
             gemm.encode(e, ga, gb, gc, s, ep, ep.bias() == GemmF16.Epilogue.Bias.NONE ? null : gbias, ep.gated() ? ggate : null,
                     ep.residual() ? gres : null);
@@ -229,9 +258,9 @@ abstract class GemmF16Conformance {
         Algorithm run = gemm.algorithm(s);
         Algorithm order = run == Algorithm.SIMDGROUP_MATRIX ? Algorithm.TILED : run;
         float[] ref = c.clone();
-        GemmF16.reference(order, a, b, ref, s, ep, bias, gate, residual);   // in FP32; rounded to half below for FP16 C
-        boolean bitwise = run != Algorithm.SIMDGROUP_MATRIX && ep.exact();
-        String what = run + " " + output + " " + ep + " " + s;
+        GemmF16.reference(order, a.elements(), b.elements(), ref, s, ep, bias, gate, residual);   // in FP32; rounded to half below for FP16 C
+        boolean bitwise = bitwise(s) && ep.exact();
+        String what = run + " " + in + " " + output + " " + ep + " " + s;
         int differ = 0;
         for (int i = 0; i < cLength; i++) {
             float v = fp32 ? got.getFloat(4 * i) : Float.float16ToFloat(got.getShort(2 * i));
@@ -244,7 +273,7 @@ abstract class GemmF16Conformance {
                 for (int j = 0; j < s.n(); j++) {
                     double abs = 0;
                     for (int q = 0; q < s.k(); q++)
-                        abs += Math.abs((double) Float.float16ToFloat(a[(int) s.aIndex(z, i, q)]) * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]));
+                        abs += Math.abs((double) a.at(s.aIndex(z, i, q)) * b.at(s.bIndex(z, q, j)));
                     int idx = (int) s.cIndex(z, i, j);
                     // the GEMM bound, carried through bias (1), the activation (slope <= 1.13) and the gate (|gate| <= 1);
                     // plus the device's exp and the epilogue's roundings, relative to the result
@@ -290,10 +319,10 @@ abstract class GemmF16Conformance {
      * Runs a grouped GEMM over {@code problems} in shared buffers of {@code aLen}, {@code bLen} and {@code cLen}
      * elements and returns C, or throws the submission's failure.
      */
-    float[] grouped(GemmF16 g, java.util.List<GemmF16.Problem> problems, GemmF16.Grouped gr, GemmF16.Epilogue ep, int aLen, int bLen,
-            int cLen, short[] a, short[] b, float[] c, float[] bias, float[] residual) {
+    float[] grouped(GemmF16 g, java.util.List<GemmF16.Problem> problems, GemmF16.Grouped gr, GemmF16.Epilogue ep, int cLen,
+            Data a, Data b, float[] c, float[] bias, float[] residual) {
         boolean fp32 = g.output() == Precision.FP32;
-        byte[] ab = bytes(java.util.Arrays.copyOf(a, a.length + (a.length & 1))), bb = bytes(java.util.Arrays.copyOf(b, b.length + (b.length & 1)));
+        byte[] ab = a.bytes(), bb = b.bytes();
         byte[] cb = encode(c, fp32), pb = GemmF16.Problem.encode(problems), biasb = encode(bias, fp32), rb = encode(residual, fp32);
         try (var ga = buffer(ab.length); var gb = buffer(bb.length); var gc = buffer(cb.length); var gp = buffer(pb.length);
              var gbias = buffer(biasb.length); var gres = buffer(rb.length); var e = device.encoder()) {
@@ -316,9 +345,11 @@ abstract class GemmF16Conformance {
     @Test void groupedProblems() {
         if (!GemmF16.supports(device, Algorithm.TILED)) return;
         var r = new SplittableRandom(77);
-        for (var output : Precision.values()) {
+        for (var input : GemmF16.Input.values()) for (var output : Precision.values()) {
+            if (!GemmF16.supports(device, Algorithm.TILED, input)) continue;
             boolean fp32 = output == Precision.FP32;
-            try (var g = GemmF16.create(device, Algorithm.TILED, output)) {
+            boolean bitwise = input.exactProducts() || device.capabilities().shaderFeatures().contains(GpuCapabilities.FUSED_FMA);
+            try (var g = GemmF16.create(device, Algorithm.TILED, input, output)) {
                 // experts: n = 48, k = 40, tokens 5, 0, 70, 33 (rows of one token matrix)
                 int n = 48, k = 40;
                 int[] tokens = {5, 0, 70, 33};
@@ -349,36 +380,42 @@ abstract class GemmF16Conformance {
                         biasLen = (int) Math.max(biasLen, q.offsetBias() + (cs.epilogue().bias() == GemmF16.Epilogue.Bias.ROW ? q.m() : q.n()));
                     }
                     bLen = Math.max(bLen, tokens.length * n * k);
-                    short[] a = halves(aLen + 1, r), b = halves(bLen + 1, r);
+                    Data a = data(input, aLen + 2 - (aLen & 1), r), b = data(input, bLen + 2 - (bLen & 1), r);
                     float[] c = floats(cLen, r), bias = floats(biasLen, r), residual = floats(cLen, r);
                     if (!fp32) for (float[] f : new float[][] {c, bias, residual}) for (int i = 0; i < f.length; i++) f[i] = Float.float16ToFloat(Float.floatToFloat16(f[i]));
-                    float[] got = grouped(g, cs.problems(), cs.grouped(), cs.epilogue(), a.length, b.length, cLen, a, b, c, bias, residual);
+                    float[] got = grouped(g, cs.problems(), cs.grouped(), cs.epilogue(), cLen, a, b, c, bias, residual);
                     float[] expect;
                     if (fp32) {
                         expect = c.clone();
-                        GemmF16.referenceGrouped(a, b, expect, cs.problems(), cs.grouped(), cs.epilogue(), bias, null, residual);
+                        GemmF16.referenceGrouped(a.elements(), b.elements(), expect, cs.problems(), cs.grouped(), cs.epilogue(), bias, null, residual);
                     } else {
                         short[] h = new short[cLen];
                         for (int i = 0; i < cLen; i++) h[i] = Float.floatToFloat16(c[i]);
                         short[] hb = new short[bias.length], hr = new short[cLen];
                         for (int i = 0; i < bias.length; i++) hb[i] = Float.floatToFloat16(bias[i]);
                         for (int i = 0; i < cLen; i++) hr[i] = Float.floatToFloat16(residual[i]);
-                        GemmF16.referenceGroupedF16(a, b, h, cs.problems(), cs.grouped(), cs.epilogue(), hb, null, hr);
+                        GemmF16.referenceGroupedF16(a.elements(), b.elements(), h, cs.problems(), cs.grouped(), cs.epilogue(), hb, null, hr);
                         expect = new float[cLen];
                         for (int i = 0; i < cLen; i++) expect[i] = Float.float16ToFloat(h[i]);
                     }
                     int differ = 0;
-                    for (int i = 0; i < cLen; i++) if (Float.floatToRawIntBits(got[i]) != Float.floatToRawIntBits(expect[i])) differ++;
-                    assertEquals(0, differ, "grouped " + output + " " + cs.problems().size() + " problems: elements differing from referenceGrouped");
+                    double worst = 0;
+                    for (int i = 0; i < cLen; i++) {
+                        if (Float.floatToRawIntBits(got[i]) != Float.floatToRawIntBits(expect[i])) differ++;
+                        worst = Math.max(worst, Math.abs(got[i] - expect[i]) / (Math.abs(expect[i]) + 1));
+                    }
+                    String what = "grouped " + input + " " + output + " " + cs.problems().size() + " problems";
+                    if (bitwise) assertEquals(0, differ, what + ": elements differing from referenceGrouped");
+                    else assertTrue(worst <= 0x1p-14, what + ": relative error " + worst);   // k <= 70 FP32 fma steps rounded twice
                 }
                 // a problem reaching past A, and one beyond maxM: the submission fails
                 var bad = java.util.List.of(GemmF16.Problem.dense(4, 8, 8, false, false, 0, 0, 0, 0), GemmF16.Problem.dense(4, 8, 8, false, false, 1000, 0, 32, 0));
                 var tooBig = java.util.List.of(GemmF16.Problem.dense(9, 8, 8, false, false, 0, 0, 0, 0));
-                short[] a = halves(64, r), b = halves(64, r);
+                Data a = data(input, 64, r), b = data(input, 64, r);
                 float[] c = new float[64], none = new float[2];
                 for (var problems : java.util.List.of(bad, tooBig)) {
                     var gr = new GemmF16.Grouped(problems.size(), 8, 8, 1f, 0f, false, false);
-                    var ex = assertThrows(ComputeException.class, () -> grouped(g, problems, gr, GemmF16.Epilogue.NONE, 64, 64, 64, a, b, c, none, c));
+                    var ex = assertThrows(ComputeException.class, () -> grouped(g, problems, gr, GemmF16.Epilogue.NONE, 64, a, b, c, none, c));
                     assertEquals(ComputeException.Code.KERNEL_ERROR, ex.code(), "an out-of-range problem fails its submission");
                 }
             }
@@ -412,7 +449,7 @@ abstract class GemmF16Conformance {
         Assumptions.assumeTrue(device.capabilities().timestamps(), "needs timestamps");
         eachKernel(() -> {
             var s = Shape.of(16, 64, 64, 1, 0);
-            try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes(gemm.output())); var e = device.encoder()) {
+            try (var ga = buffer(s.aBytes(gemm.input())); var gb = buffer(s.bBytes(gemm.input())); var gc = buffer(s.cBytes(gemm.output())); var e = device.encoder()) {
                 e.profile().fill(ga, 0).fill(gb, 0).label("decode");
                 gemm.encode(e, ga, gb, gc, s);
                 var sub = device.queue().submit(e); assertTrue(sub.await(WAIT));
@@ -460,11 +497,19 @@ abstract class GemmF16Conformance {
                     g.algorithm(shapes[2]), "512 x 512: matrix where available, else tiled");
             assertEquals(Algorithm.SMALL, g.algorithm(shapes[3]), "too small for skinny: small");
         } finally { gemm = null; }
+        // BF16 has no matrix kernel, and dispatch leaves out FP32's, which is slower than tiled
+        for (var in : new GemmF16.Input[] {GemmF16.Input.BF16, GemmF16.Input.FP32}) {
+            try (var g = GemmF16.create(device, in, Precision.FP32)) {
+                assertEquals(Algorithm.TILED, g.algorithm(shapes[2]), in + ", 512 x 512: tiled");
+                assertEquals(Algorithm.SKINNY, g.algorithm(shapes[0]), in + ", decode: skinny");
+                assertEquals(Algorithm.TILED, g.algorithm(), in + ": no matrix kernel by default");
+            }
+        }
     }
 
     /** GPU nanoseconds per multiply of {@code s} with {@code g}: the best of 4 rounds of back-to-back dispatches. */
     double nanosPer(GemmF16 g, Shape s) {
-        try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
+        try (var ga = buffer(s.aBytes(g.input())); var gb = buffer(s.bBytes(g.input())); var gc = buffer(s.cBytes())) {
             int reps = (int) Math.max(4, Math.min(Integer.getInteger("gemm.reps", 2000), 4e10 / s.flops()));
             double best = Double.MAX_VALUE;
             for (int round = 0; round < 4; round++) {
@@ -547,16 +592,16 @@ abstract class GemmF16Conformance {
         System.out.printf("gemm decode %s: streaming read %.0f GB/s (row sums), copy %.0f GB/s read + write%n", device.adapter().name(), stream, copy);
         int[][] shapes = {{4096, 4096}, {11008, 4096}, {4096, 11008}};
         for (var algorithm : Algorithm.values()) {
-            if (!GemmF16.supports(device, algorithm)) continue;
-            try (var g = GemmF16.create(device, algorithm)) {
+            if (!GemmF16.supports(device, algorithm, benchInput())) continue;
+            try (var g = GemmF16.create(device, algorithm, benchInput(), Precision.FP32)) {
                 for (int[] nk : shapes) {
                     for (int m : new int[] {1, 2, 4, 8, 16}) {
                         for (var shape : new Shape[] {Shape.ofTransposedB(m, nk[0], nk[1], 1, 0), Shape.of(m, nk[0], nk[1], 1, 0)}) {
-                            try (var ga = buffer(pad4(shape.aBytes())); var gb = buffer(pad4(shape.bBytes())); var gc = buffer(shape.cBytes()); var e0 = device.encoder()) {
+                            try (var ga = buffer(pad4(shape.aBytes(g.input()))); var gb = buffer(pad4(shape.bBytes(g.input()))); var gc = buffer(shape.cBytes()); var e0 = device.encoder()) {
                                 e0.fill(ga, 0).fill(gb, 0);
                                 try (var sub = device.queue().submit(e0)) { assertTrue(sub.await(WAIT)); }
                                 double ns = nanosPer(20, e -> g.encode(e, ga, gb, gc, shape));
-                                double gbs = shape.bBytes() / ns;
+                                double gbs = shape.bBytes(g.input()) / ns;
                                 System.out.printf("gemm decode %s m=%d n=%d k=%d %s: %.1f us, %.0f GB/s of B, %.0f%% of streaming%n", algorithm, m,
                                         nk[0], nk[1], shape.transposeB() ? "B^T" : "B", ns / 1e3, gbs, 100 * gbs / stream);
                             }
@@ -567,6 +612,9 @@ abstract class GemmF16Conformance {
         }
     }
 
+    /** The input type of the benchmarks: -Dgemm.input=FP16 (default), BF16 or FP32. */
+    static GemmF16.Input benchInput() { return GemmF16.Input.valueOf(System.getProperty("gemm.input", "FP16")); }
+
     /** -Dgemm.benchmark=true: GFLOP/s for square multiplies over back-to-back dispatches, by GPU time and by wall time. */
     @Test void benchmark() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
@@ -574,9 +622,10 @@ abstract class GemmF16Conformance {
     }
 
     private void benchmarkOne() {
+        if (gemm.algorithm() == Algorithm.SKINNY) return;   // decode shapes only: -Dgemm.decode=true
         for (int size : new int[] {512, 1024, 2048, 4096}) {
             for (var s : new Shape[] {Shape.of(size, size, size, 1, 0), Shape.ofTransposedB(size, size, size, 1, 0)}) {
-                try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
+                try (var ga = buffer(s.aBytes(gemm.input())); var gb = buffer(s.bBytes(gemm.input())); var gc = buffer(s.cBytes())) {
                     int reps = Math.max(2, (int) (2e11 / s.flops()));
                     double best = Double.MAX_VALUE, bestGpu = Double.MAX_VALUE;
                     for (int round = 0; round < 4; round++) {
@@ -590,8 +639,8 @@ abstract class GemmF16Conformance {
                         }
                         best = Math.min(best, (System.nanoTime() - t0) / 1e9);
                     }
-                    System.out.printf("gemm %s %s %s %d^3: %.0f GFLOP/s by GPU time, %.0f by wall time (%d per submission)%n", device.adapter().name(),
-                            gemm.algorithm(), s.transposeB() ? "B^T" : "B", size, reps * s.flops() / bestGpu / 1e9, reps * s.flops() / best / 1e9, reps);
+                    System.out.printf("gemm %s %s %s %s %d^3: %.0f GFLOP/s by GPU time, %.0f by wall time (%d per submission)%n", device.adapter().name(),
+                            gemm.algorithm(), gemm.input(), s.transposeB() ? "B^T" : "B", size, reps * s.flops() / bestGpu / 1e9, reps * s.flops() / best / 1e9, reps);
                 }
             }
         }

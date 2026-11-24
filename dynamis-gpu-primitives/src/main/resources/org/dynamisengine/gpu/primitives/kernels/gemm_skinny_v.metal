@@ -67,12 +67,12 @@ GemmProblem_0 gemmBatchProblem_0(uint z_0, KernelContext_0 thread* kernelContext
     return q_0;
 }
 
-float lowHalf_0(uint w_0)
+float wordLo_0(uint w_0)
 {
     return (as_type<half>((ushort)((w_0 & 65535U))));
 }
 
-float highHalf_0(uint w_1)
+float wordHi_0(uint w_1)
 {
     return (as_type<half>((ushort)((w_1 >> 16U))));
 }
@@ -81,14 +81,14 @@ void load8B_0(uint e_0, array<float, int(8)> thread* v_0, KernelContext_0 thread
 {
     uint4 device* _S1 = kernelContext_1->b_0+(e_0 >> 3U);
     uint4 _S2 = *_S1;
-    (*v_0)[0U] = lowHalf_0((*_S1)[0U]);
-    (*v_0)[1U] = highHalf_0(_S2[0U]);
-    (*v_0)[2U] = lowHalf_0(_S2[1U]);
-    (*v_0)[3U] = highHalf_0(_S2[1U]);
-    (*v_0)[4U] = lowHalf_0(_S2[2U]);
-    (*v_0)[5U] = highHalf_0(_S2[2U]);
-    (*v_0)[6U] = lowHalf_0(_S2[3U]);
-    (*v_0)[7U] = highHalf_0(_S2[3U]);
+    (*v_0)[0U] = wordLo_0((*_S1)[0U]);
+    (*v_0)[1U] = wordHi_0(_S2[0U]);
+    (*v_0)[2U] = wordLo_0(_S2[1U]);
+    (*v_0)[3U] = wordHi_0(_S2[1U]);
+    (*v_0)[4U] = wordLo_0(_S2[2U]);
+    (*v_0)[5U] = wordHi_0(_S2[2U]);
+    (*v_0)[6U] = wordLo_0(_S2[3U]);
+    (*v_0)[7U] = wordHi_0(_S2[3U]);
     return;
 }
 
@@ -96,14 +96,14 @@ void load8A_0(uint e_1, array<float, int(8)> thread* v_1, KernelContext_0 thread
 {
     uint4 device* _S3 = kernelContext_2->a_0+(e_1 >> 3U);
     uint4 _S4 = *_S3;
-    (*v_1)[0U] = lowHalf_0((*_S3)[0U]);
-    (*v_1)[1U] = highHalf_0(_S4[0U]);
-    (*v_1)[2U] = lowHalf_0(_S4[1U]);
-    (*v_1)[3U] = highHalf_0(_S4[1U]);
-    (*v_1)[4U] = lowHalf_0(_S4[2U]);
-    (*v_1)[5U] = highHalf_0(_S4[2U]);
-    (*v_1)[6U] = lowHalf_0(_S4[3U]);
-    (*v_1)[7U] = highHalf_0(_S4[3U]);
+    (*v_1)[0U] = wordLo_0((*_S3)[0U]);
+    (*v_1)[1U] = wordHi_0(_S4[0U]);
+    (*v_1)[2U] = wordLo_0(_S4[1U]);
+    (*v_1)[3U] = wordHi_0(_S4[1U]);
+    (*v_1)[4U] = wordLo_0(_S4[2U]);
+    (*v_1)[5U] = wordHi_0(_S4[2U]);
+    (*v_1)[6U] = wordLo_0(_S4[3U]);
+    (*v_1)[7U] = wordHi_0(_S4[3U]);
     return;
 }
 

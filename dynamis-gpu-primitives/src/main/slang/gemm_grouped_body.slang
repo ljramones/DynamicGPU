@@ -8,9 +8,7 @@
 // outside a buffer, or beyond the bounds the parameters m and n carry (the largest problem, which sizes the dispatch),
 // is skipped and reported (DG_ERROR_INDEX, index = the problem), so its submission fails.
 #define GROUPED 1
-// A and B come first: Slang numbers Metal buffers in declaration order.
-[[vk::binding(0, 0)]] RWStructuredBuffer<half> a;
-[[vk::binding(1, 0)]] RWStructuredBuffer<half> b;
+#include "gemm_inputs.slang"
 #include "gemm_common.slang"
 
 // GemmF16.Problem.BYTES: 12 uints

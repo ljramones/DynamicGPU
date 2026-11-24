@@ -1,15 +1,35 @@
 # name source entry: throughput kernels, built into src/main/resources/org/dynamisengine/gpu/primitives/kernels
+# the GEMM family: tiled, skinny (and its vector build), small and grouped; FP16, BF16 and FP32 inputs; FP32 and FP16 C
 gemm_f16 gemm_f16.slang gemm_f16
 gemm_f16_h gemm_f16_h.slang gemm_f16_h
-# the GEMM family (1.8.0)
+gemm_bf16 gemm_bf16.slang gemm_bf16
+gemm_bf16_h gemm_bf16_h.slang gemm_bf16_h
+gemm_f32 gemm_f32.slang gemm_f32
+gemm_f32_h gemm_f32_h.slang gemm_f32_h
 gemm_skinny gemm_skinny.slang gemm_skinny
 gemm_skinny_h gemm_skinny_h.slang gemm_skinny_h
+gemm_skinny_bf16 gemm_skinny_bf16.slang gemm_skinny_bf16
+gemm_skinny_bf16_h gemm_skinny_bf16_h.slang gemm_skinny_bf16_h
+gemm_skinny_f32 gemm_skinny_f32.slang gemm_skinny_f32
+gemm_skinny_f32_h gemm_skinny_f32_h.slang gemm_skinny_f32_h
 gemm_skinny_v gemm_skinny_v.slang gemm_skinny_v
-gemm_skinny_vh gemm_skinny_vh.slang gemm_skinny_vh
+gemm_skinny_v_h gemm_skinny_v_h.slang gemm_skinny_v_h
+gemm_skinny_v_bf16 gemm_skinny_v_bf16.slang gemm_skinny_v_bf16
+gemm_skinny_v_bf16_h gemm_skinny_v_bf16_h.slang gemm_skinny_v_bf16_h
+gemm_skinny_v_f32 gemm_skinny_v_f32.slang gemm_skinny_v_f32
+gemm_skinny_v_f32_h gemm_skinny_v_f32_h.slang gemm_skinny_v_f32_h
 gemm_small gemm_small.slang gemm_small
 gemm_small_h gemm_small_h.slang gemm_small_h
+gemm_small_bf16 gemm_small_bf16.slang gemm_small_bf16
+gemm_small_bf16_h gemm_small_bf16_h.slang gemm_small_bf16_h
+gemm_small_f32 gemm_small_f32.slang gemm_small_f32
+gemm_small_f32_h gemm_small_f32_h.slang gemm_small_f32_h
 gemm_grouped gemm_grouped.slang gemm_grouped
 gemm_grouped_h gemm_grouped_h.slang gemm_grouped_h
+gemm_grouped_bf16 gemm_grouped_bf16.slang gemm_grouped_bf16
+gemm_grouped_bf16_h gemm_grouped_bf16_h.slang gemm_grouped_bf16_h
+gemm_grouped_f32 gemm_grouped_f32.slang gemm_grouped_f32
+gemm_grouped_f32_h gemm_grouped_f32_h.slang gemm_grouped_f32_h
 softmax_f32 softmax_f32.slang softmax_f32
 softmax_f16 softmax_f16.slang softmax_f16
 # kernel kit primitives (1.7.0): the operation is a specialization constant

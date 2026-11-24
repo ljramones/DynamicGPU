@@ -18,9 +18,7 @@
 // as dynamically indexed arrays, which MoltenVK ran 14x slower (376 against 5261 GFLOP/s at 4096^3 on an M4 Max).
 // Measured alternatives on the same GPU: 128 x 128 tiles with 8 x 8 per thread, 3.6 TFLOP/s; k steps of 32,
 // 4.2 TFLOP/s; this kernel, 5.6 TFLOP/s on Metal.
-// A and B come first: Slang numbers Metal buffers in declaration order.
-[[vk::binding(0, 0)]] RWStructuredBuffer<half> a;
-[[vk::binding(1, 0)]] RWStructuredBuffer<half> b;
+#include "gemm_inputs.slang"
 #include "gemm_common.slang"
 #include "gemm_epilogue.slang"
 #include "gemm_tile.slang"

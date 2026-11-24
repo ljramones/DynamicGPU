@@ -30,11 +30,11 @@ void gemmTile(GemmProblem pr, uint2 tile, uint3 local)
             uint ar = e / BK, ak = e % BK;
             uint gr = row0 + ar, gk = k0 + ak;
             uint ai = p.transA != 0 ? gk * pr.lda + gr : gr * pr.lda + gk;
-            tileA[ak][ar] = gr < pr.m && gk < pr.k ? float(a[baseA + ai]) : 0.0f;
+            tileA[ak][ar] = gr < pr.m && gk < pr.k ? loadA(baseA + ai) : 0.0f;
             uint br = e / BN, bc = e % BN;
             uint hk = k0 + br, gc = col0 + bc;
             uint bi = p.transB != 0 ? gc * pr.ldb + hk : hk * pr.ldb + gc;
-            tileB[br][bc] = hk < pr.k && gc < pr.n ? float(b[baseB + bi]) : 0.0f;
+            tileB[br][bc] = hk < pr.k && gc < pr.n ? loadB(baseB + bi) : 0.0f;
         }
         GroupMemoryBarrierWithGroupSync();
         [ForceUnroll]

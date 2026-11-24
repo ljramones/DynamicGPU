@@ -3,14 +3,15 @@
 // A is not transposed. It streams B once, with every row
 // of A per element of B, so at m = 1 it is limited by memory bandwidth.
 //
-// Two builds: VEC (gemm_skinny_v*) reads A and B as 16-byte vectors of 8 halves, for B transposed with every row of
-// A and B starting on a multiple of 8 elements and k a multiple of 8; the other reads 32-bit words (two halves, the
-// even element in the low half), or single halves where a row starts on an odd element. A half that ends a buffer
-// is read with its word's other half, which is never used. Both sum in the same order.
+// Two builds: VEC (gemm_skinny_v*) reads A and B as 16-byte vectors, for B transposed with every row of A and B
+// starting on a multiple of 8 elements and k a multiple of 8; the other reads 32-bit words (FP16 and BF16 two per
+// word, the even element in the low half, or one at a time where a row starts on an odd element). A half that ends
+// a buffer is read with its word's other half, which is never used. Both sum in the same order. IN_KIND selects the
+// input type as in gemm_inputs.slang.
 //
 // The order is fixed, so the result is the same bits on every device and either build (GemmF16.referenceSkinny):
 // the k elements are dealt to LANES lanes in chunks of CHUNK (element q to lane (q / CHUNK) % LANES); each lane sums
-// its elements in order of q in FP32 (FP16 products are exact, so fma rounds once); then the lanes combine in a
+// its elements in order of q in FP32 (with fma; FP16 and BF16 products are exact); then the lanes combine in a
 // fixed tree (lane t takes lane t + w, for w = LANES / 2 .. 1). With B transposed LANES is 32 and CHUNK 8; without,
 // 16 and 2.
 // - B transposed (n x k, the weights of a linear layer): a group of 256 threads computes 8 * CPT_T columns: 8 sets
@@ -21,6 +22,9 @@
 //   streaming-read bandwidth for n = 4096, too few groups; 16 lanes at 67%.)
 // Then r = fl(fl(alpha acc) + fl(beta c)), as in the tiled kernel.
 
+#ifndef IN_KIND
+#define IN_KIND 0
+#endif
 #ifdef VEC
 typedef uint4 Word;
 #else
@@ -42,29 +46,63 @@ static const uint LANES_N = 16;   // B not transposed: 16 lanes of 16 column qua
 
 groupshared float red[CPT][THREADS];
 
-float lowHalf(uint w) { return f16tof32(w & 0xFFFF); }
-float highHalf(uint w) { return f16tof32(w >> 16); }
+// The elements of a 32-bit word by input kind (gemm_inputs.slang): FP16 and BF16 two per word, the even element in
+// the low half; FP32 one.
+#if IN_KIND == 2
+float wordLo(uint w) { return asfloat(w); }
+float wordHi(uint w) { return 0.0f; }
+#elif IN_KIND == 1
+float wordLo(uint w) { return asfloat(w << 16); }
+float wordHi(uint w) { return asfloat(w & 0xFFFF0000u); }
+#else
+float wordLo(uint w) { return f16tof32(w & 0xFFFF); }
+float wordHi(uint w) { return f16tof32(w >> 16); }
+#endif
 
 #ifdef VEC
-// 8 halves from element e, a multiple of 8
-void load8A(uint e, out float v[8]) { uint4 w = a[e >> 3]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[2 * t] = lowHalf(w[t]); v[2 * t + 1] = highHalf(w[t]); } }
-void load8B(uint e, out float v[8]) { uint4 w = b[e >> 3]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[2 * t] = lowHalf(w[t]); v[2 * t + 1] = highHalf(w[t]); } }
-float halfA(uint e) { return 0.0f; }
-float halfB(uint e) { return 0.0f; }
+// 8 elements from element e, a multiple of 8: one 16-byte vector of 8 halves (FP16, BF16) or two of 4 floats
+#if IN_KIND == 2
+void load8A(uint e, out float v[8]) { uint4 w0 = a[e >> 2], w1 = a[(e >> 2) + 1]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[t] = asfloat(w0[t]); v[t + 4] = asfloat(w1[t]); } }
+void load8B(uint e, out float v[8]) { uint4 w0 = b[e >> 2], w1 = b[(e >> 2) + 1]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[t] = asfloat(w0[t]); v[t + 4] = asfloat(w1[t]); } }
 #else
-float halfA(uint e) { uint w = a[e >> 1]; return (e & 1) != 0 ? highHalf(w) : lowHalf(w); }
-float halfB(uint e) { uint w = b[e >> 1]; return (e & 1) != 0 ? highHalf(w) : lowHalf(w); }
-// 8 halves from element e: as words when e is even, else one at a time
+void load8A(uint e, out float v[8]) { uint4 w = a[e >> 3]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[2 * t] = wordLo(w[t]); v[2 * t + 1] = wordHi(w[t]); } }
+void load8B(uint e, out float v[8]) { uint4 w = b[e >> 3]; [ForceUnroll] for (uint t = 0; t < 4; t++) { v[2 * t] = wordLo(w[t]); v[2 * t + 1] = wordHi(w[t]); } }
+#endif
+float elemA(uint e) { return 0.0f; }
+float elemB(uint e) { return 0.0f; }
+#else
+#if IN_KIND == 2
+float elemA(uint e) { return asfloat(a[e]); }
+float elemB(uint e) { return asfloat(b[e]); }
+void load8A(uint e, out float v[8]) { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = asfloat(a[e + t]); }
+void load8B(uint e, out float v[8]) { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = asfloat(b[e + t]); }
+void load2A(uint e, out float v0, out float v1) { v0 = asfloat(a[e]); v1 = asfloat(a[e + 1]); }
+void load4B(uint e, out float v[4]) { [ForceUnroll] for (uint t = 0; t < 4; t++) v[t] = asfloat(b[e + t]); }
+#else
+float elemA(uint e) { uint w = a[e >> 1]; return (e & 1) != 0 ? wordHi(w) : wordLo(w); }
+float elemB(uint e) { uint w = b[e >> 1]; return (e & 1) != 0 ? wordHi(w) : wordLo(w); }
+// 8 (2, 4) elements from element e: as words when e is even, else one at a time
 void load8A(uint e, out float v[8])
 {
-    if ((e & 1) == 0) { [ForceUnroll] for (uint t = 0; t < 4; t++) { uint w = a[(e >> 1) + t]; v[2 * t] = lowHalf(w); v[2 * t + 1] = highHalf(w); } }
-    else { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = halfA(e + t); }
+    if ((e & 1) == 0) { [ForceUnroll] for (uint t = 0; t < 4; t++) { uint w = a[(e >> 1) + t]; v[2 * t] = wordLo(w); v[2 * t + 1] = wordHi(w); } }
+    else { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = elemA(e + t); }
 }
 void load8B(uint e, out float v[8])
 {
-    if ((e & 1) == 0) { [ForceUnroll] for (uint t = 0; t < 4; t++) { uint w = b[(e >> 1) + t]; v[2 * t] = lowHalf(w); v[2 * t + 1] = highHalf(w); } }
-    else { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = halfB(e + t); }
+    if ((e & 1) == 0) { [ForceUnroll] for (uint t = 0; t < 4; t++) { uint w = b[(e >> 1) + t]; v[2 * t] = wordLo(w); v[2 * t + 1] = wordHi(w); } }
+    else { [ForceUnroll] for (uint t = 0; t < 8; t++) v[t] = elemB(e + t); }
 }
+void load2A(uint e, out float v0, out float v1)
+{
+    if ((e & 1) == 0) { uint w = a[e >> 1]; v0 = wordLo(w); v1 = wordHi(w); }
+    else { v0 = elemA(e); v1 = elemA(e + 1); }
+}
+void load4B(uint e, out float v[4])
+{
+    if ((e & 1) == 0) { uint w0 = b[e >> 1], w1 = b[(e >> 1) + 1]; v[0] = wordLo(w0); v[1] = wordHi(w0); v[2] = wordLo(w1); v[3] = wordHi(w1); }
+    else { [ForceUnroll] for (uint t = 0; t < 4; t++) v[t] = elemB(e + t); }
+}
+#endif
 #endif
 
 [shader("compute")]
@@ -119,12 +157,12 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             {
                 float bv[CPT_T];
                 [ForceUnroll]
-                for (uint cc = 0; cc < CPT_T; cc++) bv[cc] = halfB(baseB + min(col0 + cc, p.n - 1) * p.ldb + q);
+                for (uint cc = 0; cc < CPT_T; cc++) bv[cc] = elemB(baseB + min(col0 + cc, p.n - 1) * p.ldb + q);
                 [ForceUnroll]
                 for (uint i = 0; i < MAXM; i++)
                 {
                     if (i >= m) break;
-                    float av = halfA(baseA + i * p.lda + q);
+                    float av = elemA(baseA + i * p.lda + q);
                     [ForceUnroll]
                     for (uint cc = 0; cc < CPT_T; cc++) acc[i][cc] = fma(av, bv[cc], acc[i][cc]);
                 }
@@ -135,8 +173,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 #ifndef VEC
     else if (col0 < p.n)
     {
-        bool evenA = ((p.lda | p.strideA) & 1) == 0;
-        bool evenB = ((p.ldb | p.strideB) & 1) == 0 && col0 + CPT <= p.n;
+        bool full = col0 + CPT <= p.n;
         for (uint q2 = lane; 2 * q2 < k; q2 += LANES_N)
         {
             uint q = 2 * q2;
@@ -147,15 +184,11 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             {
                 uint e = baseB + min(q + h, k - 1) * p.ldb + col0;
                 float v[CPT];
-                if (evenB)
-                {
-                    uint w0 = b[e >> 1], w1 = b[(e >> 1) + 1];
-                    v[0] = lowHalf(w0); v[1] = highHalf(w0); v[2] = lowHalf(w1); v[3] = highHalf(w1);
-                }
+                if (full) load4B(e, v);
                 else
                 {
                     [ForceUnroll]
-                    for (uint cc = 0; cc < CPT; cc++) v[cc] = halfB(e + min(cc, p.n - 1 - col0));
+                    for (uint cc = 0; cc < CPT; cc++) v[cc] = elemB(e + min(cc, p.n - 1 - col0));
                 }
                 [ForceUnroll]
                 for (uint cc = 0; cc < CPT; cc++) { if (h == 0) b0[cc] = v[cc]; else b1[cc] = v[cc]; }
@@ -165,9 +198,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             {
                 if (i >= m) break;
                 uint e = baseA + i * p.lda + q;
-                float a0, a1;
-                if (evenA && two) { uint w = a[e >> 1]; a0 = lowHalf(w); a1 = highHalf(w); }
-                else { a0 = halfA(e); a1 = two ? halfA(e + 1) : 0.0f; }
+                float a0, a1 = 0.0f;
+                if (two) load2A(e, a0, a1); else a0 = elemA(e);
                 [ForceUnroll]
                 for (uint cc = 0; cc < CPT; cc++)
                 {

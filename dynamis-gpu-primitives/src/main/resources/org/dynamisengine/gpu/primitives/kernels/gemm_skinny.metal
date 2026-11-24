@@ -67,27 +67,27 @@ GemmProblem_0 gemmBatchProblem_0(uint z_0, KernelContext_0 thread* kernelContext
     return q_0;
 }
 
-float lowHalf_0(uint w_0)
+float wordLo_0(uint w_0)
 {
     return (as_type<half>((ushort)((w_0 & 65535U))));
 }
 
-float highHalf_0(uint w_1)
+float wordHi_0(uint w_1)
 {
     return (as_type<half>((ushort)((w_1 >> 16U))));
 }
 
-float halfB_0(uint e_0, KernelContext_0 thread* kernelContext_1)
+float elemB_0(uint e_0, KernelContext_0 thread* kernelContext_1)
 {
     uint w_2 = *(kernelContext_1->b_0+(e_0 >> 1U));
     float _S1;
     if((e_0 & 1U) != 0U)
     {
-        _S1 = highHalf_0(w_2);
+        _S1 = wordHi_0(w_2);
     }
     else
     {
-        _S1 = lowHalf_0(w_2);
+        _S1 = wordLo_0(w_2);
     }
     return _S1;
 }
@@ -99,54 +99,54 @@ void load8B_0(uint e_1, array<float, int(8)> thread* v_0, KernelContext_0 thread
         uint _S2 = e_1 >> 1U;
         uint device* _S3 = kernelContext_2->b_0+_S2;
         uint w_3 = *_S3;
-        (*v_0)[0U] = lowHalf_0(*_S3);
-        (*v_0)[1U] = highHalf_0(w_3);
+        (*v_0)[0U] = wordLo_0(*_S3);
+        (*v_0)[1U] = wordHi_0(w_3);
         uint device* _S4 = kernelContext_2->b_0+(_S2 + 1U);
         uint w_4 = *_S4;
-        (*v_0)[2U] = lowHalf_0(*_S4);
-        (*v_0)[3U] = highHalf_0(w_4);
+        (*v_0)[2U] = wordLo_0(*_S4);
+        (*v_0)[3U] = wordHi_0(w_4);
         uint device* _S5 = kernelContext_2->b_0+(_S2 + 2U);
         uint w_5 = *_S5;
-        (*v_0)[4U] = lowHalf_0(*_S5);
-        (*v_0)[5U] = highHalf_0(w_5);
+        (*v_0)[4U] = wordLo_0(*_S5);
+        (*v_0)[5U] = wordHi_0(w_5);
         uint device* _S6 = kernelContext_2->b_0+(_S2 + 3U);
         uint w_6 = *_S6;
-        (*v_0)[6U] = lowHalf_0(*_S6);
-        (*v_0)[7U] = highHalf_0(w_6);
+        (*v_0)[6U] = wordLo_0(*_S6);
+        (*v_0)[7U] = wordHi_0(w_6);
     }
     else
     {
-        float _S7 = halfB_0(e_1, kernelContext_2);
+        float _S7 = elemB_0(e_1, kernelContext_2);
         (*v_0)[0U] = _S7;
-        float _S8 = halfB_0(e_1 + 1U, kernelContext_2);
+        float _S8 = elemB_0(e_1 + 1U, kernelContext_2);
         (*v_0)[1U] = _S8;
-        float _S9 = halfB_0(e_1 + 2U, kernelContext_2);
+        float _S9 = elemB_0(e_1 + 2U, kernelContext_2);
         (*v_0)[2U] = _S9;
-        float _S10 = halfB_0(e_1 + 3U, kernelContext_2);
+        float _S10 = elemB_0(e_1 + 3U, kernelContext_2);
         (*v_0)[3U] = _S10;
-        float _S11 = halfB_0(e_1 + 4U, kernelContext_2);
+        float _S11 = elemB_0(e_1 + 4U, kernelContext_2);
         (*v_0)[4U] = _S11;
-        float _S12 = halfB_0(e_1 + 5U, kernelContext_2);
+        float _S12 = elemB_0(e_1 + 5U, kernelContext_2);
         (*v_0)[5U] = _S12;
-        float _S13 = halfB_0(e_1 + 6U, kernelContext_2);
+        float _S13 = elemB_0(e_1 + 6U, kernelContext_2);
         (*v_0)[6U] = _S13;
-        float _S14 = halfB_0(e_1 + 7U, kernelContext_2);
+        float _S14 = elemB_0(e_1 + 7U, kernelContext_2);
         (*v_0)[7U] = _S14;
     }
     return;
 }
 
-float halfA_0(uint e_2, KernelContext_0 thread* kernelContext_3)
+float elemA_0(uint e_2, KernelContext_0 thread* kernelContext_3)
 {
     uint w_7 = *(kernelContext_3->a_0+(e_2 >> 1U));
     float _S15;
     if((e_2 & 1U) != 0U)
     {
-        _S15 = highHalf_0(w_7);
+        _S15 = wordHi_0(w_7);
     }
     else
     {
-        _S15 = lowHalf_0(w_7);
+        _S15 = wordLo_0(w_7);
     }
     return _S15;
 }
@@ -158,56 +158,102 @@ void load8A_0(uint e_3, array<float, int(8)> thread* v_1, KernelContext_0 thread
         uint _S16 = e_3 >> 1U;
         uint device* _S17 = kernelContext_4->a_0+_S16;
         uint w_8 = *_S17;
-        (*v_1)[0U] = lowHalf_0(*_S17);
-        (*v_1)[1U] = highHalf_0(w_8);
+        (*v_1)[0U] = wordLo_0(*_S17);
+        (*v_1)[1U] = wordHi_0(w_8);
         uint device* _S18 = kernelContext_4->a_0+(_S16 + 1U);
         uint w_9 = *_S18;
-        (*v_1)[2U] = lowHalf_0(*_S18);
-        (*v_1)[3U] = highHalf_0(w_9);
+        (*v_1)[2U] = wordLo_0(*_S18);
+        (*v_1)[3U] = wordHi_0(w_9);
         uint device* _S19 = kernelContext_4->a_0+(_S16 + 2U);
         uint w_10 = *_S19;
-        (*v_1)[4U] = lowHalf_0(*_S19);
-        (*v_1)[5U] = highHalf_0(w_10);
+        (*v_1)[4U] = wordLo_0(*_S19);
+        (*v_1)[5U] = wordHi_0(w_10);
         uint device* _S20 = kernelContext_4->a_0+(_S16 + 3U);
         uint w_11 = *_S20;
-        (*v_1)[6U] = lowHalf_0(*_S20);
-        (*v_1)[7U] = highHalf_0(w_11);
+        (*v_1)[6U] = wordLo_0(*_S20);
+        (*v_1)[7U] = wordHi_0(w_11);
     }
     else
     {
-        float _S21 = halfA_0(e_3, kernelContext_4);
+        float _S21 = elemA_0(e_3, kernelContext_4);
         (*v_1)[0U] = _S21;
-        float _S22 = halfA_0(e_3 + 1U, kernelContext_4);
+        float _S22 = elemA_0(e_3 + 1U, kernelContext_4);
         (*v_1)[1U] = _S22;
-        float _S23 = halfA_0(e_3 + 2U, kernelContext_4);
+        float _S23 = elemA_0(e_3 + 2U, kernelContext_4);
         (*v_1)[2U] = _S23;
-        float _S24 = halfA_0(e_3 + 3U, kernelContext_4);
+        float _S24 = elemA_0(e_3 + 3U, kernelContext_4);
         (*v_1)[3U] = _S24;
-        float _S25 = halfA_0(e_3 + 4U, kernelContext_4);
+        float _S25 = elemA_0(e_3 + 4U, kernelContext_4);
         (*v_1)[4U] = _S25;
-        float _S26 = halfA_0(e_3 + 5U, kernelContext_4);
+        float _S26 = elemA_0(e_3 + 5U, kernelContext_4);
         (*v_1)[5U] = _S26;
-        float _S27 = halfA_0(e_3 + 6U, kernelContext_4);
+        float _S27 = elemA_0(e_3 + 6U, kernelContext_4);
         (*v_1)[6U] = _S27;
-        float _S28 = halfA_0(e_3 + 7U, kernelContext_4);
+        float _S28 = elemA_0(e_3 + 7U, kernelContext_4);
         (*v_1)[7U] = _S28;
+    }
+    return;
+}
+
+void load4B_0(uint e_4, array<float, int(4)> thread* v_2, KernelContext_0 thread* kernelContext_5)
+{
+    if((e_4 & 1U) == 0U)
+    {
+        uint _S29 = e_4 >> 1U;
+        uint device* _S30 = kernelContext_5->b_0+_S29;
+        uint w0_0 = *_S30;
+        uint w1_0 = *(kernelContext_5->b_0+(_S29 + 1U));
+        (*v_2)[int(0)] = wordLo_0(*_S30);
+        (*v_2)[int(1)] = wordHi_0(w0_0);
+        (*v_2)[int(2)] = wordLo_0(w1_0);
+        (*v_2)[int(3)] = wordHi_0(w1_0);
+    }
+    else
+    {
+        float _S31 = elemB_0(e_4, kernelContext_5);
+        (*v_2)[0U] = _S31;
+        float _S32 = elemB_0(e_4 + 1U, kernelContext_5);
+        (*v_2)[1U] = _S32;
+        float _S33 = elemB_0(e_4 + 2U, kernelContext_5);
+        (*v_2)[2U] = _S33;
+        float _S34 = elemB_0(e_4 + 3U, kernelContext_5);
+        (*v_2)[3U] = _S34;
+    }
+    return;
+}
+
+void load2A_0(uint e_5, float thread* v0_0, float thread* v1_0, KernelContext_0 thread* kernelContext_6)
+{
+    if((e_5 & 1U) == 0U)
+    {
+        uint device* _S35 = kernelContext_6->a_0+(e_5 >> 1U);
+        uint w_12 = *_S35;
+        *v0_0 = wordLo_0(*_S35);
+        *v1_0 = wordHi_0(w_12);
+    }
+    else
+    {
+        float _S36 = elemA_0(e_5, kernelContext_6);
+        *v0_0 = _S36;
+        float _S37 = elemA_0(e_5 + 1U, kernelContext_6);
+        *v1_0 = _S37;
     }
     return;
 }
 
 bool dg_is_nan_0(float x_0)
 {
-    uint _S29 = (as_type<uint>((x_0)));
-    bool _S30;
-    if((_S29 & 2139095040U) == 2139095040U)
+    uint _S38 = (as_type<uint>((x_0)));
+    bool _S39;
+    if((_S38 & 2139095040U) == 2139095040U)
     {
-        _S30 = (_S29 & 8388607U) != 0U;
+        _S39 = (_S38 & 8388607U) != 0U;
     }
     else
     {
-        _S30 = false;
+        _S39 = false;
     }
-    return _S30;
+    return _S39;
 }
 
 float dg_max_0(float a_1, float b_1)
@@ -220,112 +266,112 @@ float dg_max_0(float a_1, float b_1)
     {
         return b_1;
     }
-    bool _S31;
+    bool _S40;
     if(a_1 == 0.0)
     {
-        _S31 = b_1 == 0.0;
+        _S40 = b_1 == 0.0;
     }
     else
     {
-        _S31 = false;
+        _S40 = false;
     }
-    if(_S31)
+    if(_S40)
     {
         return (as_type<float>(((as_type<uint>((a_1))) & (as_type<uint>((b_1))))));
     }
-    float _S32;
+    float _S41;
     if(a_1 > b_1)
     {
-        _S32 = a_1;
+        _S41 = a_1;
     }
     else
     {
-        _S32 = b_1;
+        _S41 = b_1;
     }
-    return _S32;
+    return _S41;
 }
 
-float gemmEpilogue_0(float r_0, uint i_0, uint j_0, uint idx_0, uint biasBase_0, KernelContext_0 thread* kernelContext_5)
+float gemmEpilogue_0(float r_0, uint i_0, uint j_0, uint idx_0, uint biasBase_0, KernelContext_0 thread* kernelContext_7)
 {
-    float _S33;
-    if((kernelContext_5->p_0->bias_0) == 1U)
+    float _S42;
+    if((kernelContext_7->p_0->bias_0) == 1U)
     {
-        _S33 = r_0 + *(kernelContext_5->epBias_0+(biasBase_0 + j_0));
+        _S42 = r_0 + *(kernelContext_7->epBias_0+(biasBase_0 + j_0));
     }
     else
     {
-        if((kernelContext_5->p_0->bias_0) == 2U)
+        if((kernelContext_7->p_0->bias_0) == 2U)
         {
-            _S33 = r_0 + *(kernelContext_5->epBias_0+(biasBase_0 + i_0));
+            _S42 = r_0 + *(kernelContext_7->epBias_0+(biasBase_0 + i_0));
         }
         else
         {
-            _S33 = r_0;
+            _S42 = r_0;
         }
     }
-    if((kernelContext_5->p_0->act_0) == 1U)
+    if((kernelContext_7->p_0->act_0) == 1U)
     {
-        _S33 = dg_max_0(_S33, 0.0);
+        _S42 = dg_max_0(_S42, 0.0);
     }
     else
     {
-        if((kernelContext_5->p_0->act_0) == 2U)
+        if((kernelContext_7->p_0->act_0) == 2U)
         {
-            _S33 = 0.5 * _S33 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (_S33 + 0.04471499845385551 * _S33 * _S33 * _S33))) + 1.0)));
+            _S42 = 0.5 * _S42 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (_S42 + 0.04471499845385551 * _S42 * _S42 * _S42))) + 1.0)));
         }
         else
         {
-            if((kernelContext_5->p_0->act_0) == 3U)
+            if((kernelContext_7->p_0->act_0) == 3U)
             {
-                _S33 = _S33 / (1.0 + exp(- _S33));
+                _S42 = _S42 / (1.0 + exp(- _S42));
             }
         }
     }
-    if((kernelContext_5->p_0->gated_0) != 0U)
+    if((kernelContext_7->p_0->gated_0) != 0U)
     {
-        _S33 = _S33 * *(kernelContext_5->epGate_0+idx_0);
+        _S42 = _S42 * *(kernelContext_7->epGate_0+idx_0);
     }
-    if((kernelContext_5->p_0->residual_0) != 0U)
+    if((kernelContext_7->p_0->residual_0) != 0U)
     {
-        _S33 = _S33 + *(kernelContext_5->epResidual_0+idx_0);
+        _S42 = _S42 + *(kernelContext_7->epResidual_0+idx_0);
     }
-    return _S33;
+    return _S42;
 }
 
-void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_0, KernelContext_0 thread* kernelContext_6)
+void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_0, KernelContext_0 thread* kernelContext_8)
 {
     uint idx_1 = q_1->baseC_0 + i_1 * q_1->ldc_0 + j_1;
     float r_1;
-    if((kernelContext_6->p_0->beta_0) == 0.0)
+    if((kernelContext_8->p_0->beta_0) == 0.0)
     {
-        r_1 = kernelContext_6->p_0->alpha_0 * acc_0;
+        r_1 = kernelContext_8->p_0->alpha_0 * acc_0;
     }
     else
     {
-        r_1 = kernelContext_6->p_0->alpha_0 * acc_0 + kernelContext_6->p_0->beta_0 * *(kernelContext_6->c_0+idx_1);
+        r_1 = kernelContext_8->p_0->alpha_0 * acc_0 + kernelContext_8->p_0->beta_0 * *(kernelContext_8->c_0+idx_1);
     }
-    float device* _S34 = kernelContext_6->c_0+idx_1;
-    float _S35 = gemmEpilogue_0(r_1, i_1, j_1, idx_1, q_1->baseBias_0, kernelContext_6);
-    *_S34 = _S35;
+    float device* _S43 = kernelContext_8->c_0+idx_1;
+    float _S44 = gemmEpilogue_0(r_1, i_1, j_1, idx_1, q_1->baseBias_0, kernelContext_8);
+    *_S43 = _S44;
     return;
 }
 
 [[kernel]] void gemm_skinny(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], GemmParams_0 constant* p_1 [[buffer(6)]], uint device* b_2 [[buffer(1)]], uint device* a_2 [[buffer(0)]], float device* c_1 [[buffer(2)]], float device* epBias_1 [[buffer(3)]], float device* epGate_1 [[buffer(4)]], float device* epResidual_1 [[buffer(5)]])
 {
-    thread KernelContext_0 kernelContext_7;
-    (&kernelContext_7)->p_0 = p_1;
-    (&kernelContext_7)->b_0 = b_2;
-    (&kernelContext_7)->a_0 = a_2;
-    (&kernelContext_7)->c_0 = c_1;
-    (&kernelContext_7)->epBias_0 = epBias_1;
-    (&kernelContext_7)->epGate_0 = epGate_1;
-    (&kernelContext_7)->epResidual_0 = epResidual_1;
+    thread KernelContext_0 kernelContext_9;
+    (&kernelContext_9)->p_0 = p_1;
+    (&kernelContext_9)->b_0 = b_2;
+    (&kernelContext_9)->a_0 = a_2;
+    (&kernelContext_9)->c_0 = c_1;
+    (&kernelContext_9)->epBias_0 = epBias_1;
+    (&kernelContext_9)->epGate_0 = epGate_1;
+    (&kernelContext_9)->epResidual_0 = epResidual_1;
     threadgroup array<array<float, int(256)>, int(4)> red_1;
-    (&kernelContext_7)->red_0 = &red_1;
+    (&kernelContext_9)->red_0 = &red_1;
     uint lid_0 = local_0.x;
-    GemmProblem_0 _S36 = gemmBatchProblem_0(group_0.z, &kernelContext_7);
-    uint _S37 = min((&kernelContext_7)->p_0->m_1, 16U);
-    uint k_2 = (&kernelContext_7)->p_0->k_1;
+    GemmProblem_0 _S45 = gemmBatchProblem_0(group_0.z, &kernelContext_9);
+    uint _S46 = min((&kernelContext_9)->p_0->m_1, 16U);
+    uint k_2 = (&kernelContext_9)->p_0->k_1;
     thread array<array<float, int(4)>, int(16)> acc_1;
     acc_1[0U][0U] = 0.0;
     acc_1[0U][1U] = 0.0;
@@ -391,15 +437,15 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     acc_1[15U][1U] = 0.0;
     acc_1[15U][2U] = 0.0;
     acc_1[15U][3U] = 0.0;
-    bool transB_1 = ((&kernelContext_7)->p_0->transB_0) != 0U;
-    uint _S38;
+    bool transB_1 = ((&kernelContext_9)->p_0->transB_0) != 0U;
+    uint _S47;
     if(transB_1)
     {
-        _S38 = 32U;
+        _S47 = 32U;
     }
     else
     {
-        _S38 = 16U;
+        _S47 = 16U;
     }
     uint lane_0;
     if(transB_1)
@@ -410,14 +456,14 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     {
         lane_0 = lid_0 / 16U;
     }
-    uint _S39;
+    uint _S48;
     if(transB_1)
     {
-        _S39 = 2U;
+        _S48 = 2U;
     }
     else
     {
-        _S39 = 4U;
+        _S48 = 4U;
     }
     uint col0_0;
     if(transB_1)
@@ -428,26 +474,17 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     {
         col0_0 = group_0.x * 64U + lid_0 % 16U * 4U;
     }
-    bool _S40;
-    if(col0_0 < ((&kernelContext_7)->p_0->n_1))
+    bool _S49;
+    if(col0_0 < ((&kernelContext_9)->p_0->n_1))
     {
-        _S40 = transB_1;
+        _S49 = transB_1;
     }
     else
     {
-        _S40 = false;
+        _S49 = false;
     }
     uint ch_0;
     uint i_2;
-    int _S41;
-    int _S42;
-    int _S43;
-    int _S44;
-    int _S45;
-    int _S46;
-    int _S47;
-    int _S48;
-    int _S49;
     int _S50;
     int _S51;
     int _S52;
@@ -471,7 +508,16 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     int _S70;
     int _S71;
     int _S72;
-    if(_S40)
+    int _S73;
+    int _S74;
+    int _S75;
+    int _S76;
+    int _S77;
+    int _S78;
+    int _S79;
+    int _S80;
+    int _S81;
+    if(_S49)
     {
         uint chunks_0 = k_2 / 8U;
         ch_0 = lane_0;
@@ -484,23 +530,23 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
             {
                 break;
             }
-            uint _S73 = ch_0 * 8U;
+            uint _S82 = ch_0 * 8U;
             thread array<array<float, int(8)>, int(2)> bv_0;
-            load8B_0(_S36.baseB_0 + min(col0_0, (&kernelContext_7)->p_0->n_1 - 1U) * (&kernelContext_7)->p_0->ldb_1 + _S73, &bv_0[0U], &kernelContext_7);
-            load8B_0(_S36.baseB_0 + min(col0_0 + 1U, (&kernelContext_7)->p_0->n_1 - 1U) * (&kernelContext_7)->p_0->ldb_1 + _S73, &bv_0[1U], &kernelContext_7);
+            load8B_0(_S45.baseB_0 + min(col0_0, (&kernelContext_9)->p_0->n_1 - 1U) * (&kernelContext_9)->p_0->ldb_1 + _S82, &bv_0[0U], &kernelContext_9);
+            load8B_0(_S45.baseB_0 + min(col0_0 + 1U, (&kernelContext_9)->p_0->n_1 - 1U) * (&kernelContext_9)->p_0->ldb_1 + _S82, &bv_0[1U], &kernelContext_9);
             for(;;)
             {
                 for(;;)
                 {
                     for(;;)
                     {
-                        if(0U >= _S37)
+                        if(0U >= _S46)
                         {
-                            _S41 = int(1);
+                            _S50 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_0;
-                        load8A_0(_S36.baseA_0 + _S73, &av_0, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + _S82, &av_0, &kernelContext_9);
                         acc_1[0U][0U] = fma(av_0[0U], bv_0[0U][0U], acc_1[0U][0U]);
                         acc_1[0U][1U] = fma(av_0[0U], bv_0[1U][0U], acc_1[0U][1U]);
                         acc_1[0U][0U] = fma(av_0[1U], bv_0[0U][1U], acc_1[0U][0U]);
@@ -517,18 +563,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[0U][1U] = fma(av_0[6U], bv_0[1U][6U], acc_1[0U][1U]);
                         acc_1[0U][0U] = fma(av_0[7U], bv_0[0U][7U], acc_1[0U][0U]);
                         acc_1[0U][1U] = fma(av_0[7U], bv_0[1U][7U], acc_1[0U][1U]);
-                        _S41 = int(3);
+                        _S50 = int(3);
                         break;
                     }
-                    if(_S41 != int(3))
+                    if(_S50 != int(3))
                     {
-                        _S42 = _S41;
+                        _S51 = _S50;
                         break;
                     }
-                    _S42 = int(2);
+                    _S51 = int(2);
                     break;
                 }
-                if(_S42 != int(2))
+                if(_S51 != int(2))
                 {
                     break;
                 }
@@ -536,13 +582,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(1U >= _S37)
+                        if(1U >= _S46)
                         {
-                            _S43 = int(1);
+                            _S52 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_1;
-                        load8A_0(_S36.baseA_0 + (&kernelContext_7)->p_0->lda_1 + _S73, &av_1, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + (&kernelContext_9)->p_0->lda_1 + _S82, &av_1, &kernelContext_9);
                         acc_1[1U][0U] = fma(av_1[0U], bv_0[0U][0U], acc_1[1U][0U]);
                         acc_1[1U][1U] = fma(av_1[0U], bv_0[1U][0U], acc_1[1U][1U]);
                         acc_1[1U][0U] = fma(av_1[1U], bv_0[0U][1U], acc_1[1U][0U]);
@@ -559,18 +605,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[1U][1U] = fma(av_1[6U], bv_0[1U][6U], acc_1[1U][1U]);
                         acc_1[1U][0U] = fma(av_1[7U], bv_0[0U][7U], acc_1[1U][0U]);
                         acc_1[1U][1U] = fma(av_1[7U], bv_0[1U][7U], acc_1[1U][1U]);
-                        _S43 = int(3);
+                        _S52 = int(3);
                         break;
                     }
-                    if(_S43 != int(3))
+                    if(_S52 != int(3))
                     {
-                        _S44 = _S43;
+                        _S53 = _S52;
                         break;
                     }
-                    _S44 = int(2);
+                    _S53 = int(2);
                     break;
                 }
-                if(_S44 != int(2))
+                if(_S53 != int(2))
                 {
                     break;
                 }
@@ -578,13 +624,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(2U >= _S37)
+                        if(2U >= _S46)
                         {
-                            _S45 = int(1);
+                            _S54 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_2;
-                        load8A_0(_S36.baseA_0 + 2U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_2, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 2U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_2, &kernelContext_9);
                         acc_1[2U][0U] = fma(av_2[0U], bv_0[0U][0U], acc_1[2U][0U]);
                         acc_1[2U][1U] = fma(av_2[0U], bv_0[1U][0U], acc_1[2U][1U]);
                         acc_1[2U][0U] = fma(av_2[1U], bv_0[0U][1U], acc_1[2U][0U]);
@@ -601,18 +647,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[2U][1U] = fma(av_2[6U], bv_0[1U][6U], acc_1[2U][1U]);
                         acc_1[2U][0U] = fma(av_2[7U], bv_0[0U][7U], acc_1[2U][0U]);
                         acc_1[2U][1U] = fma(av_2[7U], bv_0[1U][7U], acc_1[2U][1U]);
-                        _S45 = int(3);
+                        _S54 = int(3);
                         break;
                     }
-                    if(_S45 != int(3))
+                    if(_S54 != int(3))
                     {
-                        _S46 = _S45;
+                        _S55 = _S54;
                         break;
                     }
-                    _S46 = int(2);
+                    _S55 = int(2);
                     break;
                 }
-                if(_S46 != int(2))
+                if(_S55 != int(2))
                 {
                     break;
                 }
@@ -620,13 +666,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(3U >= _S37)
+                        if(3U >= _S46)
                         {
-                            _S47 = int(1);
+                            _S56 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_3;
-                        load8A_0(_S36.baseA_0 + 3U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_3, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 3U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_3, &kernelContext_9);
                         acc_1[3U][0U] = fma(av_3[0U], bv_0[0U][0U], acc_1[3U][0U]);
                         acc_1[3U][1U] = fma(av_3[0U], bv_0[1U][0U], acc_1[3U][1U]);
                         acc_1[3U][0U] = fma(av_3[1U], bv_0[0U][1U], acc_1[3U][0U]);
@@ -643,18 +689,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[3U][1U] = fma(av_3[6U], bv_0[1U][6U], acc_1[3U][1U]);
                         acc_1[3U][0U] = fma(av_3[7U], bv_0[0U][7U], acc_1[3U][0U]);
                         acc_1[3U][1U] = fma(av_3[7U], bv_0[1U][7U], acc_1[3U][1U]);
-                        _S47 = int(3);
+                        _S56 = int(3);
                         break;
                     }
-                    if(_S47 != int(3))
+                    if(_S56 != int(3))
                     {
-                        _S48 = _S47;
+                        _S57 = _S56;
                         break;
                     }
-                    _S48 = int(2);
+                    _S57 = int(2);
                     break;
                 }
-                if(_S48 != int(2))
+                if(_S57 != int(2))
                 {
                     break;
                 }
@@ -662,13 +708,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(4U >= _S37)
+                        if(4U >= _S46)
                         {
-                            _S49 = int(1);
+                            _S58 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_4;
-                        load8A_0(_S36.baseA_0 + 4U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_4, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 4U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_4, &kernelContext_9);
                         acc_1[4U][0U] = fma(av_4[0U], bv_0[0U][0U], acc_1[4U][0U]);
                         acc_1[4U][1U] = fma(av_4[0U], bv_0[1U][0U], acc_1[4U][1U]);
                         acc_1[4U][0U] = fma(av_4[1U], bv_0[0U][1U], acc_1[4U][0U]);
@@ -685,18 +731,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[4U][1U] = fma(av_4[6U], bv_0[1U][6U], acc_1[4U][1U]);
                         acc_1[4U][0U] = fma(av_4[7U], bv_0[0U][7U], acc_1[4U][0U]);
                         acc_1[4U][1U] = fma(av_4[7U], bv_0[1U][7U], acc_1[4U][1U]);
-                        _S49 = int(3);
+                        _S58 = int(3);
                         break;
                     }
-                    if(_S49 != int(3))
+                    if(_S58 != int(3))
                     {
-                        _S50 = _S49;
+                        _S59 = _S58;
                         break;
                     }
-                    _S50 = int(2);
+                    _S59 = int(2);
                     break;
                 }
-                if(_S50 != int(2))
+                if(_S59 != int(2))
                 {
                     break;
                 }
@@ -704,13 +750,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(5U >= _S37)
+                        if(5U >= _S46)
                         {
-                            _S51 = int(1);
+                            _S60 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_5;
-                        load8A_0(_S36.baseA_0 + 5U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_5, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 5U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_5, &kernelContext_9);
                         acc_1[5U][0U] = fma(av_5[0U], bv_0[0U][0U], acc_1[5U][0U]);
                         acc_1[5U][1U] = fma(av_5[0U], bv_0[1U][0U], acc_1[5U][1U]);
                         acc_1[5U][0U] = fma(av_5[1U], bv_0[0U][1U], acc_1[5U][0U]);
@@ -727,18 +773,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[5U][1U] = fma(av_5[6U], bv_0[1U][6U], acc_1[5U][1U]);
                         acc_1[5U][0U] = fma(av_5[7U], bv_0[0U][7U], acc_1[5U][0U]);
                         acc_1[5U][1U] = fma(av_5[7U], bv_0[1U][7U], acc_1[5U][1U]);
-                        _S51 = int(3);
+                        _S60 = int(3);
                         break;
                     }
-                    if(_S51 != int(3))
+                    if(_S60 != int(3))
                     {
-                        _S52 = _S51;
+                        _S61 = _S60;
                         break;
                     }
-                    _S52 = int(2);
+                    _S61 = int(2);
                     break;
                 }
-                if(_S52 != int(2))
+                if(_S61 != int(2))
                 {
                     break;
                 }
@@ -746,13 +792,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(6U >= _S37)
+                        if(6U >= _S46)
                         {
-                            _S53 = int(1);
+                            _S62 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_6;
-                        load8A_0(_S36.baseA_0 + 6U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_6, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 6U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_6, &kernelContext_9);
                         acc_1[6U][0U] = fma(av_6[0U], bv_0[0U][0U], acc_1[6U][0U]);
                         acc_1[6U][1U] = fma(av_6[0U], bv_0[1U][0U], acc_1[6U][1U]);
                         acc_1[6U][0U] = fma(av_6[1U], bv_0[0U][1U], acc_1[6U][0U]);
@@ -769,18 +815,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[6U][1U] = fma(av_6[6U], bv_0[1U][6U], acc_1[6U][1U]);
                         acc_1[6U][0U] = fma(av_6[7U], bv_0[0U][7U], acc_1[6U][0U]);
                         acc_1[6U][1U] = fma(av_6[7U], bv_0[1U][7U], acc_1[6U][1U]);
-                        _S53 = int(3);
+                        _S62 = int(3);
                         break;
                     }
-                    if(_S53 != int(3))
+                    if(_S62 != int(3))
                     {
-                        _S54 = _S53;
+                        _S63 = _S62;
                         break;
                     }
-                    _S54 = int(2);
+                    _S63 = int(2);
                     break;
                 }
-                if(_S54 != int(2))
+                if(_S63 != int(2))
                 {
                     break;
                 }
@@ -788,13 +834,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(7U >= _S37)
+                        if(7U >= _S46)
                         {
-                            _S55 = int(1);
+                            _S64 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_7;
-                        load8A_0(_S36.baseA_0 + 7U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_7, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 7U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_7, &kernelContext_9);
                         acc_1[7U][0U] = fma(av_7[0U], bv_0[0U][0U], acc_1[7U][0U]);
                         acc_1[7U][1U] = fma(av_7[0U], bv_0[1U][0U], acc_1[7U][1U]);
                         acc_1[7U][0U] = fma(av_7[1U], bv_0[0U][1U], acc_1[7U][0U]);
@@ -811,18 +857,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[7U][1U] = fma(av_7[6U], bv_0[1U][6U], acc_1[7U][1U]);
                         acc_1[7U][0U] = fma(av_7[7U], bv_0[0U][7U], acc_1[7U][0U]);
                         acc_1[7U][1U] = fma(av_7[7U], bv_0[1U][7U], acc_1[7U][1U]);
-                        _S55 = int(3);
+                        _S64 = int(3);
                         break;
                     }
-                    if(_S55 != int(3))
+                    if(_S64 != int(3))
                     {
-                        _S56 = _S55;
+                        _S65 = _S64;
                         break;
                     }
-                    _S56 = int(2);
+                    _S65 = int(2);
                     break;
                 }
-                if(_S56 != int(2))
+                if(_S65 != int(2))
                 {
                     break;
                 }
@@ -830,13 +876,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(8U >= _S37)
+                        if(8U >= _S46)
                         {
-                            _S57 = int(1);
+                            _S66 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_8;
-                        load8A_0(_S36.baseA_0 + 8U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_8, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 8U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_8, &kernelContext_9);
                         acc_1[8U][0U] = fma(av_8[0U], bv_0[0U][0U], acc_1[8U][0U]);
                         acc_1[8U][1U] = fma(av_8[0U], bv_0[1U][0U], acc_1[8U][1U]);
                         acc_1[8U][0U] = fma(av_8[1U], bv_0[0U][1U], acc_1[8U][0U]);
@@ -853,18 +899,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[8U][1U] = fma(av_8[6U], bv_0[1U][6U], acc_1[8U][1U]);
                         acc_1[8U][0U] = fma(av_8[7U], bv_0[0U][7U], acc_1[8U][0U]);
                         acc_1[8U][1U] = fma(av_8[7U], bv_0[1U][7U], acc_1[8U][1U]);
-                        _S57 = int(3);
+                        _S66 = int(3);
                         break;
                     }
-                    if(_S57 != int(3))
+                    if(_S66 != int(3))
                     {
-                        _S58 = _S57;
+                        _S67 = _S66;
                         break;
                     }
-                    _S58 = int(2);
+                    _S67 = int(2);
                     break;
                 }
-                if(_S58 != int(2))
+                if(_S67 != int(2))
                 {
                     break;
                 }
@@ -872,13 +918,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(9U >= _S37)
+                        if(9U >= _S46)
                         {
-                            _S59 = int(1);
+                            _S68 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_9;
-                        load8A_0(_S36.baseA_0 + 9U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_9, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 9U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_9, &kernelContext_9);
                         acc_1[9U][0U] = fma(av_9[0U], bv_0[0U][0U], acc_1[9U][0U]);
                         acc_1[9U][1U] = fma(av_9[0U], bv_0[1U][0U], acc_1[9U][1U]);
                         acc_1[9U][0U] = fma(av_9[1U], bv_0[0U][1U], acc_1[9U][0U]);
@@ -895,18 +941,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[9U][1U] = fma(av_9[6U], bv_0[1U][6U], acc_1[9U][1U]);
                         acc_1[9U][0U] = fma(av_9[7U], bv_0[0U][7U], acc_1[9U][0U]);
                         acc_1[9U][1U] = fma(av_9[7U], bv_0[1U][7U], acc_1[9U][1U]);
-                        _S59 = int(3);
+                        _S68 = int(3);
                         break;
                     }
-                    if(_S59 != int(3))
+                    if(_S68 != int(3))
                     {
-                        _S60 = _S59;
+                        _S69 = _S68;
                         break;
                     }
-                    _S60 = int(2);
+                    _S69 = int(2);
                     break;
                 }
-                if(_S60 != int(2))
+                if(_S69 != int(2))
                 {
                     break;
                 }
@@ -914,13 +960,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(10U >= _S37)
+                        if(10U >= _S46)
                         {
-                            _S61 = int(1);
+                            _S70 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_10;
-                        load8A_0(_S36.baseA_0 + 10U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_10, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 10U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_10, &kernelContext_9);
                         acc_1[10U][0U] = fma(av_10[0U], bv_0[0U][0U], acc_1[10U][0U]);
                         acc_1[10U][1U] = fma(av_10[0U], bv_0[1U][0U], acc_1[10U][1U]);
                         acc_1[10U][0U] = fma(av_10[1U], bv_0[0U][1U], acc_1[10U][0U]);
@@ -937,18 +983,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[10U][1U] = fma(av_10[6U], bv_0[1U][6U], acc_1[10U][1U]);
                         acc_1[10U][0U] = fma(av_10[7U], bv_0[0U][7U], acc_1[10U][0U]);
                         acc_1[10U][1U] = fma(av_10[7U], bv_0[1U][7U], acc_1[10U][1U]);
-                        _S61 = int(3);
+                        _S70 = int(3);
                         break;
                     }
-                    if(_S61 != int(3))
+                    if(_S70 != int(3))
                     {
-                        _S62 = _S61;
+                        _S71 = _S70;
                         break;
                     }
-                    _S62 = int(2);
+                    _S71 = int(2);
                     break;
                 }
-                if(_S62 != int(2))
+                if(_S71 != int(2))
                 {
                     break;
                 }
@@ -956,13 +1002,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(11U >= _S37)
+                        if(11U >= _S46)
                         {
-                            _S63 = int(1);
+                            _S72 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_11;
-                        load8A_0(_S36.baseA_0 + 11U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_11, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 11U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_11, &kernelContext_9);
                         acc_1[11U][0U] = fma(av_11[0U], bv_0[0U][0U], acc_1[11U][0U]);
                         acc_1[11U][1U] = fma(av_11[0U], bv_0[1U][0U], acc_1[11U][1U]);
                         acc_1[11U][0U] = fma(av_11[1U], bv_0[0U][1U], acc_1[11U][0U]);
@@ -979,18 +1025,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[11U][1U] = fma(av_11[6U], bv_0[1U][6U], acc_1[11U][1U]);
                         acc_1[11U][0U] = fma(av_11[7U], bv_0[0U][7U], acc_1[11U][0U]);
                         acc_1[11U][1U] = fma(av_11[7U], bv_0[1U][7U], acc_1[11U][1U]);
-                        _S63 = int(3);
+                        _S72 = int(3);
                         break;
                     }
-                    if(_S63 != int(3))
+                    if(_S72 != int(3))
                     {
-                        _S64 = _S63;
+                        _S73 = _S72;
                         break;
                     }
-                    _S64 = int(2);
+                    _S73 = int(2);
                     break;
                 }
-                if(_S64 != int(2))
+                if(_S73 != int(2))
                 {
                     break;
                 }
@@ -998,13 +1044,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(12U >= _S37)
+                        if(12U >= _S46)
                         {
-                            _S65 = int(1);
+                            _S74 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_12;
-                        load8A_0(_S36.baseA_0 + 12U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_12, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 12U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_12, &kernelContext_9);
                         acc_1[12U][0U] = fma(av_12[0U], bv_0[0U][0U], acc_1[12U][0U]);
                         acc_1[12U][1U] = fma(av_12[0U], bv_0[1U][0U], acc_1[12U][1U]);
                         acc_1[12U][0U] = fma(av_12[1U], bv_0[0U][1U], acc_1[12U][0U]);
@@ -1021,18 +1067,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[12U][1U] = fma(av_12[6U], bv_0[1U][6U], acc_1[12U][1U]);
                         acc_1[12U][0U] = fma(av_12[7U], bv_0[0U][7U], acc_1[12U][0U]);
                         acc_1[12U][1U] = fma(av_12[7U], bv_0[1U][7U], acc_1[12U][1U]);
-                        _S65 = int(3);
+                        _S74 = int(3);
                         break;
                     }
-                    if(_S65 != int(3))
+                    if(_S74 != int(3))
                     {
-                        _S66 = _S65;
+                        _S75 = _S74;
                         break;
                     }
-                    _S66 = int(2);
+                    _S75 = int(2);
                     break;
                 }
-                if(_S66 != int(2))
+                if(_S75 != int(2))
                 {
                     break;
                 }
@@ -1040,13 +1086,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(13U >= _S37)
+                        if(13U >= _S46)
                         {
-                            _S67 = int(1);
+                            _S76 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_13;
-                        load8A_0(_S36.baseA_0 + 13U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_13, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 13U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_13, &kernelContext_9);
                         acc_1[13U][0U] = fma(av_13[0U], bv_0[0U][0U], acc_1[13U][0U]);
                         acc_1[13U][1U] = fma(av_13[0U], bv_0[1U][0U], acc_1[13U][1U]);
                         acc_1[13U][0U] = fma(av_13[1U], bv_0[0U][1U], acc_1[13U][0U]);
@@ -1063,18 +1109,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[13U][1U] = fma(av_13[6U], bv_0[1U][6U], acc_1[13U][1U]);
                         acc_1[13U][0U] = fma(av_13[7U], bv_0[0U][7U], acc_1[13U][0U]);
                         acc_1[13U][1U] = fma(av_13[7U], bv_0[1U][7U], acc_1[13U][1U]);
-                        _S67 = int(3);
+                        _S76 = int(3);
                         break;
                     }
-                    if(_S67 != int(3))
+                    if(_S76 != int(3))
                     {
-                        _S68 = _S67;
+                        _S77 = _S76;
                         break;
                     }
-                    _S68 = int(2);
+                    _S77 = int(2);
                     break;
                 }
-                if(_S68 != int(2))
+                if(_S77 != int(2))
                 {
                     break;
                 }
@@ -1082,13 +1128,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(14U >= _S37)
+                        if(14U >= _S46)
                         {
-                            _S69 = int(1);
+                            _S78 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_14;
-                        load8A_0(_S36.baseA_0 + 14U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_14, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 14U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_14, &kernelContext_9);
                         acc_1[14U][0U] = fma(av_14[0U], bv_0[0U][0U], acc_1[14U][0U]);
                         acc_1[14U][1U] = fma(av_14[0U], bv_0[1U][0U], acc_1[14U][1U]);
                         acc_1[14U][0U] = fma(av_14[1U], bv_0[0U][1U], acc_1[14U][0U]);
@@ -1105,18 +1151,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[14U][1U] = fma(av_14[6U], bv_0[1U][6U], acc_1[14U][1U]);
                         acc_1[14U][0U] = fma(av_14[7U], bv_0[0U][7U], acc_1[14U][0U]);
                         acc_1[14U][1U] = fma(av_14[7U], bv_0[1U][7U], acc_1[14U][1U]);
-                        _S69 = int(3);
+                        _S78 = int(3);
                         break;
                     }
-                    if(_S69 != int(3))
+                    if(_S78 != int(3))
                     {
-                        _S70 = _S69;
+                        _S79 = _S78;
                         break;
                     }
-                    _S70 = int(2);
+                    _S79 = int(2);
                     break;
                 }
-                if(_S70 != int(2))
+                if(_S79 != int(2))
                 {
                     break;
                 }
@@ -1124,13 +1170,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 {
                     for(;;)
                     {
-                        if(15U >= _S37)
+                        if(15U >= _S46)
                         {
-                            _S71 = int(1);
+                            _S80 = int(1);
                             break;
                         }
                         thread array<float, int(8)> av_15;
-                        load8A_0(_S36.baseA_0 + 15U * (&kernelContext_7)->p_0->lda_1 + _S73, &av_15, &kernelContext_7);
+                        load8A_0(_S45.baseA_0 + 15U * (&kernelContext_9)->p_0->lda_1 + _S82, &av_15, &kernelContext_9);
                         acc_1[15U][0U] = fma(av_15[0U], bv_0[0U][0U], acc_1[15U][0U]);
                         acc_1[15U][1U] = fma(av_15[0U], bv_0[1U][0U], acc_1[15U][1U]);
                         acc_1[15U][0U] = fma(av_15[1U], bv_0[0U][1U], acc_1[15U][0U]);
@@ -1147,18 +1193,18 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                         acc_1[15U][1U] = fma(av_15[6U], bv_0[1U][6U], acc_1[15U][1U]);
                         acc_1[15U][0U] = fma(av_15[7U], bv_0[0U][7U], acc_1[15U][0U]);
                         acc_1[15U][1U] = fma(av_15[7U], bv_0[1U][7U], acc_1[15U][1U]);
-                        _S71 = int(3);
+                        _S80 = int(3);
                         break;
                     }
-                    if(_S71 != int(3))
+                    if(_S80 != int(3))
                     {
-                        _S72 = _S71;
+                        _S81 = _S80;
                         break;
                     }
-                    _S72 = int(2);
+                    _S81 = int(2);
                     break;
                 }
-                if(_S72 != int(2))
+                if(_S81 != int(2))
                 {
                     break;
                 }
@@ -1168,13 +1214,13 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
         }
         if((k_2 % 8U) != 0U)
         {
-            _S40 = lane_0 == (chunks_0 % 32U);
+            _S49 = lane_0 == (chunks_0 % 32U);
         }
         else
         {
-            _S40 = false;
+            _S49 = false;
         }
-        if(_S40)
+        if(_S49)
         {
             i_2 = chunks_0 * 8U;
             for(;;)
@@ -1187,36 +1233,36 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     break;
                 }
                 thread array<float, int(2)> bv_1;
-                float _S74 = halfB_0(_S36.baseB_0 + min(col0_0, (&kernelContext_7)->p_0->n_1 - 1U) * (&kernelContext_7)->p_0->ldb_1 + i_2, &kernelContext_7);
-                bv_1[0U] = _S74;
-                float _S75 = halfB_0(_S36.baseB_0 + min(col0_0 + 1U, (&kernelContext_7)->p_0->n_1 - 1U) * (&kernelContext_7)->p_0->ldb_1 + i_2, &kernelContext_7);
-                bv_1[1U] = _S75;
+                float _S83 = elemB_0(_S45.baseB_0 + min(col0_0, (&kernelContext_9)->p_0->n_1 - 1U) * (&kernelContext_9)->p_0->ldb_1 + i_2, &kernelContext_9);
+                bv_1[0U] = _S83;
+                float _S84 = elemB_0(_S45.baseB_0 + min(col0_0 + 1U, (&kernelContext_9)->p_0->n_1 - 1U) * (&kernelContext_9)->p_0->ldb_1 + i_2, &kernelContext_9);
+                bv_1[1U] = _S84;
                 for(;;)
                 {
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(0U >= _S37)
+                            if(0U >= _S46)
                             {
-                                _S41 = int(1);
+                                _S50 = int(1);
                                 break;
                             }
-                            float _S76 = halfA_0(_S36.baseA_0 + i_2, &kernelContext_7);
-                            acc_1[0U][0U] = fma(_S76, bv_1[0U], acc_1[0U][0U]);
-                            acc_1[0U][1U] = fma(_S76, bv_1[1U], acc_1[0U][1U]);
-                            _S41 = int(3);
+                            float _S85 = elemA_0(_S45.baseA_0 + i_2, &kernelContext_9);
+                            acc_1[0U][0U] = fma(_S85, bv_1[0U], acc_1[0U][0U]);
+                            acc_1[0U][1U] = fma(_S85, bv_1[1U], acc_1[0U][1U]);
+                            _S50 = int(3);
                             break;
                         }
-                        if(_S41 != int(3))
+                        if(_S50 != int(3))
                         {
-                            _S42 = _S41;
+                            _S51 = _S50;
                             break;
                         }
-                        _S42 = int(2);
+                        _S51 = int(2);
                         break;
                     }
-                    if(_S42 != int(2))
+                    if(_S51 != int(2))
                     {
                         break;
                     }
@@ -1224,26 +1270,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(1U >= _S37)
+                            if(1U >= _S46)
                             {
-                                _S43 = int(1);
+                                _S52 = int(1);
                                 break;
                             }
-                            float _S77 = halfA_0(_S36.baseA_0 + (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[1U][0U] = fma(_S77, bv_1[0U], acc_1[1U][0U]);
-                            acc_1[1U][1U] = fma(_S77, bv_1[1U], acc_1[1U][1U]);
-                            _S43 = int(3);
+                            float _S86 = elemA_0(_S45.baseA_0 + (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[1U][0U] = fma(_S86, bv_1[0U], acc_1[1U][0U]);
+                            acc_1[1U][1U] = fma(_S86, bv_1[1U], acc_1[1U][1U]);
+                            _S52 = int(3);
                             break;
                         }
-                        if(_S43 != int(3))
+                        if(_S52 != int(3))
                         {
-                            _S44 = _S43;
+                            _S53 = _S52;
                             break;
                         }
-                        _S44 = int(2);
+                        _S53 = int(2);
                         break;
                     }
-                    if(_S44 != int(2))
+                    if(_S53 != int(2))
                     {
                         break;
                     }
@@ -1251,26 +1297,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(2U >= _S37)
+                            if(2U >= _S46)
                             {
-                                _S45 = int(1);
+                                _S54 = int(1);
                                 break;
                             }
-                            float _S78 = halfA_0(_S36.baseA_0 + 2U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[2U][0U] = fma(_S78, bv_1[0U], acc_1[2U][0U]);
-                            acc_1[2U][1U] = fma(_S78, bv_1[1U], acc_1[2U][1U]);
-                            _S45 = int(3);
+                            float _S87 = elemA_0(_S45.baseA_0 + 2U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[2U][0U] = fma(_S87, bv_1[0U], acc_1[2U][0U]);
+                            acc_1[2U][1U] = fma(_S87, bv_1[1U], acc_1[2U][1U]);
+                            _S54 = int(3);
                             break;
                         }
-                        if(_S45 != int(3))
+                        if(_S54 != int(3))
                         {
-                            _S46 = _S45;
+                            _S55 = _S54;
                             break;
                         }
-                        _S46 = int(2);
+                        _S55 = int(2);
                         break;
                     }
-                    if(_S46 != int(2))
+                    if(_S55 != int(2))
                     {
                         break;
                     }
@@ -1278,26 +1324,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(3U >= _S37)
+                            if(3U >= _S46)
                             {
-                                _S47 = int(1);
+                                _S56 = int(1);
                                 break;
                             }
-                            float _S79 = halfA_0(_S36.baseA_0 + 3U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[3U][0U] = fma(_S79, bv_1[0U], acc_1[3U][0U]);
-                            acc_1[3U][1U] = fma(_S79, bv_1[1U], acc_1[3U][1U]);
-                            _S47 = int(3);
+                            float _S88 = elemA_0(_S45.baseA_0 + 3U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[3U][0U] = fma(_S88, bv_1[0U], acc_1[3U][0U]);
+                            acc_1[3U][1U] = fma(_S88, bv_1[1U], acc_1[3U][1U]);
+                            _S56 = int(3);
                             break;
                         }
-                        if(_S47 != int(3))
+                        if(_S56 != int(3))
                         {
-                            _S48 = _S47;
+                            _S57 = _S56;
                             break;
                         }
-                        _S48 = int(2);
+                        _S57 = int(2);
                         break;
                     }
-                    if(_S48 != int(2))
+                    if(_S57 != int(2))
                     {
                         break;
                     }
@@ -1305,26 +1351,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(4U >= _S37)
+                            if(4U >= _S46)
                             {
-                                _S49 = int(1);
+                                _S58 = int(1);
                                 break;
                             }
-                            float _S80 = halfA_0(_S36.baseA_0 + 4U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[4U][0U] = fma(_S80, bv_1[0U], acc_1[4U][0U]);
-                            acc_1[4U][1U] = fma(_S80, bv_1[1U], acc_1[4U][1U]);
-                            _S49 = int(3);
+                            float _S89 = elemA_0(_S45.baseA_0 + 4U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[4U][0U] = fma(_S89, bv_1[0U], acc_1[4U][0U]);
+                            acc_1[4U][1U] = fma(_S89, bv_1[1U], acc_1[4U][1U]);
+                            _S58 = int(3);
                             break;
                         }
-                        if(_S49 != int(3))
+                        if(_S58 != int(3))
                         {
-                            _S50 = _S49;
+                            _S59 = _S58;
                             break;
                         }
-                        _S50 = int(2);
+                        _S59 = int(2);
                         break;
                     }
-                    if(_S50 != int(2))
+                    if(_S59 != int(2))
                     {
                         break;
                     }
@@ -1332,26 +1378,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(5U >= _S37)
+                            if(5U >= _S46)
                             {
-                                _S51 = int(1);
+                                _S60 = int(1);
                                 break;
                             }
-                            float _S81 = halfA_0(_S36.baseA_0 + 5U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[5U][0U] = fma(_S81, bv_1[0U], acc_1[5U][0U]);
-                            acc_1[5U][1U] = fma(_S81, bv_1[1U], acc_1[5U][1U]);
-                            _S51 = int(3);
+                            float _S90 = elemA_0(_S45.baseA_0 + 5U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[5U][0U] = fma(_S90, bv_1[0U], acc_1[5U][0U]);
+                            acc_1[5U][1U] = fma(_S90, bv_1[1U], acc_1[5U][1U]);
+                            _S60 = int(3);
                             break;
                         }
-                        if(_S51 != int(3))
+                        if(_S60 != int(3))
                         {
-                            _S52 = _S51;
+                            _S61 = _S60;
                             break;
                         }
-                        _S52 = int(2);
+                        _S61 = int(2);
                         break;
                     }
-                    if(_S52 != int(2))
+                    if(_S61 != int(2))
                     {
                         break;
                     }
@@ -1359,26 +1405,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(6U >= _S37)
+                            if(6U >= _S46)
                             {
-                                _S53 = int(1);
+                                _S62 = int(1);
                                 break;
                             }
-                            float _S82 = halfA_0(_S36.baseA_0 + 6U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[6U][0U] = fma(_S82, bv_1[0U], acc_1[6U][0U]);
-                            acc_1[6U][1U] = fma(_S82, bv_1[1U], acc_1[6U][1U]);
-                            _S53 = int(3);
+                            float _S91 = elemA_0(_S45.baseA_0 + 6U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[6U][0U] = fma(_S91, bv_1[0U], acc_1[6U][0U]);
+                            acc_1[6U][1U] = fma(_S91, bv_1[1U], acc_1[6U][1U]);
+                            _S62 = int(3);
                             break;
                         }
-                        if(_S53 != int(3))
+                        if(_S62 != int(3))
                         {
-                            _S54 = _S53;
+                            _S63 = _S62;
                             break;
                         }
-                        _S54 = int(2);
+                        _S63 = int(2);
                         break;
                     }
-                    if(_S54 != int(2))
+                    if(_S63 != int(2))
                     {
                         break;
                     }
@@ -1386,26 +1432,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(7U >= _S37)
+                            if(7U >= _S46)
                             {
-                                _S55 = int(1);
+                                _S64 = int(1);
                                 break;
                             }
-                            float _S83 = halfA_0(_S36.baseA_0 + 7U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[7U][0U] = fma(_S83, bv_1[0U], acc_1[7U][0U]);
-                            acc_1[7U][1U] = fma(_S83, bv_1[1U], acc_1[7U][1U]);
-                            _S55 = int(3);
+                            float _S92 = elemA_0(_S45.baseA_0 + 7U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[7U][0U] = fma(_S92, bv_1[0U], acc_1[7U][0U]);
+                            acc_1[7U][1U] = fma(_S92, bv_1[1U], acc_1[7U][1U]);
+                            _S64 = int(3);
                             break;
                         }
-                        if(_S55 != int(3))
+                        if(_S64 != int(3))
                         {
-                            _S56 = _S55;
+                            _S65 = _S64;
                             break;
                         }
-                        _S56 = int(2);
+                        _S65 = int(2);
                         break;
                     }
-                    if(_S56 != int(2))
+                    if(_S65 != int(2))
                     {
                         break;
                     }
@@ -1413,26 +1459,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(8U >= _S37)
+                            if(8U >= _S46)
                             {
-                                _S57 = int(1);
+                                _S66 = int(1);
                                 break;
                             }
-                            float _S84 = halfA_0(_S36.baseA_0 + 8U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[8U][0U] = fma(_S84, bv_1[0U], acc_1[8U][0U]);
-                            acc_1[8U][1U] = fma(_S84, bv_1[1U], acc_1[8U][1U]);
-                            _S57 = int(3);
+                            float _S93 = elemA_0(_S45.baseA_0 + 8U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[8U][0U] = fma(_S93, bv_1[0U], acc_1[8U][0U]);
+                            acc_1[8U][1U] = fma(_S93, bv_1[1U], acc_1[8U][1U]);
+                            _S66 = int(3);
                             break;
                         }
-                        if(_S57 != int(3))
+                        if(_S66 != int(3))
                         {
-                            _S58 = _S57;
+                            _S67 = _S66;
                             break;
                         }
-                        _S58 = int(2);
+                        _S67 = int(2);
                         break;
                     }
-                    if(_S58 != int(2))
+                    if(_S67 != int(2))
                     {
                         break;
                     }
@@ -1440,26 +1486,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(9U >= _S37)
+                            if(9U >= _S46)
                             {
-                                _S59 = int(1);
+                                _S68 = int(1);
                                 break;
                             }
-                            float _S85 = halfA_0(_S36.baseA_0 + 9U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[9U][0U] = fma(_S85, bv_1[0U], acc_1[9U][0U]);
-                            acc_1[9U][1U] = fma(_S85, bv_1[1U], acc_1[9U][1U]);
-                            _S59 = int(3);
+                            float _S94 = elemA_0(_S45.baseA_0 + 9U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[9U][0U] = fma(_S94, bv_1[0U], acc_1[9U][0U]);
+                            acc_1[9U][1U] = fma(_S94, bv_1[1U], acc_1[9U][1U]);
+                            _S68 = int(3);
                             break;
                         }
-                        if(_S59 != int(3))
+                        if(_S68 != int(3))
                         {
-                            _S60 = _S59;
+                            _S69 = _S68;
                             break;
                         }
-                        _S60 = int(2);
+                        _S69 = int(2);
                         break;
                     }
-                    if(_S60 != int(2))
+                    if(_S69 != int(2))
                     {
                         break;
                     }
@@ -1467,26 +1513,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(10U >= _S37)
+                            if(10U >= _S46)
                             {
-                                _S61 = int(1);
+                                _S70 = int(1);
                                 break;
                             }
-                            float _S86 = halfA_0(_S36.baseA_0 + 10U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[10U][0U] = fma(_S86, bv_1[0U], acc_1[10U][0U]);
-                            acc_1[10U][1U] = fma(_S86, bv_1[1U], acc_1[10U][1U]);
-                            _S61 = int(3);
+                            float _S95 = elemA_0(_S45.baseA_0 + 10U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[10U][0U] = fma(_S95, bv_1[0U], acc_1[10U][0U]);
+                            acc_1[10U][1U] = fma(_S95, bv_1[1U], acc_1[10U][1U]);
+                            _S70 = int(3);
                             break;
                         }
-                        if(_S61 != int(3))
+                        if(_S70 != int(3))
                         {
-                            _S62 = _S61;
+                            _S71 = _S70;
                             break;
                         }
-                        _S62 = int(2);
+                        _S71 = int(2);
                         break;
                     }
-                    if(_S62 != int(2))
+                    if(_S71 != int(2))
                     {
                         break;
                     }
@@ -1494,26 +1540,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(11U >= _S37)
+                            if(11U >= _S46)
                             {
-                                _S63 = int(1);
+                                _S72 = int(1);
                                 break;
                             }
-                            float _S87 = halfA_0(_S36.baseA_0 + 11U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[11U][0U] = fma(_S87, bv_1[0U], acc_1[11U][0U]);
-                            acc_1[11U][1U] = fma(_S87, bv_1[1U], acc_1[11U][1U]);
-                            _S63 = int(3);
+                            float _S96 = elemA_0(_S45.baseA_0 + 11U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[11U][0U] = fma(_S96, bv_1[0U], acc_1[11U][0U]);
+                            acc_1[11U][1U] = fma(_S96, bv_1[1U], acc_1[11U][1U]);
+                            _S72 = int(3);
                             break;
                         }
-                        if(_S63 != int(3))
+                        if(_S72 != int(3))
                         {
-                            _S64 = _S63;
+                            _S73 = _S72;
                             break;
                         }
-                        _S64 = int(2);
+                        _S73 = int(2);
                         break;
                     }
-                    if(_S64 != int(2))
+                    if(_S73 != int(2))
                     {
                         break;
                     }
@@ -1521,26 +1567,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(12U >= _S37)
+                            if(12U >= _S46)
                             {
-                                _S65 = int(1);
+                                _S74 = int(1);
                                 break;
                             }
-                            float _S88 = halfA_0(_S36.baseA_0 + 12U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[12U][0U] = fma(_S88, bv_1[0U], acc_1[12U][0U]);
-                            acc_1[12U][1U] = fma(_S88, bv_1[1U], acc_1[12U][1U]);
-                            _S65 = int(3);
+                            float _S97 = elemA_0(_S45.baseA_0 + 12U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[12U][0U] = fma(_S97, bv_1[0U], acc_1[12U][0U]);
+                            acc_1[12U][1U] = fma(_S97, bv_1[1U], acc_1[12U][1U]);
+                            _S74 = int(3);
                             break;
                         }
-                        if(_S65 != int(3))
+                        if(_S74 != int(3))
                         {
-                            _S66 = _S65;
+                            _S75 = _S74;
                             break;
                         }
-                        _S66 = int(2);
+                        _S75 = int(2);
                         break;
                     }
-                    if(_S66 != int(2))
+                    if(_S75 != int(2))
                     {
                         break;
                     }
@@ -1548,26 +1594,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(13U >= _S37)
+                            if(13U >= _S46)
                             {
-                                _S67 = int(1);
+                                _S76 = int(1);
                                 break;
                             }
-                            float _S89 = halfA_0(_S36.baseA_0 + 13U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[13U][0U] = fma(_S89, bv_1[0U], acc_1[13U][0U]);
-                            acc_1[13U][1U] = fma(_S89, bv_1[1U], acc_1[13U][1U]);
-                            _S67 = int(3);
+                            float _S98 = elemA_0(_S45.baseA_0 + 13U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[13U][0U] = fma(_S98, bv_1[0U], acc_1[13U][0U]);
+                            acc_1[13U][1U] = fma(_S98, bv_1[1U], acc_1[13U][1U]);
+                            _S76 = int(3);
                             break;
                         }
-                        if(_S67 != int(3))
+                        if(_S76 != int(3))
                         {
-                            _S68 = _S67;
+                            _S77 = _S76;
                             break;
                         }
-                        _S68 = int(2);
+                        _S77 = int(2);
                         break;
                     }
-                    if(_S68 != int(2))
+                    if(_S77 != int(2))
                     {
                         break;
                     }
@@ -1575,26 +1621,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(14U >= _S37)
+                            if(14U >= _S46)
                             {
-                                _S69 = int(1);
+                                _S78 = int(1);
                                 break;
                             }
-                            float _S90 = halfA_0(_S36.baseA_0 + 14U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[14U][0U] = fma(_S90, bv_1[0U], acc_1[14U][0U]);
-                            acc_1[14U][1U] = fma(_S90, bv_1[1U], acc_1[14U][1U]);
-                            _S69 = int(3);
+                            float _S99 = elemA_0(_S45.baseA_0 + 14U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[14U][0U] = fma(_S99, bv_1[0U], acc_1[14U][0U]);
+                            acc_1[14U][1U] = fma(_S99, bv_1[1U], acc_1[14U][1U]);
+                            _S78 = int(3);
                             break;
                         }
-                        if(_S69 != int(3))
+                        if(_S78 != int(3))
                         {
-                            _S70 = _S69;
+                            _S79 = _S78;
                             break;
                         }
-                        _S70 = int(2);
+                        _S79 = int(2);
                         break;
                     }
-                    if(_S70 != int(2))
+                    if(_S79 != int(2))
                     {
                         break;
                     }
@@ -1602,26 +1648,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(15U >= _S37)
+                            if(15U >= _S46)
                             {
-                                _S71 = int(1);
+                                _S80 = int(1);
                                 break;
                             }
-                            float _S91 = halfA_0(_S36.baseA_0 + 15U * (&kernelContext_7)->p_0->lda_1 + i_2, &kernelContext_7);
-                            acc_1[15U][0U] = fma(_S91, bv_1[0U], acc_1[15U][0U]);
-                            acc_1[15U][1U] = fma(_S91, bv_1[1U], acc_1[15U][1U]);
-                            _S71 = int(3);
+                            float _S100 = elemA_0(_S45.baseA_0 + 15U * (&kernelContext_9)->p_0->lda_1 + i_2, &kernelContext_9);
+                            acc_1[15U][0U] = fma(_S100, bv_1[0U], acc_1[15U][0U]);
+                            acc_1[15U][1U] = fma(_S100, bv_1[1U], acc_1[15U][1U]);
+                            _S80 = int(3);
                             break;
                         }
-                        if(_S71 != int(3))
+                        if(_S80 != int(3))
                         {
-                            _S72 = _S71;
+                            _S81 = _S80;
                             break;
                         }
-                        _S72 = int(2);
+                        _S81 = int(2);
                         break;
                     }
-                    if(_S72 != int(2))
+                    if(_S81 != int(2))
                     {
                         break;
                     }
@@ -1633,165 +1679,122 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     }
     else
     {
-        if(col0_0 < ((&kernelContext_7)->p_0->n_1))
+        if(col0_0 < ((&kernelContext_9)->p_0->n_1))
         {
-            bool _S92 = ((((&kernelContext_7)->p_0->lda_1) | ((&kernelContext_7)->p_0->strideA_0)) & 1U) == 0U;
-            if(((((&kernelContext_7)->p_0->ldb_1) | ((&kernelContext_7)->p_0->strideB_0)) & 1U) == 0U)
-            {
-                _S40 = (col0_0 + 4U) <= ((&kernelContext_7)->p_0->n_1);
-            }
-            else
-            {
-                _S40 = false;
-            }
+            bool _S101 = (col0_0 + 4U) <= ((&kernelContext_9)->p_0->n_1);
             ch_0 = lane_0;
             for(;;)
             {
-                uint _S93 = 2U * ch_0;
-                if(_S93 < k_2)
+                uint _S102 = 2U * ch_0;
+                if(_S102 < k_2)
                 {
                 }
                 else
                 {
                     break;
                 }
-                uint _S94 = _S93 + 1U;
-                bool _S95 = _S94 < k_2;
+                uint _S103 = _S102 + 1U;
+                bool _S104 = _S103 < k_2;
                 thread array<float, int(4)> b0_0;
                 thread array<float, int(4)> b1_0;
-                uint _S96 = k_2 - 1U;
-                uint e_4 = _S36.baseB_0 + min(_S93, _S96) * (&kernelContext_7)->p_0->ldb_1 + col0_0;
-                thread array<float, int(4)> v_2;
-                if(_S40)
-                {
-                    uint _S97 = e_4 >> 1U;
-                    uint device* _S98 = (&kernelContext_7)->b_0+_S97;
-                    uint device* _S99 = (&kernelContext_7)->b_0+(_S97 + 1U);
-                    v_2[int(0)] = lowHalf_0(*_S98);
-                    v_2[int(1)] = highHalf_0(*_S98);
-                    v_2[int(2)] = lowHalf_0(*_S99);
-                    v_2[int(3)] = highHalf_0(*_S99);
-                }
-                else
-                {
-                    float _S100 = halfB_0(e_4 + min(0U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_2[0U] = _S100;
-                    float _S101 = halfB_0(e_4 + min(1U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_2[1U] = _S101;
-                    float _S102 = halfB_0(e_4 + min(2U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_2[2U] = _S102;
-                    float _S103 = halfB_0(e_4 + min(3U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_2[3U] = _S103;
-                }
-                b0_0[0U] = v_2[0U];
-                b0_0[1U] = v_2[1U];
-                b0_0[2U] = v_2[2U];
-                b0_0[3U] = v_2[3U];
-                uint e_5 = _S36.baseB_0 + min(_S94, _S96) * (&kernelContext_7)->p_0->ldb_1 + col0_0;
+                uint _S105 = k_2 - 1U;
+                uint e_6 = _S45.baseB_0 + min(_S102, _S105) * (&kernelContext_9)->p_0->ldb_1 + col0_0;
                 thread array<float, int(4)> v_3;
-                if(_S40)
+                if(_S101)
                 {
-                    uint _S104 = e_5 >> 1U;
-                    uint device* _S105 = (&kernelContext_7)->b_0+_S104;
-                    uint device* _S106 = (&kernelContext_7)->b_0+(_S104 + 1U);
-                    v_3[int(0)] = lowHalf_0(*_S105);
-                    v_3[int(1)] = highHalf_0(*_S105);
-                    v_3[int(2)] = lowHalf_0(*_S106);
-                    v_3[int(3)] = highHalf_0(*_S106);
+                    load4B_0(e_6, &v_3, &kernelContext_9);
                 }
                 else
                 {
-                    float _S107 = halfB_0(e_5 + min(0U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_3[0U] = _S107;
-                    float _S108 = halfB_0(e_5 + min(1U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_3[1U] = _S108;
-                    float _S109 = halfB_0(e_5 + min(2U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_3[2U] = _S109;
-                    float _S110 = halfB_0(e_5 + min(3U, (&kernelContext_7)->p_0->n_1 - 1U - col0_0), &kernelContext_7);
-                    v_3[3U] = _S110;
+                    float _S106 = elemB_0(e_6 + min(0U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_3[0U] = _S106;
+                    float _S107 = elemB_0(e_6 + min(1U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_3[1U] = _S107;
+                    float _S108 = elemB_0(e_6 + min(2U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_3[2U] = _S108;
+                    float _S109 = elemB_0(e_6 + min(3U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_3[3U] = _S109;
                 }
-                b1_0[0U] = v_3[0U];
-                b1_0[1U] = v_3[1U];
-                b1_0[2U] = v_3[2U];
-                b1_0[3U] = v_3[3U];
+                b0_0[0U] = v_3[0U];
+                b0_0[1U] = v_3[1U];
+                b0_0[2U] = v_3[2U];
+                b0_0[3U] = v_3[3U];
+                uint e_7 = _S45.baseB_0 + min(_S103, _S105) * (&kernelContext_9)->p_0->ldb_1 + col0_0;
+                thread array<float, int(4)> v_4;
+                if(_S101)
+                {
+                    load4B_0(e_7, &v_4, &kernelContext_9);
+                }
+                else
+                {
+                    float _S110 = elemB_0(e_7 + min(0U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_4[0U] = _S110;
+                    float _S111 = elemB_0(e_7 + min(1U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_4[1U] = _S111;
+                    float _S112 = elemB_0(e_7 + min(2U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_4[2U] = _S112;
+                    float _S113 = elemB_0(e_7 + min(3U, (&kernelContext_9)->p_0->n_1 - 1U - col0_0), &kernelContext_9);
+                    v_4[3U] = _S113;
+                }
+                b1_0[0U] = v_4[0U];
+                b1_0[1U] = v_4[1U];
+                b1_0[2U] = v_4[2U];
+                b1_0[3U] = v_4[3U];
                 for(;;)
                 {
-                    float a1_0;
-                    float a0_0;
-                    bool _S111;
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(0U >= _S37)
+                            if(0U >= _S46)
                             {
-                                _S41 = int(1);
+                                _S50 = int(1);
                                 break;
                             }
-                            uint e_6 = _S36.baseA_0 + _S93;
-                            if(_S92)
+                            uint e_8 = _S45.baseA_0 + _S102;
+                            thread float a0_0;
+                            thread float a1_0 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_8, &a0_0, &a1_0, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
-                            }
-                            if(_S111)
-                            {
-                                uint device* _S112 = (&kernelContext_7)->a_0+(e_6 >> 1U);
-                                float _S113 = highHalf_0(*_S112);
-                                a0_0 = lowHalf_0(*_S112);
-                                a1_0 = _S113;
-                            }
-                            else
-                            {
-                                float _S114 = halfA_0(e_6, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S115 = halfA_0(e_6 + 1U, &kernelContext_7);
-                                    a0_0 = _S115;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S116 = a0_0;
+                                float _S114 = elemA_0(e_8, &kernelContext_9);
                                 a0_0 = _S114;
-                                a1_0 = _S116;
                             }
                             acc_1[0U][0U] = fma(a0_0, b0_0[0U], acc_1[0U][0U]);
-                            if(_S95)
+                            if(_S104)
                             {
                                 acc_1[0U][0U] = fma(a1_0, b1_0[0U], acc_1[0U][0U]);
                             }
                             acc_1[0U][1U] = fma(a0_0, b0_0[1U], acc_1[0U][1U]);
-                            if(_S95)
+                            if(_S104)
                             {
                                 acc_1[0U][1U] = fma(a1_0, b1_0[1U], acc_1[0U][1U]);
                             }
                             acc_1[0U][2U] = fma(a0_0, b0_0[2U], acc_1[0U][2U]);
-                            if(_S95)
+                            if(_S104)
                             {
                                 acc_1[0U][2U] = fma(a1_0, b1_0[2U], acc_1[0U][2U]);
                             }
                             acc_1[0U][3U] = fma(a0_0, b0_0[3U], acc_1[0U][3U]);
-                            if(_S95)
+                            if(_S104)
                             {
                                 acc_1[0U][3U] = fma(a1_0, b1_0[3U], acc_1[0U][3U]);
                             }
-                            _S41 = int(3);
+                            _S50 = int(3);
                             break;
                         }
-                        if(_S41 != int(3))
+                        if(_S50 != int(3))
                         {
-                            _S42 = _S41;
+                            _S51 = _S50;
                             break;
                         }
-                        _S42 = int(2);
+                        _S51 = int(2);
                         break;
                     }
-                    if(_S42 != int(2))
+                    if(_S51 != int(2))
                     {
                         break;
                     }
@@ -1799,75 +1802,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(1U >= _S37)
+                            if(1U >= _S46)
                             {
-                                _S43 = int(1);
+                                _S52 = int(1);
                                 break;
                             }
-                            uint e_7 = _S36.baseA_0 + (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_9 = _S45.baseA_0 + (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_1;
+                            thread float a1_1 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_9, &a0_1, &a1_1, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S115 = elemA_0(e_9, &kernelContext_9);
+                                a0_1 = _S115;
                             }
-                            if(_S111)
+                            acc_1[1U][0U] = fma(a0_1, b0_0[0U], acc_1[1U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S117 = (&kernelContext_7)->a_0+(e_7 >> 1U);
-                                float _S118 = highHalf_0(*_S117);
-                                a0_0 = lowHalf_0(*_S117);
-                                a1_0 = _S118;
+                                acc_1[1U][0U] = fma(a1_1, b1_0[0U], acc_1[1U][0U]);
                             }
-                            else
+                            acc_1[1U][1U] = fma(a0_1, b0_0[1U], acc_1[1U][1U]);
+                            if(_S104)
                             {
-                                float _S119 = halfA_0(e_7, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S120 = halfA_0(e_7 + 1U, &kernelContext_7);
-                                    a0_0 = _S120;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S121 = a0_0;
-                                a0_0 = _S119;
-                                a1_0 = _S121;
+                                acc_1[1U][1U] = fma(a1_1, b1_0[1U], acc_1[1U][1U]);
                             }
-                            acc_1[1U][0U] = fma(a0_0, b0_0[0U], acc_1[1U][0U]);
-                            if(_S95)
+                            acc_1[1U][2U] = fma(a0_1, b0_0[2U], acc_1[1U][2U]);
+                            if(_S104)
                             {
-                                acc_1[1U][0U] = fma(a1_0, b1_0[0U], acc_1[1U][0U]);
+                                acc_1[1U][2U] = fma(a1_1, b1_0[2U], acc_1[1U][2U]);
                             }
-                            acc_1[1U][1U] = fma(a0_0, b0_0[1U], acc_1[1U][1U]);
-                            if(_S95)
+                            acc_1[1U][3U] = fma(a0_1, b0_0[3U], acc_1[1U][3U]);
+                            if(_S104)
                             {
-                                acc_1[1U][1U] = fma(a1_0, b1_0[1U], acc_1[1U][1U]);
+                                acc_1[1U][3U] = fma(a1_1, b1_0[3U], acc_1[1U][3U]);
                             }
-                            acc_1[1U][2U] = fma(a0_0, b0_0[2U], acc_1[1U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[1U][2U] = fma(a1_0, b1_0[2U], acc_1[1U][2U]);
-                            }
-                            acc_1[1U][3U] = fma(a0_0, b0_0[3U], acc_1[1U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[1U][3U] = fma(a1_0, b1_0[3U], acc_1[1U][3U]);
-                            }
-                            _S43 = int(3);
+                            _S52 = int(3);
                             break;
                         }
-                        if(_S43 != int(3))
+                        if(_S52 != int(3))
                         {
-                            _S44 = _S43;
+                            _S53 = _S52;
                             break;
                         }
-                        _S44 = int(2);
+                        _S53 = int(2);
                         break;
                     }
-                    if(_S44 != int(2))
+                    if(_S53 != int(2))
                     {
                         break;
                     }
@@ -1875,75 +1858,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(2U >= _S37)
+                            if(2U >= _S46)
                             {
-                                _S45 = int(1);
+                                _S54 = int(1);
                                 break;
                             }
-                            uint e_8 = _S36.baseA_0 + 2U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_10 = _S45.baseA_0 + 2U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_2;
+                            thread float a1_2 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_10, &a0_2, &a1_2, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S116 = elemA_0(e_10, &kernelContext_9);
+                                a0_2 = _S116;
                             }
-                            if(_S111)
+                            acc_1[2U][0U] = fma(a0_2, b0_0[0U], acc_1[2U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S122 = (&kernelContext_7)->a_0+(e_8 >> 1U);
-                                float _S123 = highHalf_0(*_S122);
-                                a0_0 = lowHalf_0(*_S122);
-                                a1_0 = _S123;
+                                acc_1[2U][0U] = fma(a1_2, b1_0[0U], acc_1[2U][0U]);
                             }
-                            else
+                            acc_1[2U][1U] = fma(a0_2, b0_0[1U], acc_1[2U][1U]);
+                            if(_S104)
                             {
-                                float _S124 = halfA_0(e_8, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S125 = halfA_0(e_8 + 1U, &kernelContext_7);
-                                    a0_0 = _S125;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S126 = a0_0;
-                                a0_0 = _S124;
-                                a1_0 = _S126;
+                                acc_1[2U][1U] = fma(a1_2, b1_0[1U], acc_1[2U][1U]);
                             }
-                            acc_1[2U][0U] = fma(a0_0, b0_0[0U], acc_1[2U][0U]);
-                            if(_S95)
+                            acc_1[2U][2U] = fma(a0_2, b0_0[2U], acc_1[2U][2U]);
+                            if(_S104)
                             {
-                                acc_1[2U][0U] = fma(a1_0, b1_0[0U], acc_1[2U][0U]);
+                                acc_1[2U][2U] = fma(a1_2, b1_0[2U], acc_1[2U][2U]);
                             }
-                            acc_1[2U][1U] = fma(a0_0, b0_0[1U], acc_1[2U][1U]);
-                            if(_S95)
+                            acc_1[2U][3U] = fma(a0_2, b0_0[3U], acc_1[2U][3U]);
+                            if(_S104)
                             {
-                                acc_1[2U][1U] = fma(a1_0, b1_0[1U], acc_1[2U][1U]);
+                                acc_1[2U][3U] = fma(a1_2, b1_0[3U], acc_1[2U][3U]);
                             }
-                            acc_1[2U][2U] = fma(a0_0, b0_0[2U], acc_1[2U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[2U][2U] = fma(a1_0, b1_0[2U], acc_1[2U][2U]);
-                            }
-                            acc_1[2U][3U] = fma(a0_0, b0_0[3U], acc_1[2U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[2U][3U] = fma(a1_0, b1_0[3U], acc_1[2U][3U]);
-                            }
-                            _S45 = int(3);
+                            _S54 = int(3);
                             break;
                         }
-                        if(_S45 != int(3))
+                        if(_S54 != int(3))
                         {
-                            _S46 = _S45;
+                            _S55 = _S54;
                             break;
                         }
-                        _S46 = int(2);
+                        _S55 = int(2);
                         break;
                     }
-                    if(_S46 != int(2))
+                    if(_S55 != int(2))
                     {
                         break;
                     }
@@ -1951,75 +1914,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(3U >= _S37)
+                            if(3U >= _S46)
                             {
-                                _S47 = int(1);
+                                _S56 = int(1);
                                 break;
                             }
-                            uint e_9 = _S36.baseA_0 + 3U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_11 = _S45.baseA_0 + 3U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_3;
+                            thread float a1_3 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_11, &a0_3, &a1_3, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S117 = elemA_0(e_11, &kernelContext_9);
+                                a0_3 = _S117;
                             }
-                            if(_S111)
+                            acc_1[3U][0U] = fma(a0_3, b0_0[0U], acc_1[3U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S127 = (&kernelContext_7)->a_0+(e_9 >> 1U);
-                                float _S128 = highHalf_0(*_S127);
-                                a0_0 = lowHalf_0(*_S127);
-                                a1_0 = _S128;
+                                acc_1[3U][0U] = fma(a1_3, b1_0[0U], acc_1[3U][0U]);
                             }
-                            else
+                            acc_1[3U][1U] = fma(a0_3, b0_0[1U], acc_1[3U][1U]);
+                            if(_S104)
                             {
-                                float _S129 = halfA_0(e_9, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S130 = halfA_0(e_9 + 1U, &kernelContext_7);
-                                    a0_0 = _S130;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S131 = a0_0;
-                                a0_0 = _S129;
-                                a1_0 = _S131;
+                                acc_1[3U][1U] = fma(a1_3, b1_0[1U], acc_1[3U][1U]);
                             }
-                            acc_1[3U][0U] = fma(a0_0, b0_0[0U], acc_1[3U][0U]);
-                            if(_S95)
+                            acc_1[3U][2U] = fma(a0_3, b0_0[2U], acc_1[3U][2U]);
+                            if(_S104)
                             {
-                                acc_1[3U][0U] = fma(a1_0, b1_0[0U], acc_1[3U][0U]);
+                                acc_1[3U][2U] = fma(a1_3, b1_0[2U], acc_1[3U][2U]);
                             }
-                            acc_1[3U][1U] = fma(a0_0, b0_0[1U], acc_1[3U][1U]);
-                            if(_S95)
+                            acc_1[3U][3U] = fma(a0_3, b0_0[3U], acc_1[3U][3U]);
+                            if(_S104)
                             {
-                                acc_1[3U][1U] = fma(a1_0, b1_0[1U], acc_1[3U][1U]);
+                                acc_1[3U][3U] = fma(a1_3, b1_0[3U], acc_1[3U][3U]);
                             }
-                            acc_1[3U][2U] = fma(a0_0, b0_0[2U], acc_1[3U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[3U][2U] = fma(a1_0, b1_0[2U], acc_1[3U][2U]);
-                            }
-                            acc_1[3U][3U] = fma(a0_0, b0_0[3U], acc_1[3U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[3U][3U] = fma(a1_0, b1_0[3U], acc_1[3U][3U]);
-                            }
-                            _S47 = int(3);
+                            _S56 = int(3);
                             break;
                         }
-                        if(_S47 != int(3))
+                        if(_S56 != int(3))
                         {
-                            _S48 = _S47;
+                            _S57 = _S56;
                             break;
                         }
-                        _S48 = int(2);
+                        _S57 = int(2);
                         break;
                     }
-                    if(_S48 != int(2))
+                    if(_S57 != int(2))
                     {
                         break;
                     }
@@ -2027,75 +1970,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(4U >= _S37)
+                            if(4U >= _S46)
                             {
-                                _S49 = int(1);
+                                _S58 = int(1);
                                 break;
                             }
-                            uint e_10 = _S36.baseA_0 + 4U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_12 = _S45.baseA_0 + 4U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_4;
+                            thread float a1_4 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_12, &a0_4, &a1_4, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S118 = elemA_0(e_12, &kernelContext_9);
+                                a0_4 = _S118;
                             }
-                            if(_S111)
+                            acc_1[4U][0U] = fma(a0_4, b0_0[0U], acc_1[4U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S132 = (&kernelContext_7)->a_0+(e_10 >> 1U);
-                                float _S133 = highHalf_0(*_S132);
-                                a0_0 = lowHalf_0(*_S132);
-                                a1_0 = _S133;
+                                acc_1[4U][0U] = fma(a1_4, b1_0[0U], acc_1[4U][0U]);
                             }
-                            else
+                            acc_1[4U][1U] = fma(a0_4, b0_0[1U], acc_1[4U][1U]);
+                            if(_S104)
                             {
-                                float _S134 = halfA_0(e_10, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S135 = halfA_0(e_10 + 1U, &kernelContext_7);
-                                    a0_0 = _S135;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S136 = a0_0;
-                                a0_0 = _S134;
-                                a1_0 = _S136;
+                                acc_1[4U][1U] = fma(a1_4, b1_0[1U], acc_1[4U][1U]);
                             }
-                            acc_1[4U][0U] = fma(a0_0, b0_0[0U], acc_1[4U][0U]);
-                            if(_S95)
+                            acc_1[4U][2U] = fma(a0_4, b0_0[2U], acc_1[4U][2U]);
+                            if(_S104)
                             {
-                                acc_1[4U][0U] = fma(a1_0, b1_0[0U], acc_1[4U][0U]);
+                                acc_1[4U][2U] = fma(a1_4, b1_0[2U], acc_1[4U][2U]);
                             }
-                            acc_1[4U][1U] = fma(a0_0, b0_0[1U], acc_1[4U][1U]);
-                            if(_S95)
+                            acc_1[4U][3U] = fma(a0_4, b0_0[3U], acc_1[4U][3U]);
+                            if(_S104)
                             {
-                                acc_1[4U][1U] = fma(a1_0, b1_0[1U], acc_1[4U][1U]);
+                                acc_1[4U][3U] = fma(a1_4, b1_0[3U], acc_1[4U][3U]);
                             }
-                            acc_1[4U][2U] = fma(a0_0, b0_0[2U], acc_1[4U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[4U][2U] = fma(a1_0, b1_0[2U], acc_1[4U][2U]);
-                            }
-                            acc_1[4U][3U] = fma(a0_0, b0_0[3U], acc_1[4U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[4U][3U] = fma(a1_0, b1_0[3U], acc_1[4U][3U]);
-                            }
-                            _S49 = int(3);
+                            _S58 = int(3);
                             break;
                         }
-                        if(_S49 != int(3))
+                        if(_S58 != int(3))
                         {
-                            _S50 = _S49;
+                            _S59 = _S58;
                             break;
                         }
-                        _S50 = int(2);
+                        _S59 = int(2);
                         break;
                     }
-                    if(_S50 != int(2))
+                    if(_S59 != int(2))
                     {
                         break;
                     }
@@ -2103,75 +2026,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(5U >= _S37)
+                            if(5U >= _S46)
                             {
-                                _S51 = int(1);
+                                _S60 = int(1);
                                 break;
                             }
-                            uint e_11 = _S36.baseA_0 + 5U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_13 = _S45.baseA_0 + 5U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_5;
+                            thread float a1_5 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_13, &a0_5, &a1_5, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S119 = elemA_0(e_13, &kernelContext_9);
+                                a0_5 = _S119;
                             }
-                            if(_S111)
+                            acc_1[5U][0U] = fma(a0_5, b0_0[0U], acc_1[5U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S137 = (&kernelContext_7)->a_0+(e_11 >> 1U);
-                                float _S138 = highHalf_0(*_S137);
-                                a0_0 = lowHalf_0(*_S137);
-                                a1_0 = _S138;
+                                acc_1[5U][0U] = fma(a1_5, b1_0[0U], acc_1[5U][0U]);
                             }
-                            else
+                            acc_1[5U][1U] = fma(a0_5, b0_0[1U], acc_1[5U][1U]);
+                            if(_S104)
                             {
-                                float _S139 = halfA_0(e_11, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S140 = halfA_0(e_11 + 1U, &kernelContext_7);
-                                    a0_0 = _S140;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S141 = a0_0;
-                                a0_0 = _S139;
-                                a1_0 = _S141;
+                                acc_1[5U][1U] = fma(a1_5, b1_0[1U], acc_1[5U][1U]);
                             }
-                            acc_1[5U][0U] = fma(a0_0, b0_0[0U], acc_1[5U][0U]);
-                            if(_S95)
+                            acc_1[5U][2U] = fma(a0_5, b0_0[2U], acc_1[5U][2U]);
+                            if(_S104)
                             {
-                                acc_1[5U][0U] = fma(a1_0, b1_0[0U], acc_1[5U][0U]);
+                                acc_1[5U][2U] = fma(a1_5, b1_0[2U], acc_1[5U][2U]);
                             }
-                            acc_1[5U][1U] = fma(a0_0, b0_0[1U], acc_1[5U][1U]);
-                            if(_S95)
+                            acc_1[5U][3U] = fma(a0_5, b0_0[3U], acc_1[5U][3U]);
+                            if(_S104)
                             {
-                                acc_1[5U][1U] = fma(a1_0, b1_0[1U], acc_1[5U][1U]);
+                                acc_1[5U][3U] = fma(a1_5, b1_0[3U], acc_1[5U][3U]);
                             }
-                            acc_1[5U][2U] = fma(a0_0, b0_0[2U], acc_1[5U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[5U][2U] = fma(a1_0, b1_0[2U], acc_1[5U][2U]);
-                            }
-                            acc_1[5U][3U] = fma(a0_0, b0_0[3U], acc_1[5U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[5U][3U] = fma(a1_0, b1_0[3U], acc_1[5U][3U]);
-                            }
-                            _S51 = int(3);
+                            _S60 = int(3);
                             break;
                         }
-                        if(_S51 != int(3))
+                        if(_S60 != int(3))
                         {
-                            _S52 = _S51;
+                            _S61 = _S60;
                             break;
                         }
-                        _S52 = int(2);
+                        _S61 = int(2);
                         break;
                     }
-                    if(_S52 != int(2))
+                    if(_S61 != int(2))
                     {
                         break;
                     }
@@ -2179,75 +2082,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(6U >= _S37)
+                            if(6U >= _S46)
                             {
-                                _S53 = int(1);
+                                _S62 = int(1);
                                 break;
                             }
-                            uint e_12 = _S36.baseA_0 + 6U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_14 = _S45.baseA_0 + 6U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_6;
+                            thread float a1_6 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_14, &a0_6, &a1_6, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S120 = elemA_0(e_14, &kernelContext_9);
+                                a0_6 = _S120;
                             }
-                            if(_S111)
+                            acc_1[6U][0U] = fma(a0_6, b0_0[0U], acc_1[6U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S142 = (&kernelContext_7)->a_0+(e_12 >> 1U);
-                                float _S143 = highHalf_0(*_S142);
-                                a0_0 = lowHalf_0(*_S142);
-                                a1_0 = _S143;
+                                acc_1[6U][0U] = fma(a1_6, b1_0[0U], acc_1[6U][0U]);
                             }
-                            else
+                            acc_1[6U][1U] = fma(a0_6, b0_0[1U], acc_1[6U][1U]);
+                            if(_S104)
                             {
-                                float _S144 = halfA_0(e_12, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S145 = halfA_0(e_12 + 1U, &kernelContext_7);
-                                    a0_0 = _S145;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S146 = a0_0;
-                                a0_0 = _S144;
-                                a1_0 = _S146;
+                                acc_1[6U][1U] = fma(a1_6, b1_0[1U], acc_1[6U][1U]);
                             }
-                            acc_1[6U][0U] = fma(a0_0, b0_0[0U], acc_1[6U][0U]);
-                            if(_S95)
+                            acc_1[6U][2U] = fma(a0_6, b0_0[2U], acc_1[6U][2U]);
+                            if(_S104)
                             {
-                                acc_1[6U][0U] = fma(a1_0, b1_0[0U], acc_1[6U][0U]);
+                                acc_1[6U][2U] = fma(a1_6, b1_0[2U], acc_1[6U][2U]);
                             }
-                            acc_1[6U][1U] = fma(a0_0, b0_0[1U], acc_1[6U][1U]);
-                            if(_S95)
+                            acc_1[6U][3U] = fma(a0_6, b0_0[3U], acc_1[6U][3U]);
+                            if(_S104)
                             {
-                                acc_1[6U][1U] = fma(a1_0, b1_0[1U], acc_1[6U][1U]);
+                                acc_1[6U][3U] = fma(a1_6, b1_0[3U], acc_1[6U][3U]);
                             }
-                            acc_1[6U][2U] = fma(a0_0, b0_0[2U], acc_1[6U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[6U][2U] = fma(a1_0, b1_0[2U], acc_1[6U][2U]);
-                            }
-                            acc_1[6U][3U] = fma(a0_0, b0_0[3U], acc_1[6U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[6U][3U] = fma(a1_0, b1_0[3U], acc_1[6U][3U]);
-                            }
-                            _S53 = int(3);
+                            _S62 = int(3);
                             break;
                         }
-                        if(_S53 != int(3))
+                        if(_S62 != int(3))
                         {
-                            _S54 = _S53;
+                            _S63 = _S62;
                             break;
                         }
-                        _S54 = int(2);
+                        _S63 = int(2);
                         break;
                     }
-                    if(_S54 != int(2))
+                    if(_S63 != int(2))
                     {
                         break;
                     }
@@ -2255,75 +2138,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(7U >= _S37)
+                            if(7U >= _S46)
                             {
-                                _S55 = int(1);
+                                _S64 = int(1);
                                 break;
                             }
-                            uint e_13 = _S36.baseA_0 + 7U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_15 = _S45.baseA_0 + 7U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_7;
+                            thread float a1_7 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_15, &a0_7, &a1_7, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S121 = elemA_0(e_15, &kernelContext_9);
+                                a0_7 = _S121;
                             }
-                            if(_S111)
+                            acc_1[7U][0U] = fma(a0_7, b0_0[0U], acc_1[7U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S147 = (&kernelContext_7)->a_0+(e_13 >> 1U);
-                                float _S148 = highHalf_0(*_S147);
-                                a0_0 = lowHalf_0(*_S147);
-                                a1_0 = _S148;
+                                acc_1[7U][0U] = fma(a1_7, b1_0[0U], acc_1[7U][0U]);
                             }
-                            else
+                            acc_1[7U][1U] = fma(a0_7, b0_0[1U], acc_1[7U][1U]);
+                            if(_S104)
                             {
-                                float _S149 = halfA_0(e_13, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S150 = halfA_0(e_13 + 1U, &kernelContext_7);
-                                    a0_0 = _S150;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S151 = a0_0;
-                                a0_0 = _S149;
-                                a1_0 = _S151;
+                                acc_1[7U][1U] = fma(a1_7, b1_0[1U], acc_1[7U][1U]);
                             }
-                            acc_1[7U][0U] = fma(a0_0, b0_0[0U], acc_1[7U][0U]);
-                            if(_S95)
+                            acc_1[7U][2U] = fma(a0_7, b0_0[2U], acc_1[7U][2U]);
+                            if(_S104)
                             {
-                                acc_1[7U][0U] = fma(a1_0, b1_0[0U], acc_1[7U][0U]);
+                                acc_1[7U][2U] = fma(a1_7, b1_0[2U], acc_1[7U][2U]);
                             }
-                            acc_1[7U][1U] = fma(a0_0, b0_0[1U], acc_1[7U][1U]);
-                            if(_S95)
+                            acc_1[7U][3U] = fma(a0_7, b0_0[3U], acc_1[7U][3U]);
+                            if(_S104)
                             {
-                                acc_1[7U][1U] = fma(a1_0, b1_0[1U], acc_1[7U][1U]);
+                                acc_1[7U][3U] = fma(a1_7, b1_0[3U], acc_1[7U][3U]);
                             }
-                            acc_1[7U][2U] = fma(a0_0, b0_0[2U], acc_1[7U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[7U][2U] = fma(a1_0, b1_0[2U], acc_1[7U][2U]);
-                            }
-                            acc_1[7U][3U] = fma(a0_0, b0_0[3U], acc_1[7U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[7U][3U] = fma(a1_0, b1_0[3U], acc_1[7U][3U]);
-                            }
-                            _S55 = int(3);
+                            _S64 = int(3);
                             break;
                         }
-                        if(_S55 != int(3))
+                        if(_S64 != int(3))
                         {
-                            _S56 = _S55;
+                            _S65 = _S64;
                             break;
                         }
-                        _S56 = int(2);
+                        _S65 = int(2);
                         break;
                     }
-                    if(_S56 != int(2))
+                    if(_S65 != int(2))
                     {
                         break;
                     }
@@ -2331,75 +2194,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(8U >= _S37)
+                            if(8U >= _S46)
                             {
-                                _S57 = int(1);
+                                _S66 = int(1);
                                 break;
                             }
-                            uint e_14 = _S36.baseA_0 + 8U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_16 = _S45.baseA_0 + 8U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_8;
+                            thread float a1_8 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_16, &a0_8, &a1_8, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S122 = elemA_0(e_16, &kernelContext_9);
+                                a0_8 = _S122;
                             }
-                            if(_S111)
+                            acc_1[8U][0U] = fma(a0_8, b0_0[0U], acc_1[8U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S152 = (&kernelContext_7)->a_0+(e_14 >> 1U);
-                                float _S153 = highHalf_0(*_S152);
-                                a0_0 = lowHalf_0(*_S152);
-                                a1_0 = _S153;
+                                acc_1[8U][0U] = fma(a1_8, b1_0[0U], acc_1[8U][0U]);
                             }
-                            else
+                            acc_1[8U][1U] = fma(a0_8, b0_0[1U], acc_1[8U][1U]);
+                            if(_S104)
                             {
-                                float _S154 = halfA_0(e_14, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S155 = halfA_0(e_14 + 1U, &kernelContext_7);
-                                    a0_0 = _S155;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S156 = a0_0;
-                                a0_0 = _S154;
-                                a1_0 = _S156;
+                                acc_1[8U][1U] = fma(a1_8, b1_0[1U], acc_1[8U][1U]);
                             }
-                            acc_1[8U][0U] = fma(a0_0, b0_0[0U], acc_1[8U][0U]);
-                            if(_S95)
+                            acc_1[8U][2U] = fma(a0_8, b0_0[2U], acc_1[8U][2U]);
+                            if(_S104)
                             {
-                                acc_1[8U][0U] = fma(a1_0, b1_0[0U], acc_1[8U][0U]);
+                                acc_1[8U][2U] = fma(a1_8, b1_0[2U], acc_1[8U][2U]);
                             }
-                            acc_1[8U][1U] = fma(a0_0, b0_0[1U], acc_1[8U][1U]);
-                            if(_S95)
+                            acc_1[8U][3U] = fma(a0_8, b0_0[3U], acc_1[8U][3U]);
+                            if(_S104)
                             {
-                                acc_1[8U][1U] = fma(a1_0, b1_0[1U], acc_1[8U][1U]);
+                                acc_1[8U][3U] = fma(a1_8, b1_0[3U], acc_1[8U][3U]);
                             }
-                            acc_1[8U][2U] = fma(a0_0, b0_0[2U], acc_1[8U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[8U][2U] = fma(a1_0, b1_0[2U], acc_1[8U][2U]);
-                            }
-                            acc_1[8U][3U] = fma(a0_0, b0_0[3U], acc_1[8U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[8U][3U] = fma(a1_0, b1_0[3U], acc_1[8U][3U]);
-                            }
-                            _S57 = int(3);
+                            _S66 = int(3);
                             break;
                         }
-                        if(_S57 != int(3))
+                        if(_S66 != int(3))
                         {
-                            _S58 = _S57;
+                            _S67 = _S66;
                             break;
                         }
-                        _S58 = int(2);
+                        _S67 = int(2);
                         break;
                     }
-                    if(_S58 != int(2))
+                    if(_S67 != int(2))
                     {
                         break;
                     }
@@ -2407,75 +2250,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(9U >= _S37)
+                            if(9U >= _S46)
                             {
-                                _S59 = int(1);
+                                _S68 = int(1);
                                 break;
                             }
-                            uint e_15 = _S36.baseA_0 + 9U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_17 = _S45.baseA_0 + 9U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_9;
+                            thread float a1_9 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_17, &a0_9, &a1_9, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S123 = elemA_0(e_17, &kernelContext_9);
+                                a0_9 = _S123;
                             }
-                            if(_S111)
+                            acc_1[9U][0U] = fma(a0_9, b0_0[0U], acc_1[9U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S157 = (&kernelContext_7)->a_0+(e_15 >> 1U);
-                                float _S158 = highHalf_0(*_S157);
-                                a0_0 = lowHalf_0(*_S157);
-                                a1_0 = _S158;
+                                acc_1[9U][0U] = fma(a1_9, b1_0[0U], acc_1[9U][0U]);
                             }
-                            else
+                            acc_1[9U][1U] = fma(a0_9, b0_0[1U], acc_1[9U][1U]);
+                            if(_S104)
                             {
-                                float _S159 = halfA_0(e_15, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S160 = halfA_0(e_15 + 1U, &kernelContext_7);
-                                    a0_0 = _S160;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S161 = a0_0;
-                                a0_0 = _S159;
-                                a1_0 = _S161;
+                                acc_1[9U][1U] = fma(a1_9, b1_0[1U], acc_1[9U][1U]);
                             }
-                            acc_1[9U][0U] = fma(a0_0, b0_0[0U], acc_1[9U][0U]);
-                            if(_S95)
+                            acc_1[9U][2U] = fma(a0_9, b0_0[2U], acc_1[9U][2U]);
+                            if(_S104)
                             {
-                                acc_1[9U][0U] = fma(a1_0, b1_0[0U], acc_1[9U][0U]);
+                                acc_1[9U][2U] = fma(a1_9, b1_0[2U], acc_1[9U][2U]);
                             }
-                            acc_1[9U][1U] = fma(a0_0, b0_0[1U], acc_1[9U][1U]);
-                            if(_S95)
+                            acc_1[9U][3U] = fma(a0_9, b0_0[3U], acc_1[9U][3U]);
+                            if(_S104)
                             {
-                                acc_1[9U][1U] = fma(a1_0, b1_0[1U], acc_1[9U][1U]);
+                                acc_1[9U][3U] = fma(a1_9, b1_0[3U], acc_1[9U][3U]);
                             }
-                            acc_1[9U][2U] = fma(a0_0, b0_0[2U], acc_1[9U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[9U][2U] = fma(a1_0, b1_0[2U], acc_1[9U][2U]);
-                            }
-                            acc_1[9U][3U] = fma(a0_0, b0_0[3U], acc_1[9U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[9U][3U] = fma(a1_0, b1_0[3U], acc_1[9U][3U]);
-                            }
-                            _S59 = int(3);
+                            _S68 = int(3);
                             break;
                         }
-                        if(_S59 != int(3))
+                        if(_S68 != int(3))
                         {
-                            _S60 = _S59;
+                            _S69 = _S68;
                             break;
                         }
-                        _S60 = int(2);
+                        _S69 = int(2);
                         break;
                     }
-                    if(_S60 != int(2))
+                    if(_S69 != int(2))
                     {
                         break;
                     }
@@ -2483,75 +2306,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(10U >= _S37)
+                            if(10U >= _S46)
                             {
-                                _S61 = int(1);
+                                _S70 = int(1);
                                 break;
                             }
-                            uint e_16 = _S36.baseA_0 + 10U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_18 = _S45.baseA_0 + 10U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_10;
+                            thread float a1_10 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_18, &a0_10, &a1_10, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S124 = elemA_0(e_18, &kernelContext_9);
+                                a0_10 = _S124;
                             }
-                            if(_S111)
+                            acc_1[10U][0U] = fma(a0_10, b0_0[0U], acc_1[10U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S162 = (&kernelContext_7)->a_0+(e_16 >> 1U);
-                                float _S163 = highHalf_0(*_S162);
-                                a0_0 = lowHalf_0(*_S162);
-                                a1_0 = _S163;
+                                acc_1[10U][0U] = fma(a1_10, b1_0[0U], acc_1[10U][0U]);
                             }
-                            else
+                            acc_1[10U][1U] = fma(a0_10, b0_0[1U], acc_1[10U][1U]);
+                            if(_S104)
                             {
-                                float _S164 = halfA_0(e_16, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S165 = halfA_0(e_16 + 1U, &kernelContext_7);
-                                    a0_0 = _S165;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S166 = a0_0;
-                                a0_0 = _S164;
-                                a1_0 = _S166;
+                                acc_1[10U][1U] = fma(a1_10, b1_0[1U], acc_1[10U][1U]);
                             }
-                            acc_1[10U][0U] = fma(a0_0, b0_0[0U], acc_1[10U][0U]);
-                            if(_S95)
+                            acc_1[10U][2U] = fma(a0_10, b0_0[2U], acc_1[10U][2U]);
+                            if(_S104)
                             {
-                                acc_1[10U][0U] = fma(a1_0, b1_0[0U], acc_1[10U][0U]);
+                                acc_1[10U][2U] = fma(a1_10, b1_0[2U], acc_1[10U][2U]);
                             }
-                            acc_1[10U][1U] = fma(a0_0, b0_0[1U], acc_1[10U][1U]);
-                            if(_S95)
+                            acc_1[10U][3U] = fma(a0_10, b0_0[3U], acc_1[10U][3U]);
+                            if(_S104)
                             {
-                                acc_1[10U][1U] = fma(a1_0, b1_0[1U], acc_1[10U][1U]);
+                                acc_1[10U][3U] = fma(a1_10, b1_0[3U], acc_1[10U][3U]);
                             }
-                            acc_1[10U][2U] = fma(a0_0, b0_0[2U], acc_1[10U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[10U][2U] = fma(a1_0, b1_0[2U], acc_1[10U][2U]);
-                            }
-                            acc_1[10U][3U] = fma(a0_0, b0_0[3U], acc_1[10U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[10U][3U] = fma(a1_0, b1_0[3U], acc_1[10U][3U]);
-                            }
-                            _S61 = int(3);
+                            _S70 = int(3);
                             break;
                         }
-                        if(_S61 != int(3))
+                        if(_S70 != int(3))
                         {
-                            _S62 = _S61;
+                            _S71 = _S70;
                             break;
                         }
-                        _S62 = int(2);
+                        _S71 = int(2);
                         break;
                     }
-                    if(_S62 != int(2))
+                    if(_S71 != int(2))
                     {
                         break;
                     }
@@ -2559,75 +2362,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(11U >= _S37)
+                            if(11U >= _S46)
                             {
-                                _S63 = int(1);
+                                _S72 = int(1);
                                 break;
                             }
-                            uint e_17 = _S36.baseA_0 + 11U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_19 = _S45.baseA_0 + 11U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_11;
+                            thread float a1_11 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_19, &a0_11, &a1_11, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S125 = elemA_0(e_19, &kernelContext_9);
+                                a0_11 = _S125;
                             }
-                            if(_S111)
+                            acc_1[11U][0U] = fma(a0_11, b0_0[0U], acc_1[11U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S167 = (&kernelContext_7)->a_0+(e_17 >> 1U);
-                                float _S168 = highHalf_0(*_S167);
-                                a0_0 = lowHalf_0(*_S167);
-                                a1_0 = _S168;
+                                acc_1[11U][0U] = fma(a1_11, b1_0[0U], acc_1[11U][0U]);
                             }
-                            else
+                            acc_1[11U][1U] = fma(a0_11, b0_0[1U], acc_1[11U][1U]);
+                            if(_S104)
                             {
-                                float _S169 = halfA_0(e_17, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S170 = halfA_0(e_17 + 1U, &kernelContext_7);
-                                    a0_0 = _S170;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S171 = a0_0;
-                                a0_0 = _S169;
-                                a1_0 = _S171;
+                                acc_1[11U][1U] = fma(a1_11, b1_0[1U], acc_1[11U][1U]);
                             }
-                            acc_1[11U][0U] = fma(a0_0, b0_0[0U], acc_1[11U][0U]);
-                            if(_S95)
+                            acc_1[11U][2U] = fma(a0_11, b0_0[2U], acc_1[11U][2U]);
+                            if(_S104)
                             {
-                                acc_1[11U][0U] = fma(a1_0, b1_0[0U], acc_1[11U][0U]);
+                                acc_1[11U][2U] = fma(a1_11, b1_0[2U], acc_1[11U][2U]);
                             }
-                            acc_1[11U][1U] = fma(a0_0, b0_0[1U], acc_1[11U][1U]);
-                            if(_S95)
+                            acc_1[11U][3U] = fma(a0_11, b0_0[3U], acc_1[11U][3U]);
+                            if(_S104)
                             {
-                                acc_1[11U][1U] = fma(a1_0, b1_0[1U], acc_1[11U][1U]);
+                                acc_1[11U][3U] = fma(a1_11, b1_0[3U], acc_1[11U][3U]);
                             }
-                            acc_1[11U][2U] = fma(a0_0, b0_0[2U], acc_1[11U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[11U][2U] = fma(a1_0, b1_0[2U], acc_1[11U][2U]);
-                            }
-                            acc_1[11U][3U] = fma(a0_0, b0_0[3U], acc_1[11U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[11U][3U] = fma(a1_0, b1_0[3U], acc_1[11U][3U]);
-                            }
-                            _S63 = int(3);
+                            _S72 = int(3);
                             break;
                         }
-                        if(_S63 != int(3))
+                        if(_S72 != int(3))
                         {
-                            _S64 = _S63;
+                            _S73 = _S72;
                             break;
                         }
-                        _S64 = int(2);
+                        _S73 = int(2);
                         break;
                     }
-                    if(_S64 != int(2))
+                    if(_S73 != int(2))
                     {
                         break;
                     }
@@ -2635,75 +2418,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(12U >= _S37)
+                            if(12U >= _S46)
                             {
-                                _S65 = int(1);
+                                _S74 = int(1);
                                 break;
                             }
-                            uint e_18 = _S36.baseA_0 + 12U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_20 = _S45.baseA_0 + 12U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_12;
+                            thread float a1_12 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_20, &a0_12, &a1_12, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S126 = elemA_0(e_20, &kernelContext_9);
+                                a0_12 = _S126;
                             }
-                            if(_S111)
+                            acc_1[12U][0U] = fma(a0_12, b0_0[0U], acc_1[12U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S172 = (&kernelContext_7)->a_0+(e_18 >> 1U);
-                                float _S173 = highHalf_0(*_S172);
-                                a0_0 = lowHalf_0(*_S172);
-                                a1_0 = _S173;
+                                acc_1[12U][0U] = fma(a1_12, b1_0[0U], acc_1[12U][0U]);
                             }
-                            else
+                            acc_1[12U][1U] = fma(a0_12, b0_0[1U], acc_1[12U][1U]);
+                            if(_S104)
                             {
-                                float _S174 = halfA_0(e_18, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S175 = halfA_0(e_18 + 1U, &kernelContext_7);
-                                    a0_0 = _S175;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S176 = a0_0;
-                                a0_0 = _S174;
-                                a1_0 = _S176;
+                                acc_1[12U][1U] = fma(a1_12, b1_0[1U], acc_1[12U][1U]);
                             }
-                            acc_1[12U][0U] = fma(a0_0, b0_0[0U], acc_1[12U][0U]);
-                            if(_S95)
+                            acc_1[12U][2U] = fma(a0_12, b0_0[2U], acc_1[12U][2U]);
+                            if(_S104)
                             {
-                                acc_1[12U][0U] = fma(a1_0, b1_0[0U], acc_1[12U][0U]);
+                                acc_1[12U][2U] = fma(a1_12, b1_0[2U], acc_1[12U][2U]);
                             }
-                            acc_1[12U][1U] = fma(a0_0, b0_0[1U], acc_1[12U][1U]);
-                            if(_S95)
+                            acc_1[12U][3U] = fma(a0_12, b0_0[3U], acc_1[12U][3U]);
+                            if(_S104)
                             {
-                                acc_1[12U][1U] = fma(a1_0, b1_0[1U], acc_1[12U][1U]);
+                                acc_1[12U][3U] = fma(a1_12, b1_0[3U], acc_1[12U][3U]);
                             }
-                            acc_1[12U][2U] = fma(a0_0, b0_0[2U], acc_1[12U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[12U][2U] = fma(a1_0, b1_0[2U], acc_1[12U][2U]);
-                            }
-                            acc_1[12U][3U] = fma(a0_0, b0_0[3U], acc_1[12U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[12U][3U] = fma(a1_0, b1_0[3U], acc_1[12U][3U]);
-                            }
-                            _S65 = int(3);
+                            _S74 = int(3);
                             break;
                         }
-                        if(_S65 != int(3))
+                        if(_S74 != int(3))
                         {
-                            _S66 = _S65;
+                            _S75 = _S74;
                             break;
                         }
-                        _S66 = int(2);
+                        _S75 = int(2);
                         break;
                     }
-                    if(_S66 != int(2))
+                    if(_S75 != int(2))
                     {
                         break;
                     }
@@ -2711,75 +2474,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(13U >= _S37)
+                            if(13U >= _S46)
                             {
-                                _S67 = int(1);
+                                _S76 = int(1);
                                 break;
                             }
-                            uint e_19 = _S36.baseA_0 + 13U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_21 = _S45.baseA_0 + 13U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_13;
+                            thread float a1_13 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_21, &a0_13, &a1_13, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S127 = elemA_0(e_21, &kernelContext_9);
+                                a0_13 = _S127;
                             }
-                            if(_S111)
+                            acc_1[13U][0U] = fma(a0_13, b0_0[0U], acc_1[13U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S177 = (&kernelContext_7)->a_0+(e_19 >> 1U);
-                                float _S178 = highHalf_0(*_S177);
-                                a0_0 = lowHalf_0(*_S177);
-                                a1_0 = _S178;
+                                acc_1[13U][0U] = fma(a1_13, b1_0[0U], acc_1[13U][0U]);
                             }
-                            else
+                            acc_1[13U][1U] = fma(a0_13, b0_0[1U], acc_1[13U][1U]);
+                            if(_S104)
                             {
-                                float _S179 = halfA_0(e_19, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S180 = halfA_0(e_19 + 1U, &kernelContext_7);
-                                    a0_0 = _S180;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S181 = a0_0;
-                                a0_0 = _S179;
-                                a1_0 = _S181;
+                                acc_1[13U][1U] = fma(a1_13, b1_0[1U], acc_1[13U][1U]);
                             }
-                            acc_1[13U][0U] = fma(a0_0, b0_0[0U], acc_1[13U][0U]);
-                            if(_S95)
+                            acc_1[13U][2U] = fma(a0_13, b0_0[2U], acc_1[13U][2U]);
+                            if(_S104)
                             {
-                                acc_1[13U][0U] = fma(a1_0, b1_0[0U], acc_1[13U][0U]);
+                                acc_1[13U][2U] = fma(a1_13, b1_0[2U], acc_1[13U][2U]);
                             }
-                            acc_1[13U][1U] = fma(a0_0, b0_0[1U], acc_1[13U][1U]);
-                            if(_S95)
+                            acc_1[13U][3U] = fma(a0_13, b0_0[3U], acc_1[13U][3U]);
+                            if(_S104)
                             {
-                                acc_1[13U][1U] = fma(a1_0, b1_0[1U], acc_1[13U][1U]);
+                                acc_1[13U][3U] = fma(a1_13, b1_0[3U], acc_1[13U][3U]);
                             }
-                            acc_1[13U][2U] = fma(a0_0, b0_0[2U], acc_1[13U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[13U][2U] = fma(a1_0, b1_0[2U], acc_1[13U][2U]);
-                            }
-                            acc_1[13U][3U] = fma(a0_0, b0_0[3U], acc_1[13U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[13U][3U] = fma(a1_0, b1_0[3U], acc_1[13U][3U]);
-                            }
-                            _S67 = int(3);
+                            _S76 = int(3);
                             break;
                         }
-                        if(_S67 != int(3))
+                        if(_S76 != int(3))
                         {
-                            _S68 = _S67;
+                            _S77 = _S76;
                             break;
                         }
-                        _S68 = int(2);
+                        _S77 = int(2);
                         break;
                     }
-                    if(_S68 != int(2))
+                    if(_S77 != int(2))
                     {
                         break;
                     }
@@ -2787,75 +2530,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(14U >= _S37)
+                            if(14U >= _S46)
                             {
-                                _S69 = int(1);
+                                _S78 = int(1);
                                 break;
                             }
-                            uint e_20 = _S36.baseA_0 + 14U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_22 = _S45.baseA_0 + 14U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_14;
+                            thread float a1_14 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_22, &a0_14, &a1_14, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S128 = elemA_0(e_22, &kernelContext_9);
+                                a0_14 = _S128;
                             }
-                            if(_S111)
+                            acc_1[14U][0U] = fma(a0_14, b0_0[0U], acc_1[14U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S182 = (&kernelContext_7)->a_0+(e_20 >> 1U);
-                                float _S183 = highHalf_0(*_S182);
-                                a0_0 = lowHalf_0(*_S182);
-                                a1_0 = _S183;
+                                acc_1[14U][0U] = fma(a1_14, b1_0[0U], acc_1[14U][0U]);
                             }
-                            else
+                            acc_1[14U][1U] = fma(a0_14, b0_0[1U], acc_1[14U][1U]);
+                            if(_S104)
                             {
-                                float _S184 = halfA_0(e_20, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S185 = halfA_0(e_20 + 1U, &kernelContext_7);
-                                    a0_0 = _S185;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S186 = a0_0;
-                                a0_0 = _S184;
-                                a1_0 = _S186;
+                                acc_1[14U][1U] = fma(a1_14, b1_0[1U], acc_1[14U][1U]);
                             }
-                            acc_1[14U][0U] = fma(a0_0, b0_0[0U], acc_1[14U][0U]);
-                            if(_S95)
+                            acc_1[14U][2U] = fma(a0_14, b0_0[2U], acc_1[14U][2U]);
+                            if(_S104)
                             {
-                                acc_1[14U][0U] = fma(a1_0, b1_0[0U], acc_1[14U][0U]);
+                                acc_1[14U][2U] = fma(a1_14, b1_0[2U], acc_1[14U][2U]);
                             }
-                            acc_1[14U][1U] = fma(a0_0, b0_0[1U], acc_1[14U][1U]);
-                            if(_S95)
+                            acc_1[14U][3U] = fma(a0_14, b0_0[3U], acc_1[14U][3U]);
+                            if(_S104)
                             {
-                                acc_1[14U][1U] = fma(a1_0, b1_0[1U], acc_1[14U][1U]);
+                                acc_1[14U][3U] = fma(a1_14, b1_0[3U], acc_1[14U][3U]);
                             }
-                            acc_1[14U][2U] = fma(a0_0, b0_0[2U], acc_1[14U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[14U][2U] = fma(a1_0, b1_0[2U], acc_1[14U][2U]);
-                            }
-                            acc_1[14U][3U] = fma(a0_0, b0_0[3U], acc_1[14U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[14U][3U] = fma(a1_0, b1_0[3U], acc_1[14U][3U]);
-                            }
-                            _S69 = int(3);
+                            _S78 = int(3);
                             break;
                         }
-                        if(_S69 != int(3))
+                        if(_S78 != int(3))
                         {
-                            _S70 = _S69;
+                            _S79 = _S78;
                             break;
                         }
-                        _S70 = int(2);
+                        _S79 = int(2);
                         break;
                     }
-                    if(_S70 != int(2))
+                    if(_S79 != int(2))
                     {
                         break;
                     }
@@ -2863,75 +2586,55 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                     {
                         for(;;)
                         {
-                            if(15U >= _S37)
+                            if(15U >= _S46)
                             {
-                                _S71 = int(1);
+                                _S80 = int(1);
                                 break;
                             }
-                            uint e_21 = _S36.baseA_0 + 15U * (&kernelContext_7)->p_0->lda_1 + _S93;
-                            if(_S92)
+                            uint e_23 = _S45.baseA_0 + 15U * (&kernelContext_9)->p_0->lda_1 + _S102;
+                            thread float a0_15;
+                            thread float a1_15 = 0.0;
+                            if(_S104)
                             {
-                                _S111 = _S95;
+                                load2A_0(e_23, &a0_15, &a1_15, &kernelContext_9);
                             }
                             else
                             {
-                                _S111 = false;
+                                float _S129 = elemA_0(e_23, &kernelContext_9);
+                                a0_15 = _S129;
                             }
-                            if(_S111)
+                            acc_1[15U][0U] = fma(a0_15, b0_0[0U], acc_1[15U][0U]);
+                            if(_S104)
                             {
-                                uint device* _S187 = (&kernelContext_7)->a_0+(e_21 >> 1U);
-                                float _S188 = highHalf_0(*_S187);
-                                a0_0 = lowHalf_0(*_S187);
-                                a1_0 = _S188;
+                                acc_1[15U][0U] = fma(a1_15, b1_0[0U], acc_1[15U][0U]);
                             }
-                            else
+                            acc_1[15U][1U] = fma(a0_15, b0_0[1U], acc_1[15U][1U]);
+                            if(_S104)
                             {
-                                float _S189 = halfA_0(e_21, &kernelContext_7);
-                                if(_S95)
-                                {
-                                    float _S190 = halfA_0(e_21 + 1U, &kernelContext_7);
-                                    a0_0 = _S190;
-                                }
-                                else
-                                {
-                                    a0_0 = 0.0;
-                                }
-                                float _S191 = a0_0;
-                                a0_0 = _S189;
-                                a1_0 = _S191;
+                                acc_1[15U][1U] = fma(a1_15, b1_0[1U], acc_1[15U][1U]);
                             }
-                            acc_1[15U][0U] = fma(a0_0, b0_0[0U], acc_1[15U][0U]);
-                            if(_S95)
+                            acc_1[15U][2U] = fma(a0_15, b0_0[2U], acc_1[15U][2U]);
+                            if(_S104)
                             {
-                                acc_1[15U][0U] = fma(a1_0, b1_0[0U], acc_1[15U][0U]);
+                                acc_1[15U][2U] = fma(a1_15, b1_0[2U], acc_1[15U][2U]);
                             }
-                            acc_1[15U][1U] = fma(a0_0, b0_0[1U], acc_1[15U][1U]);
-                            if(_S95)
+                            acc_1[15U][3U] = fma(a0_15, b0_0[3U], acc_1[15U][3U]);
+                            if(_S104)
                             {
-                                acc_1[15U][1U] = fma(a1_0, b1_0[1U], acc_1[15U][1U]);
+                                acc_1[15U][3U] = fma(a1_15, b1_0[3U], acc_1[15U][3U]);
                             }
-                            acc_1[15U][2U] = fma(a0_0, b0_0[2U], acc_1[15U][2U]);
-                            if(_S95)
-                            {
-                                acc_1[15U][2U] = fma(a1_0, b1_0[2U], acc_1[15U][2U]);
-                            }
-                            acc_1[15U][3U] = fma(a0_0, b0_0[3U], acc_1[15U][3U]);
-                            if(_S95)
-                            {
-                                acc_1[15U][3U] = fma(a1_0, b1_0[3U], acc_1[15U][3U]);
-                            }
-                            _S71 = int(3);
+                            _S80 = int(3);
                             break;
                         }
-                        if(_S71 != int(3))
+                        if(_S80 != int(3))
                         {
-                            _S72 = _S71;
+                            _S81 = _S80;
                             break;
                         }
-                        _S72 = int(2);
+                        _S81 = int(2);
                         break;
                     }
-                    if(_S72 != int(2))
+                    if(_S81 != int(2))
                     {
                         break;
                     }
@@ -2952,21 +2655,21 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
     i_2 = 0U;
     for(;;)
     {
-        if(i_2 < _S37)
+        if(i_2 < _S46)
         {
         }
         else
         {
             break;
         }
-        (*(&kernelContext_7)->red_0)[0U][lid_0] = acc_1[i_2][0U];
-        (*(&kernelContext_7)->red_0)[1U][lid_0] = acc_1[i_2][1U];
-        (*(&kernelContext_7)->red_0)[2U][lid_0] = acc_1[i_2][2U];
-        (*(&kernelContext_7)->red_0)[3U][lid_0] = acc_1[i_2][3U];
-        uint w_12 = _S38 / 2U;
+        (*(&kernelContext_9)->red_0)[0U][lid_0] = acc_1[i_2][0U];
+        (*(&kernelContext_9)->red_0)[1U][lid_0] = acc_1[i_2][1U];
+        (*(&kernelContext_9)->red_0)[2U][lid_0] = acc_1[i_2][2U];
+        (*(&kernelContext_9)->red_0)[3U][lid_0] = acc_1[i_2][3U];
+        uint w_13 = _S47 / 2U;
         for(;;)
         {
-            if(w_12 > 0U)
+            if(w_13 > 0U)
             {
             }
             else
@@ -2974,26 +2677,26 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
                 break;
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
-            if(lane_0 < w_12)
+            if(lane_0 < w_13)
             {
-                if(0U < _S39)
+                if(0U < _S48)
                 {
-                    (*(&kernelContext_7)->red_0)[0U][lid_0] = (*(&kernelContext_7)->red_0)[0U][lid_0] + (*(&kernelContext_7)->red_0)[0U][lid_0 + w_12 * ch_0];
+                    (*(&kernelContext_9)->red_0)[0U][lid_0] = (*(&kernelContext_9)->red_0)[0U][lid_0] + (*(&kernelContext_9)->red_0)[0U][lid_0 + w_13 * ch_0];
                 }
-                if(1U < _S39)
+                if(1U < _S48)
                 {
-                    (*(&kernelContext_7)->red_0)[1U][lid_0] = (*(&kernelContext_7)->red_0)[1U][lid_0] + (*(&kernelContext_7)->red_0)[1U][lid_0 + w_12 * ch_0];
+                    (*(&kernelContext_9)->red_0)[1U][lid_0] = (*(&kernelContext_9)->red_0)[1U][lid_0] + (*(&kernelContext_9)->red_0)[1U][lid_0 + w_13 * ch_0];
                 }
-                if(2U < _S39)
+                if(2U < _S48)
                 {
-                    (*(&kernelContext_7)->red_0)[2U][lid_0] = (*(&kernelContext_7)->red_0)[2U][lid_0] + (*(&kernelContext_7)->red_0)[2U][lid_0 + w_12 * ch_0];
+                    (*(&kernelContext_9)->red_0)[2U][lid_0] = (*(&kernelContext_9)->red_0)[2U][lid_0] + (*(&kernelContext_9)->red_0)[2U][lid_0 + w_13 * ch_0];
                 }
-                if(3U < _S39)
+                if(3U < _S48)
                 {
-                    (*(&kernelContext_7)->red_0)[3U][lid_0] = (*(&kernelContext_7)->red_0)[3U][lid_0] + (*(&kernelContext_7)->red_0)[3U][lid_0 + w_12 * ch_0];
+                    (*(&kernelContext_9)->red_0)[3U][lid_0] = (*(&kernelContext_9)->red_0)[3U][lid_0] + (*(&kernelContext_9)->red_0)[3U][lid_0 + w_13 * ch_0];
                 }
             }
-            w_12 = w_12 / 2U;
+            w_13 = w_13 / 2U;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if(lane_0 == 0U)
@@ -3001,19 +2704,19 @@ void gemmStore_0(const GemmProblem_0 thread* q_1, uint i_1, uint j_1, float acc_
             uint cc_0 = 0U;
             for(;;)
             {
-                if(cc_0 < _S39)
+                if(cc_0 < _S48)
                 {
                 }
                 else
                 {
                     break;
                 }
-                uint _S192 = col0_0 + cc_0;
-                if(_S192 < ((&kernelContext_7)->p_0->n_1))
+                uint _S130 = col0_0 + cc_0;
+                if(_S130 < ((&kernelContext_9)->p_0->n_1))
                 {
-                    float _S193 = (*(&kernelContext_7)->red_0)[cc_0][lid_0];
-                    thread GemmProblem_0 _S194 = _S36;
-                    gemmStore_0(&_S194, i_2, _S192, _S193, &kernelContext_7);
+                    float _S131 = (*(&kernelContext_9)->red_0)[cc_0][lid_0];
+                    thread GemmProblem_0 _S132 = _S45;
+                    gemmStore_0(&_S132, i_2, _S130, _S131, &kernelContext_9);
                 }
                 cc_0 = cc_0 + 1U;
             }

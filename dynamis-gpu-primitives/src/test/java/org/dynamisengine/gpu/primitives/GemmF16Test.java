@@ -8,11 +8,16 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Without a GPU: the kernel's ABI, the shape arithmetic, and refusal on a device without FP16. */
 class GemmF16Test {
     @Test void kernelAbiMatchesTheEncoder() {
-        for (String k : new String[] {"gemm_f16", "gemm_f16_h", "gemm_skinny", "gemm_skinny_h", "gemm_skinny_v", "gemm_skinny_vh"}) {
+        var kernels = new java.util.ArrayList<String>();
+        for (var family : new String[] {"gemm", "gemm_skinny", "gemm_skinny_v", "gemm_small"})
+            for (var in : GemmF16.Input.values()) for (var out : Precision.values()) kernels.add(GemmF16.kernel(family, in, out));
+        assertTrue(kernels.containsAll(java.util.List.of("gemm_f16", "gemm_f16_h", "gemm_bf16", "gemm_f32_h", "gemm_skinny", "gemm_skinny_bf16_h",
+                "gemm_skinny_v_f32", "gemm_small_h")), kernels.toString());
+        for (String k : kernels) {
             assertEquals(java.util.List.of("a", "b", "c", "epBias", "epGate", "epResidual"), GemmF16.KERNELS.buffers(k));
             assertEquals(68, GemmF16.KERNELS.parameterBytes(k));
-            assertEquals(new org.dynamisengine.gpu.api.compute.Dimensions(k.startsWith("gemm_f16") ? 16 : 256, k.startsWith("gemm_f16") ? 16 : 1, 1),
-                    GemmF16.KERNELS.localSize(k));
+            boolean wide = k.startsWith("gemm_skinny");
+            assertEquals(new org.dynamisengine.gpu.api.compute.Dimensions(wide ? 256 : 16, wide ? 1 : 16, 1), GemmF16.KERNELS.localSize(k), k);
             assertEquals(java.util.List.of("m", "n", "k", "lda", "ldb", "ldc", "alpha", "beta", "transB", "strideA", "strideB", "strideC",
                     "transA", "bias", "act", "gated", "residual"), java.util.List.copyOf(GemmF16.KERNELS.parameterOffsets(k).keySet()));
         }
@@ -30,6 +35,29 @@ class GemmF16Test {
         assertEquals(4L * 3 * 7, batch.aElements()); assertEquals(4L * 3 * 5, batch.cElements()); assertEquals(4 * 2.0 * 3 * 5 * 7, batch.flops());
         var shared = GemmF16.Shape.of(3, 5, 7, 1, 0).withBatch(4, 21, 0, 15);
         assertEquals(7L * 5, shared.bElements(), "a stride of 0 shares B");
+    }
+
+    /** The grouped kernels add the problem table and the error buffer, and the bounds and lengths to the block. */
+    @Test void groupedKernelAbi() {
+        for (var in : GemmF16.Input.values()) {
+            for (var out : Precision.values()) {
+                String k = GemmF16.kernel("gemm_grouped", in, out);
+                assertEquals(java.util.List.of("a", "b", "c", "epBias", "epGate", "epResidual", "problems", "errors"), GemmF16.KERNELS.buffers(k));
+                assertEquals(68 + 20, GemmF16.KERNELS.parameterBytes(k));
+            }
+        }
+    }
+
+    /** BF16 conversions: exact widening, round to nearest even, NaN kept. */
+    @Test void bf16Conversions() {
+        assertEquals(1f, GemmF16.bf16ToFloat(GemmF16.floatToBf16(1f)));
+        assertEquals((short) 0x3F80, GemmF16.floatToBf16(1f));
+        assertEquals((short) 0x3F80, GemmF16.floatToBf16(Float.intBitsToFloat(0x3F808000)), "a tie rounds to even (down)");
+        assertEquals((short) 0x3F82, GemmF16.floatToBf16(Float.intBitsToFloat(0x3F818000)), "a tie rounds to even (up)");
+        assertEquals((short) 0x3F81, GemmF16.floatToBf16(Float.intBitsToFloat(0x3F808001)), "above the tie rounds up");
+        assertEquals((short) 0x7F80, GemmF16.floatToBf16(Float.MAX_VALUE), "the largest float rounds to infinity");
+        assertTrue(Float.isNaN(GemmF16.bf16ToFloat(GemmF16.floatToBf16(Float.NaN))));
+        assertEquals((short) 0x8000, GemmF16.floatToBf16(-0f));
     }
 
     @Test void transposedAShapes() {

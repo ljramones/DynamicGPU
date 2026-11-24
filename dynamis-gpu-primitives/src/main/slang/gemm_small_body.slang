@@ -5,9 +5,7 @@
 // A group of 16 x 16 threads computes a 16 x 16 tile of C, one element per thread; k is walked in steps of 16 through
 // shared tiles of A and B, converted to FP32 on load, zero beyond the matrices. Each element sums its k products in
 // order, fl(acc + a b) with exact FP16 products, so it is bit for bit the tiled kernel and GemmF16.reference.
-// A and B come first: Slang numbers Metal buffers in declaration order.
-[[vk::binding(0, 0)]] RWStructuredBuffer<half> a;
-[[vk::binding(1, 0)]] RWStructuredBuffer<half> b;
+#include "gemm_inputs.slang"
 #include "gemm_common.slang"
 #include "gemm_epilogue.slang"
 
@@ -28,10 +26,10 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     {
         uint gr = row0 + ty, gk = k0 + tx;
         uint ai = p.transA != 0 ? gk * pr.lda + gr : gr * pr.lda + gk;
-        smallA[tx][ty] = gr < pr.m && gk < pr.k ? float(a[pr.baseA + ai]) : 0.0f;
+        smallA[tx][ty] = gr < pr.m && gk < pr.k ? loadA(pr.baseA + ai) : 0.0f;
         uint hk = k0 + ty, gc = col0 + tx;
         uint bi = p.transB != 0 ? gc * pr.ldb + hk : hk * pr.ldb + gc;
-        smallB[ty][tx] = hk < pr.k && gc < pr.n ? float(b[pr.baseB + bi]) : 0.0f;
+        smallB[ty][tx] = hk < pr.k && gc < pr.n ? loadB(pr.baseB + bi) : 0.0f;
         GroupMemoryBarrierWithGroupSync();
         [ForceUnroll]
         for (uint kk = 0; kk < TS; kk++) acc = fma(smallA[kk][ty], smallB[kk][tx], acc);
