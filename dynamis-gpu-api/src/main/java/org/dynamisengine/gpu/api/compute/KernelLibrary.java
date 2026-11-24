@@ -91,12 +91,18 @@ public final class KernelLibrary {
     /** The slangc version that built the library. */
     public String compilerVersion() { return get("slangc.version"); }
 
-    /** The kernel's executables: SPIR-V for Vulkan, Metal source for Metal, and the entry point for mocks. */
+    /**
+     * The kernel's executables: SPIR-V for Vulkan, Metal source for Metal, and the entry point for mocks. A kernel
+     * built for one target only (its manifest has no {@code spirv.sha256} or {@code metal.sha256}) has no executable
+     * for the other backend.
+     */
     public KernelBundle bundle(String kernel) {
         String entry = entryPoint(kernel);
         Map<Backend, KernelBundle.Executable> ex = new EnumMap<>(Backend.class);
-        ex.put(Backend.VULKAN, new KernelBundle.Executable(KernelBundle.Format.SPIRV, bytes(kernel + ".spv")));
-        ex.put(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, bytes(kernel + ".metal")));
+        if (manifest.containsKey(kernel + ".spirv.sha256"))
+            ex.put(Backend.VULKAN, new KernelBundle.Executable(KernelBundle.Format.SPIRV, bytes(kernel + ".spv")));
+        if (manifest.containsKey(kernel + ".metal.sha256"))
+            ex.put(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, bytes(kernel + ".metal")));
         ex.put(Backend.MOCK, new KernelBundle.Executable(KernelBundle.Format.MOCK, entry.getBytes(StandardCharsets.UTF_8)));
         return new KernelBundle(namePrefix + kernel, sourceHash().substring(0, 16), ex);
     }

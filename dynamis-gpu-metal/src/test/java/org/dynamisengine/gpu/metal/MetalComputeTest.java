@@ -4,7 +4,7 @@ import org.dynamisengine.gpu.test.compute.ComputeConformance;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import java.util.Map;
 @EnabledIfSystemProperty(named = "compute.metal.required", matches = "true")
-class MetalComputeTest extends ComputeConformance {
+class MetalComputeTest extends org.dynamisengine.gpu.test.compute.CapabilityTierConformance {
     @org.junit.jupiter.api.Test void malformedShaderReportsNativeCompilerError() {
         PipelineDescriptor good; try (var p = pipeline(64)) { good = p.descriptor(); }
         var bad = new KernelBundle("invalid", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, "this is invalid MSL".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
@@ -31,6 +31,12 @@ class MetalComputeTest extends ComputeConformance {
     }
     /** Metal's fma is one rounding (MSL), and Apple GPUs implement it so. */
     @Override protected Boolean expectedFusedFma() { return true; }
+    /** Apple GPUs (Apple7 and later: M1 and newer) have half, short, char, long, SIMD-group functions and float atomics. */
+    @Override protected java.util.Set<String> expectedTiers() {
+        return device.adapter().name().startsWith("Apple") ? java.util.Set.of(GpuCapabilities.FP16, GpuCapabilities.INT16, GpuCapabilities.INT8, GpuCapabilities.INT64,
+                GpuCapabilities.SUBGROUP_BASIC, GpuCapabilities.SUBGROUP_VOTE, GpuCapabilities.SUBGROUP_ARITHMETIC,
+                GpuCapabilities.SUBGROUP_BALLOT, GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.ATOMIC_FLOAT32_ADD) : java.util.Set.of();
+    }
     @Override protected GpuProvider provider() { return new MetalProvider(); }
     @Override protected KernelBundle kernel() {
         try {

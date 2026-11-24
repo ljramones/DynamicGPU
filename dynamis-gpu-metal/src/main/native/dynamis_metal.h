@@ -15,6 +15,8 @@ int dg_device_count(void);
 DGDevice *dg_device_open(int index);
 const char *dg_device_name(DGDevice *device);
 int dg_device_caps(DGDevice *device, uint64_t *out); /* max buffer, max threads x/y/z */
+/* ABI 2: GPU families, bits 0-4: Apple7, Apple8, Apple9, Mac2, Metal3. */
+int dg_device_features(DGDevice *device, uint64_t *out);
 void dg_device_release(DGDevice *device);
 DGBuffer *dg_buffer_create(DGDevice *device, uint64_t bytes, int privateStorage);
 void *dg_buffer_contents(DGBuffer *buffer);

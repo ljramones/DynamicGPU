@@ -12,6 +12,8 @@ final class MetalNative {
     private final Arena libraryArena = Arena.ofShared();
     private final SymbolLookup symbols;
     private final Map<String, MethodHandle> functions = new java.util.concurrent.ConcurrentHashMap<>();
+    /** The bridge ABI this code calls; 2 adds dg_device_features. */
+    static final int ABI = 2;
     private static MetalNative singleton;
     static synchronized MetalNative instance() {
         if (singleton == null) singleton = new MetalNative();
@@ -32,7 +34,7 @@ final class MetalNative {
                 }
             }
             symbols = SymbolLookup.libraryLookup(path, libraryArena);
-            if (integer("dg_abi") != 1) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Metal bridge ABI mismatch; Java requires ABI 1");
+            if (integer("dg_abi") != ABI) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Metal bridge ABI mismatch; Java requires ABI " + ABI);
         } catch (ComputeException e) { throw e; }
         catch (Exception | LinkageError e) { throw new ComputeException(ComputeException.Code.UNAVAILABLE, "Cannot load Metal bridge: " + e.getMessage(), e); }
     }

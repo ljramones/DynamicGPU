@@ -111,8 +111,44 @@ partial group. Group counts are independent of the fixed local size (64,1,1 here
 Check `GpuCapabilities` before allocation and pipeline creation. Limits cover byte
 sizes/storage ranges, binding offsets/counts, scalar parameters, local dimensions,
 threads/group and group counts. Type/feature sets conservatively report what this
-runtime enables. FP16, BF16, FP64, subgroups, atomics, optimized matrix paths, and
-GPU timestamps are not advertised in contract 1.
+runtime enables.
+
+**Capability tiers (1.2.0).** Beyond FP32, INT32 and BOOL, a device reports the optional data types and shader
+features it supports. The backend enables them when it opens the device, and a pipeline lists the ones it uses in
+`requiredDataTypes` and `requiredFeatures`.
+
+| Tier | Meaning | Vulkan source | Metal |
+|---|---|---|---|
+| `FP16` | half arithmetic and storage | `shaderFloat16`, 16-bit storage (storage and uniform-and-storage) | always |
+| `INT16`, `INT8` | 16- and 8-bit integer arithmetic and storage | `shaderInt16` / `shaderInt8`, 16- / 8-bit storage | always |
+| `INT64` | 64-bit integers | `shaderInt64` | Apple7+, Mac2 |
+| `FP64` | doubles | `shaderFloat64` | never |
+| `SUBGROUP_BASIC`, `_VOTE`, `_ARITHMETIC`, `_BALLOT`, `_SHUFFLE` | subgroup (SIMD-group) operations in compute | `VkPhysicalDeviceSubgroupProperties` | Apple7+, Mac2 |
+| `ATOMIC_FLOAT32_ADD` | float atomic add in storage buffers | `VK_EXT_shader_atomic_float` | Metal 3 |
+| `ATOMIC_INT64` | 64-bit integer atomics in storage buffers | `shaderBufferInt64Atomics` | never (Metal has 64-bit min/max only) |
+
+- **Subgroup sizes:** `minSubgroupSize()` and `maxSubgroupSize()` bound the lane count a kernel can see. They are 0
+  without subgroups. A kernel must work at any size in the range; MoltenVK reports 4 to 32.
+- **Measured on our targets:**
+
+  | Target | Reports |
+  |---|---|
+  | Apple M4 Max, native Metal | everything but `FP64` and `ATOMIC_INT64`; subgroups of 32 |
+  | MoltenVK on the same machine | the same, with subgroups of 4 to 32 |
+  | Mesa lavapipe | all 13 optional tiers; subgroups of 4 |
+  | mock | none |
+
+- **Undeclared needs are refused too.** On Vulkan, a SPIR-V module whose `OpCapability` list needs a feature the device
+  did not enable fails with `UNSUPPORTED` even if its descriptor does not declare the tier. Without that check the
+  driver's behaviour would be undefined. DynamisGPU never enables `StoragePushConstant16`/`8` or the subgroup
+  shuffle-relative, clustered and quad operations, so modules using them are refused.
+- **BF16** is not a tier: no portable API exposes it. Store it as 16-bit words and compute in FP32.
+- **Conformance:** `CapabilityTierConformance` (dynamis-gpu-test) runs one Slang kernel per tier and checks its
+  results exactly where the tier is reported, and checks pipeline refusal where it is not.
+  - **Exact checks:** correctly rounded half and double add and multiply; wrapping 8-, 16- and 64-bit integers;
+    subgroup reductions, scans, shuffles, ballots and votes; exact float and 64-bit atomic sums.
+  - **Backends:** every backend's conformance test inherits it.
+- **Still to come:** GPU timestamps and matrix hardware (Metal SIMD-group matrices, Vulkan cooperative matrices).
 
 **Measured features (1.1.0).** `GpuDevice.capabilities()` adds features the device can only report by running
 code; the adapter's capabilities never include them.
@@ -230,11 +266,13 @@ Write kernels once in Slang, and build them with `dynamis-gpu-shaders` (`ShaderB
 - **Binding order:** the build checks that Metal buffer indices follow the slots. Declare buffers in slot order, with
   the push-constant block last.
 - **Running it:** `java -cp dynamis-gpu-shaders.jar org.dynamisengine.gpu.shaders.ShaderBuild --src DIR --out DIR
-  --kernels FILE` (`--include DIR` and `--hash DIR` are repeatable). The kernels file has one `name source entry`
-  line per kernel. slangc is found through `$SLANGC`, `$VULKAN_SDK` or `~/VulkanSDK`.
-- **DynamisGPU's own kernels** (`fma_probe`) are built by `scripts/build-slang-kernels.sh`.
-- **Not converted:** the conformance-test kernels stay hand-written GLSL and MSL, because they test what drivers do
-  with specific SPIR-V, including unmarked arithmetic.
+  --kernels FILE` (`--include DIR` and `--hash DIR` are repeatable). The kernels file has one
+  `name source entry [targets]` line per kernel. `targets` is `spirv`, `metal` or both (the default). An FP64 kernel
+  is `spirv` only, because Metal has no `double`. slangc is found through `$SLANGC`, `$VULKAN_SDK` or `~/VulkanSDK`.
+- **DynamisGPU's own kernels** (`fma_probe`) and the capability-tier conformance kernels (`dynamis-gpu-test/src/main/slang`)
+  are built by `scripts/build-slang-kernels.sh`.
+- **Not converted:** the older conformance kernels (`vector_add`, `fp_strict`, `error_report`) stay hand-written GLSL
+  and MSL, because they test what drivers do with specific SPIR-V, including unmarked arithmetic.
 - **Equivalence:** the tool is a port of vectrix-gpu's `build-kernels.py`. On vectrix-gpu's 58 kernels its output is
   byte-identical.
 

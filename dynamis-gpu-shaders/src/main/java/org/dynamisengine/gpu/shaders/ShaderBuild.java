@@ -34,14 +34,22 @@ import java.util.stream.Stream;
  * ({@code name:slot}), {@code params} ({@code name:offset:type}), {@code spirv.sha256} and {@code metal.sha256}.
  * <p>
  * Usage: {@code ShaderBuild --src DIR --out DIR --kernels FILE [--manifest NAME] [--include DIR]... [--hash DIR]...
- * [--slangc PATH]}. The kernels file has one {@code name source entry} line per kernel ({@code #} starts a comment).
+ * [--slangc PATH]}. The kernels file has one {@code name source entry [targets]} line per kernel ({@code #} starts a
+ * comment); {@code targets} is {@code spirv}, {@code metal} or {@code spirv,metal} (the default), for kernels that use
+ * a type one backend lacks, such as {@code double} on Metal. A kernel without Metal has no {@code metal.sha256}.
  * Include directories are passed to slangc in order, followed by the source directory; the hash directories default
  * to the source directory. slangc is found through {@code --slangc}, {@code $SLANGC}, {@code $VULKAN_SDK/bin}, the
  * newest {@code ~/VulkanSDK/x/macOS/bin}, then {@code PATH}.
  */
 public final class ShaderBuild {
-    /** One kernel to build: the output name, the source file (relative to the source directory) and the entry point. */
-    public record Kernel(String name, String source, String entry) { }
+    /**
+     * One kernel to build: the output name, the source file (relative to the source directory), the entry point, and
+     * whether to build SPIR-V and Metal.
+     */
+    public record Kernel(String name, String source, String entry, boolean spirv, boolean metal) {
+        /** A kernel built for both targets. */
+        public Kernel(String name, String source, String entry) { this(name, source, entry, true, true); }
+    }
 
     /** A build: sources, outputs and the slangc to use. */
     public record Config(Path src, Path out, String manifestName, List<Path> includes, List<Path> hashDirs,
@@ -74,15 +82,19 @@ public final class ShaderBuild {
                 slangc));
     }
 
-    /** Reads a kernels file: {@code name source entry} per line. */
+    /** Reads a kernels file: {@code name source entry [targets]} per line. */
     public static List<Kernel> readKernels(Path file) throws IOException {
         List<Kernel> list = new ArrayList<>();
         for (String line : Files.readAllLines(file)) {
             String t = line.replaceAll("#.*", "").trim();
             if (t.isEmpty()) continue;
             String[] f = t.split("\\s+");
-            if (f.length != 3) throw new IllegalArgumentException("expected 'name source entry': " + line);
-            list.add(new Kernel(f[0], f[1], f[2]));
+            if (f.length != 3 && f.length != 4) throw new IllegalArgumentException("expected 'name source entry [targets]': " + line);
+            List<String> targets = f.length == 4 ? List.of(f[3].split(",")) : List.of("spirv", "metal");
+            for (String target : targets) {
+                if (!target.equals("spirv") && !target.equals("metal")) throw new IllegalArgumentException("unknown target " + target + ": " + line);
+            }
+            list.add(new Kernel(f[0], f[1], f[2], targets.contains("spirv"), targets.contains("metal")));
         }
         return list;
     }
@@ -105,26 +117,33 @@ public final class ShaderBuild {
                 common.addAll(List.of("-I", c.src().toString(), "-entry", k.entry(), "-stage", "compute", "-O0",
                         "-line-directive-mode", "none"));
                 Path spvTmp = tmp.resolve(k.name() + ".spv"), refl = tmp.resolve(k.name() + ".json");
+                // the reflection (the ABI) comes from the SPIR-V compile; a Metal-only kernel still runs it, unsaved
                 List<String> spirvCmd = new ArrayList<>(common);
                 spirvCmd.addAll(List.of("-target", "spirv", "-fvk-use-entrypoint-name", "-reflection-json",
                         refl.toString(), "-o", spvTmp.toString()));
                 run(spirvCmd, false);
-                byte[] spv = Spirv.noContraction(Files.readAllBytes(spvTmp));
-                Path spvOut = c.out().resolve(k.name() + ".spv");
-                Files.write(spvOut, spv);
-                if (spirvVal.isPresent()) {
-                    run(List.of(spirvVal.get().toString(), spvOut.toString()), false);
-                } else {
-                    System.err.println("warning: spirv-val not found; SPIR-V not validated");
-                }
-                Path metalTmp = tmp.resolve(k.name() + ".metal");
-                List<String> metalCmd = new ArrayList<>(common);
-                metalCmd.addAll(List.of("-target", "metal", "-o", metalTmp.toString()));
-                run(metalCmd, false);
-                String metal = Metal.PRELUDE + Files.readString(metalTmp);
                 KernelAbi abi = KernelAbi.fromReflection(Files.readString(refl), k.entry());
-                Metal.checkBindings(metal, k.entry(), abi);
-                Files.writeString(c.out().resolve(k.name() + ".metal"), metal);
+                byte[] spv = null;
+                if (k.spirv()) {
+                    spv = Spirv.noContraction(Files.readAllBytes(spvTmp));
+                    Path spvOut = c.out().resolve(k.name() + ".spv");
+                    Files.write(spvOut, spv);
+                    if (spirvVal.isPresent()) {
+                        run(List.of(spirvVal.get().toString(), spvOut.toString()), false);
+                    } else {
+                        System.err.println("warning: spirv-val not found; SPIR-V not validated");
+                    }
+                }
+                String metal = null;
+                if (k.metal()) {
+                    Path metalTmp = tmp.resolve(k.name() + ".metal");
+                    List<String> metalCmd = new ArrayList<>(common);
+                    metalCmd.addAll(List.of("-target", "metal", "-o", metalTmp.toString()));
+                    run(metalCmd, false);
+                    metal = Metal.PRELUDE + Files.readString(metalTmp);
+                    Metal.checkBindings(metal, k.entry(), abi);
+                    Files.writeString(c.out().resolve(k.name() + ".metal"), metal);
+                }
                 manifest.put(k.name() + ".entry", k.entry());
                 manifest.put(k.name() + ".local", Arrays.stream(abi.localSize()).mapToObj(Integer::toString)
                         .collect(Collectors.joining(",")));
@@ -132,10 +151,11 @@ public final class ShaderBuild {
                         .collect(Collectors.joining(",")));
                 manifest.put(k.name() + ".params", abi.parameters().stream()
                         .map(p -> p.name() + ":" + p.offset() + ":" + p.scalarType()).collect(Collectors.joining(",")));
-                manifest.put(k.name() + ".spirv.sha256", sha256(spv));
-                manifest.put(k.name() + ".metal.sha256", sha256(metal.getBytes(StandardCharsets.UTF_8)));
-                System.out.printf("%s: %d bytes SPIR-V, %d chars Metal, local %s, buffers %s%n", k.name(), spv.length,
-                        metal.length(), Arrays.toString(abi.localSize()), abi.buffers());
+                if (spv != null) manifest.put(k.name() + ".spirv.sha256", sha256(spv));
+                if (metal != null) manifest.put(k.name() + ".metal.sha256", sha256(metal.getBytes(StandardCharsets.UTF_8)));
+                System.out.printf("%s: %s SPIR-V, %s Metal, local %s, buffers %s%n", k.name(),
+                        spv == null ? "no" : spv.length + " bytes", metal == null ? "no" : metal.length() + " chars",
+                        Arrays.toString(abi.localSize()), abi.buffers());
             }
         } finally {
             try (Stream<Path> files = Files.walk(tmp)) {

@@ -35,6 +35,23 @@ public final class VulkanProvider implements GpuProvider {
             return false;
         }
     }
+    private static int instanceApi;
+    /**
+     * The API version DynamisGPU asks of the instance: the loader's, up to 1.3, and at least 1.1. Device features of
+     * Vulkan 1.2 (16-bit floats, 8-bit storage, 64-bit atomics) are queried and enabled only at 1.2 and above.
+     */
+    static synchronized int instanceApiVersion() {
+        if (instanceApi == 0) {
+            loader();
+            try (var stack = MemoryStack.stackPush()) {
+                var version = stack.ints(VK11.VK_API_VERSION_1_1);
+                int loaderVersion = VK11.vkEnumerateInstanceVersion(version) == VK_SUCCESS ? version.get(0) & ~0xFFF : VK11.VK_API_VERSION_1_1;
+                instanceApi = Integer.compareUnsigned(loaderVersion, VK13.VK_API_VERSION_1_3) > 0 ? VK13.VK_API_VERSION_1_3
+                        : Integer.compareUnsigned(loaderVersion, VK11.VK_API_VERSION_1_1) < 0 ? VK11.VK_API_VERSION_1_1 : loaderVersion;
+            }
+        }
+        return instanceApi;
+    }
     /** MoltenVK's fast-math setting and its value MVK_CONFIG_FAST_MATH_NEVER. */
     static final String MOLTENVK_FAST_MATH = "MVK_CONFIG_FAST_MATH_ENABLED";
     static final int MOLTENVK_FAST_MATH_NEVER = 0;
@@ -47,7 +64,7 @@ public final class VulkanProvider implements GpuProvider {
     static VkInstance instance() {
         loader();
         try (var stack = MemoryStack.stackPush()) {
-            var app = VkApplicationInfo.calloc(stack).sType$Default().pApplicationName(stack.UTF8("DynamisGPU headless compute")).apiVersion(VK11.VK_API_VERSION_1_1);
+            var app = VkApplicationInfo.calloc(stack).sType$Default().pApplicationName(stack.UTF8("DynamisGPU headless compute")).apiVersion(instanceApiVersion());
             var info = VkInstanceCreateInfo.calloc(stack).sType$Default().pApplicationInfo(app);
             List<String> extensions = new ArrayList<>();
             if (extension(null, "VK_KHR_portability_enumeration")) {
@@ -94,10 +111,12 @@ public final class VulkanProvider implements GpuProvider {
                 var physical = physicals.get(i); if (family(physical) < 0) continue;
                 var p = VkPhysicalDeviceProperties.calloc(stack); vkGetPhysicalDeviceProperties(physical, p); var l = p.limits();
                 long maxStorage = Integer.toUnsignedLong(l.maxStorageBufferRange());
+                var features = VulkanFeatures.query(physical);
                 var caps = new GpuCapabilities(maxStorage, maxStorage, Math.toIntExact(l.minStorageBufferOffsetAlignment()),
                         Math.min(l.maxPerStageDescriptorStorageBuffers(), l.maxDescriptorSetStorageBuffers()), l.maxPushConstantsSize(),
                         new Dimensions(l.maxComputeWorkGroupSize(0), l.maxComputeWorkGroupSize(1), l.maxComputeWorkGroupSize(2)), l.maxComputeWorkGroupInvocations(),
-                        new Dimensions(l.maxComputeWorkGroupCount(0), l.maxComputeWorkGroupCount(1), l.maxComputeWorkGroupCount(2)), Set.of("FP32", "INT32", "BOOL"), Set.of(), false);
+                        new Dimensions(l.maxComputeWorkGroupCount(0), l.maxComputeWorkGroupCount(1), l.maxComputeWorkGroupCount(2)),
+                        features.dataTypes(), features.shaderFeatures(), false, features.minSubgroupSize(), features.maxSubgroupSize());
                 result.add(new Adapter(i, p.deviceNameString(), p.vendorID(), p.deviceID(), p.apiVersion(), p.driverVersion(), caps));
             }
             return List.copyOf(result);

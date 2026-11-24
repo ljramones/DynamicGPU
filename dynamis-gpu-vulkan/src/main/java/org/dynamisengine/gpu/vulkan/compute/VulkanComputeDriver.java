@@ -18,6 +18,7 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkDevice device;
     private final VkQueue queue;
     private final long pool;
+    private final VulkanFeatures features;
 
     VulkanComputeDriver(int index) {
         instance = VulkanProvider.instance(); VkDevice created = null; long createdPool = 0;
@@ -27,8 +28,14 @@ final class VulkanComputeDriver implements ComputeDriver {
             physical = devices.get(index); int family = VulkanProvider.family(physical);
             if (family < 0) throw new ComputeException(ComputeException.Code.UNAVAILABLE, "No compute-capable Vulkan queue");
             var qi = VkDeviceQueueCreateInfo.calloc(1, stack); qi.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1));
-            var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi);
-            if (VulkanProvider.extension(physical, "VK_KHR_portability_subset")) info.ppEnabledExtensionNames(stack.pointers(stack.UTF8("VK_KHR_portability_subset")));
+            features = VulkanFeatures.query(physical);
+            var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
+            List<String> extensions = new ArrayList<>(features.extensions());
+            if (VulkanProvider.extension(physical, "VK_KHR_portability_subset")) extensions.add("VK_KHR_portability_subset");
+            if (!extensions.isEmpty()) {
+                var names = stack.mallocPointer(extensions.size()); for (var name : extensions) names.put(stack.UTF8(name)); names.flip();
+                info.ppEnabledExtensionNames(names);
+            }
             var out = stack.mallocPointer(1); check(vkCreateDevice(physical, info, null, out), "create compute device");
             device = created = new VkDevice(out.get(0), physical, info);
             vkGetDeviceQueue(device, family, 0, out); queue = new VkQueue(out.get(0), device);
@@ -95,7 +102,7 @@ final class VulkanComputeDriver implements ComputeDriver {
     @Override public Object pipeline(PipelineDescriptor d) {
         var executable = d.kernel().executable(Backend.VULKAN);
         if (executable.format() != KernelBundle.Format.SPIRV) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Vulkan requires SPIR-V");
-        byte[] bytes = executable.bytes(); SpirvWorkgroup.validate(bytes, d);
+        byte[] bytes = executable.bytes(); SpirvWorkgroup.validate(bytes, d); features.checkModule(bytes, d.entryPoint());
         long shader = 0, setLayout = 0, layout = 0, pipeline = 0;
         try (var stack = MemoryStack.stackPush()) {
             var code = MemoryUtil.memAlloc(bytes.length);

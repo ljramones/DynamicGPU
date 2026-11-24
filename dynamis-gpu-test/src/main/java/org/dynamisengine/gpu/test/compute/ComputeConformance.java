@@ -88,6 +88,24 @@ public abstract class ComputeConformance {
             }
         }
     }
+    /** Reported data types and features are consistent: the baseline types, subgroup sizes, and features' prerequisites. */
+    @Test void reportsConsistentCapabilityTiers() {
+        var c = device.capabilities();
+        System.out.println("data types=" + new TreeSet<>(c.dataTypes()) + " features=" + new TreeSet<>(c.shaderFeatures())
+                + " subgroup sizes=" + c.minSubgroupSize() + ".." + c.maxSubgroupSize() + " on " + device.adapter().name());
+        assertTrue(c.dataTypes().containsAll(Set.of(GpuCapabilities.FP32, GpuCapabilities.INT32, GpuCapabilities.BOOL)));
+        assertEquals(device.adapter().capabilities().dataTypes(), c.dataTypes(), "data types come from the adapter");
+        boolean subgroups = c.shaderFeatures().contains(GpuCapabilities.SUBGROUP_BASIC);
+        for (String f : List.of(GpuCapabilities.SUBGROUP_VOTE, GpuCapabilities.SUBGROUP_ARITHMETIC, GpuCapabilities.SUBGROUP_BALLOT, GpuCapabilities.SUBGROUP_SHUFFLE))
+            if (c.shaderFeatures().contains(f)) assertTrue(subgroups, f + " without SUBGROUP_BASIC");
+        if (c.shaderFeatures().contains(GpuCapabilities.ATOMIC_INT64)) assertTrue(c.dataTypes().contains(GpuCapabilities.INT64), "64-bit atomics without INT64");
+        if (subgroups) {
+            assertTrue(c.minSubgroupSize() >= 1 && Integer.bitCount(c.minSubgroupSize()) == 1, "min subgroup size " + c.minSubgroupSize());
+            assertTrue(c.maxSubgroupSize() <= 128 && Integer.bitCount(c.maxSubgroupSize()) == 1, "max subgroup size " + c.maxSubgroupSize());
+        } else {
+            assertEquals(0, c.maxSubgroupSize(), "subgroup size without subgroups");
+        }
+    }
     /** Whether this backend's devices must report {@link GpuCapabilities#FUSED_FMA}, or null when that is unknown. */
     protected Boolean expectedFusedFma() { return null; }
     /** The device measures FUSED_FMA, and a pipeline requiring it is created only where it is reported. */
@@ -233,7 +251,7 @@ public abstract class ComputeConformance {
             var invalidSlots = new BindingLayout(List.of(new BindingLayout.BufferBinding(Integer.MAX_VALUE, Access.READ, 4)), 4);
             var invalidSlotPipeline = new PipelineDescriptor(kernel(), "vector_add", invalidSlots, descriptor.localSize(), Map.of(), Set.of(), Set.of());
             assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> device.pipeline(invalidSlotPipeline)).code());
-            var unsupported = new PipelineDescriptor(kernel(), "vector_add", descriptor.layout(), descriptor.localSize(), Map.of(), Set.of("FP64"), Set.of());
+            var unsupported = new PipelineDescriptor(kernel(), "vector_add", descriptor.layout(), descriptor.localSize(), Map.of(), Set.of("FP128"), Set.of()); // no device has it
             assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> device.pipeline(unsupported)).code());
         }
     }

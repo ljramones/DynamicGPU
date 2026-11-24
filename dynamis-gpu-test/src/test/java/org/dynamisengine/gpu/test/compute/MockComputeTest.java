@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
-class MockComputeTest extends ComputeConformance {
+class MockComputeTest extends CapabilityTierConformance {
     @Override protected GpuProvider provider() { return new MockComputeProvider(); }
     /** The mock has no probe executable, so it reports no measured features. */
     @Override protected Boolean expectedFusedFma() { return false; }

@@ -9,3 +9,7 @@ src="$repo/dynamis-gpu-api/src/main/slang"
 java -cp dynamis-gpu-shaders/target/classes org.dynamisengine.gpu.shaders.ShaderBuild \
   --src "$src" --kernels "$src/kernels.list" \
   --out "$repo/dynamis-gpu-api/src/main/resources/org/dynamisengine/gpu/api/compute/spi/kernels"
+tiers="$repo/dynamis-gpu-test/src/main/slang"
+java -cp dynamis-gpu-shaders/target/classes org.dynamisengine.gpu.shaders.ShaderBuild \
+  --src "$tiers" --kernels "$tiers/kernels.list" \
+  --out "$repo/dynamis-gpu-test/src/main/resources/compute/tiers"

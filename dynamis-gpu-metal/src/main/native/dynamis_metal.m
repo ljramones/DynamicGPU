@@ -13,7 +13,7 @@ static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
 #define START @autoreleasepool { @try { errorText[0] = 0;
 #define END(value) } @catch (NSException *e) { error(e.reason); return value; } }
-uint32_t dg_abi(void) { return 1; }
+uint32_t dg_abi(void) { return 2; }
 const char *dg_error(void) { return errorText; }
 int dg_device_count(void) { START NSArray *a = MTLCopyAllDevices(); int n = (int)a.count; [a release]; return n; END(-1) }
 DGDevice *dg_device_open(int index) { START
@@ -26,6 +26,15 @@ END(NULL) }
 const char *dg_device_name(DGDevice *d) { START snprintf(deviceName, sizeof(deviceName), "%s", d->device.name.UTF8String); return deviceName; END(NULL) }
 int dg_device_caps(DGDevice *d, uint64_t *out) { START
     MTLSize t = d->device.maxThreadsPerThreadgroup; out[0] = d->device.maxBufferLength; out[1] = t.width; out[2] = t.height; out[3] = t.depth; return 0;
+END(-1) }
+int dg_device_features(DGDevice *d, uint64_t *out) { START
+    uint64_t f = 0; id<MTLDevice> m = d->device;
+    if ([m supportsFamily:MTLGPUFamilyApple7]) f |= 1;
+    if ([m supportsFamily:MTLGPUFamilyApple8]) f |= 2;
+    if ([m supportsFamily:MTLGPUFamilyApple9]) f |= 4;
+    if ([m supportsFamily:MTLGPUFamilyMac2]) f |= 8;
+    if ([m supportsFamily:MTLGPUFamilyMetal3]) f |= 16;
+    out[0] = f; return 0;
 END(-1) }
 void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->device release]; free(d); } END() }
 DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { START

@@ -1,0 +1,12 @@
+# name source entry: capability-tier conformance kernels, built into src/main/resources/compute/tiers
+fp16_arith fp16.slang fp16_arith
+int16_arith int16.slang int16_arith
+int8_arith int8.slang int8_arith
+int64_arith int64.slang int64_arith
+fp64_arith fp64.slang fp64_arith spirv
+subgroup_arithmetic subgroup_arithmetic.slang subgroup_arithmetic
+subgroup_shuffle subgroup_shuffle.slang subgroup_shuffle
+subgroup_ballot subgroup_ballot.slang subgroup_ballot
+subgroup_vote subgroup_vote.slang subgroup_vote
+atomic_float_add atomic_float_add.slang atomic_float_add
+atomic_int64 atomic_int64.slang atomic_int64
