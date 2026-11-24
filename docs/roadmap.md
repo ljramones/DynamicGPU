@@ -108,6 +108,24 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 
 ### 1.6: Runtime II, queues and synchronization
 
+**First, observability for cost models** (from the token-efficiency review, 2026-11-24). The runtime provides generic
+hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers above.
+- **Labels:** a label on an encoder, a dispatch or a recording.
+  - **Timing:** `dispatchTimes()` reports (label, duration).
+  - **Debug labels:** labels become Vulkan debug-utils labels and Metal debug groups, so they appear in Xcode GPU
+    captures and RenderDoc.
+  - **Primitives:** they label their own dispatches by default (`gemm.tiled`, `gemm.skinny`, `softmax`, ...), and
+    callers can override.
+- **Memory classes:** a label on each allocation (`BufferDescriptor`), with `memoryStats()` broken down per label.
+  For example, a serving layer labels KV pages and a game labels textures.
+- **A user tag on `GpuRecording`,** for higher layers to map recordings to their own domains, such as a prefix cache.
+- **Queue counters:** submissions pending, submitted and completed (running totals), and bytes in flight.
+- **Rules for counters:**
+  - All are host-side bookkeeping, readable without a device sync or queue drain.
+  - Unread, they cost nothing measurable.
+- **Cost accounting uses labelled submissions or recordings timed with `gpuTime()`.** Per-dispatch timing perturbs
+  execution (on Metal it splits encoders and includes queued time), so it stays an opt-in diagnostic.
+
 - **Multiple queues:** a compute queue and a transfer queue where the device has them (Vulkan queue families; Metal
   command queues). `GpuDevice.queue(QueueKind)` selects one.
 - **Cross-queue dependencies:** timeline semaphores on Vulkan, `MTLSharedEvent` on Metal.
@@ -136,6 +154,9 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - A stream of uploads interleaved with dependent compute is correct on every backend.
   - On hardware with a separate transfer engine, uploads overlap compute; the overlap is measured.
 
+- **Demotion (for example of KV pages under memory pressure) is an ordinary transfer:** a copy into `SHARED` memory
+  on the transfer queue, ordered by a `GpuFence`. On Apple's unified memory, `SHARED` already is the CPU tier. No
+  special runtime operation is added.
 - **Where to start:**
   - **Queue selection:** `VulkanProvider.family` picks the first compute-capable family. Add a transfer-only family
     where one exists.
@@ -192,6 +213,12 @@ The two biggest costs outside the kernels today are allocation and re-recording.
     report the first differing element against the operation's contract.
   - **No printf:** shader printf is only available through Vulkan validation layers, so the error buffer is the
     portable channel.
+- **Fusion and attribution:** timing granularity is the dispatch, so a fused kernel declares what it fuses in its
+  label.
+  - **Fusion stays allowed:** mixing prefill and decode tokens in one GEMM (continuous batching, chunked prefill) is a
+    major serving win.
+  - **Splitting the cost:** the serving layer does it by token count or FLOPs; kernels don't avoid fusion for the
+    sake of accounting.
 - **Accuracy contracts as API:** every primitive publishes its contract as data. That is the input types, the
   accumulation type, the output rounding, the order class (fixed and reproducible, or hardware order) and the error
   bound, through an `AccuracyContract` record next to the documentation table. NNJava can then compare GPU results
@@ -281,7 +308,8 @@ backend.
 - **Embedding gather:** FP16 and quantized tables.
 - **Sampling on the GPU:**
   - argmax, top-k, top-p and temperature, with a seeded generator;
-  - logits never return to the host.
+  - logits never return to the host. The sampled token stays in a GPU buffer, a host readback is optional, and the
+    next step's recording reads it directly.
 - **Reductions and scans:** these arrive in 1.7; here they gain model-oriented fused forms such as a log-sum-exp.
 
 - **Where to start:**
@@ -298,6 +326,11 @@ backend.
   - skips masked blocks, roughly halving causal work;
   - the Metal matrix path first.
 - **Paged KV cache:** fixed-size pages in a pool, an append kernel, and attention over the page table.
+  - **Sharing:** pages are reference-counted and shared across sequences, with copy-on-write. That is the mechanism
+    prefix caching needs. The prefix index itself (hashing token IDs, a radix tree) belongs to the serving layer.
+  - **Facts, readable without a sync:** pages and tokens per sequence, pinned (active) against evictable, and total
+    against free. Recompute cost depends on the model and the hardware, so the serving layer's cost model derives it
+    from these facts.
 - **Decode attention:** one query against a long cache, split across the keys and combined.
 
 - **Where to start:**
@@ -356,6 +389,10 @@ An independent review of this roadmap raised seven points, all adopted.
 | Coexistence with game compute | 1.6 (indirect dispatch, native handles, external command buffers, shared fences) |
 
 ## Rules that hold throughout
+
+- **Counters and queries:** every counter or query meant for cost or admission decisions is readable on the host
+  without a device sync or queue drain. It costs nothing measurable when unread. GPU-side figures arrive through an
+  asynchronous readback, never a blocking read. Anything that perturbs execution is opt-in and documented as such.
 
 - **Testing:** every capability is tested on native Metal, MoltenVK and lavapipe. Where a driver lacks it, it must
   be refused rather than emulated silently.
