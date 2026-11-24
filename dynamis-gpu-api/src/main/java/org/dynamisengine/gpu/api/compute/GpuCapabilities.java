@@ -16,6 +16,7 @@ import java.util.Set;
  * where any is missing. On Vulkan, a SPIR-V module that declares a capability the device did not enable is rejected
  * the same way, declared or not.
  *
+ * @param timestamps whether {@link GpuSubmission#gpuTime()} measures submissions on this device (1.3.0)
  * @param minSubgroupSize the smallest subgroup (SIMD-group) size a kernel can run with; 0 without subgroups
  * @param maxSubgroupSize the largest; equal to {@code minSubgroupSize} where the size is fixed
  */

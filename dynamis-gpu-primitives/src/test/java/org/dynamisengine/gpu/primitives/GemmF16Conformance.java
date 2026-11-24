@@ -102,23 +102,27 @@ abstract class GemmF16Conformance {
         assertThrows(IllegalArgumentException.class, () -> new GemmF16.Shape(2, 2, 4, 3, 2, 2, 1, 0));
     }
 
-    /** -Dgemm.benchmark=true: GFLOP/s for square multiplies, from wall time over back-to-back submissions. */
+    /** -Dgemm.benchmark=true: GFLOP/s for square multiplies over back-to-back dispatches, by GPU time and by wall time. */
     @Test void benchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
         for (int size : new int[] {512, 1024, 2048, 4096}) {
             var s = GemmF16.Shape.of(size, size, size, 1, 0);
             try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
                 int reps = Math.max(2, (int) (2e11 / s.flops()));
-                double best = Double.MAX_VALUE;
+                double best = Double.MAX_VALUE, bestGpu = Double.MAX_VALUE;
                 for (int round = 0; round < 4; round++) {
                     long t0 = System.nanoTime();
                     try (var e = device.encoder()) {
                         for (int i = 0; i < reps; i++) gemm.encode(e, ga, gb, gc, s);
-                        try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                        try (var sub = device.queue().submit(e)) {
+                            assertTrue(sub.await(WAIT));
+                            var gpu = sub.gpuTime(); if (gpu.isPresent()) bestGpu = Math.min(bestGpu, gpu.get().toNanos() / 1e9);
+                        }
                     }
                     best = Math.min(best, (System.nanoTime() - t0) / 1e9);
                 }
-                System.out.printf("gemm %s %d^3: %.0f GFLOP/s (%d per submission)%n", device.adapter().name(), size, reps * s.flops() / best / 1e9, reps);
+                System.out.printf("gemm %s %d^3: %.0f GFLOP/s by GPU time, %.0f by wall time (%d per submission)%n", device.adapter().name(),
+                        size, reps * s.flops() / bestGpu / 1e9, reps * s.flops() / best / 1e9, reps);
             }
         }
     }

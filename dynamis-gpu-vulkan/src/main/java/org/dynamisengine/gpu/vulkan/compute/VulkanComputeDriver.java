@@ -19,6 +19,9 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkQueue queue;
     private final long pool;
     private final VulkanFeatures features;
+    /** Valid bits of the compute queue's timestamps (0: none) and nanoseconds per tick. */
+    private final int timestampBits;
+    private final double timestampPeriod;
 
     VulkanComputeDriver(int index) {
         instance = VulkanProvider.instance(); VkDevice created = null; long createdPool = 0;
@@ -29,6 +32,9 @@ final class VulkanComputeDriver implements ComputeDriver {
             if (family < 0) throw new ComputeException(ComputeException.Code.UNAVAILABLE, "No compute-capable Vulkan queue");
             var qi = VkDeviceQueueCreateInfo.calloc(1, stack); qi.get(0).sType$Default().queueFamilyIndex(family).pQueuePriorities(stack.floats(1));
             features = VulkanFeatures.query(physical);
+            var limits = VkPhysicalDeviceProperties.calloc(stack); vkGetPhysicalDeviceProperties(physical, limits);
+            timestampPeriod = limits.limits().timestampPeriod();
+            timestampBits = timestampPeriod > 0 ? VulkanProvider.timestampBits(physical, family) : 0;
             var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
             List<String> extensions = new ArrayList<>(features.extensions());
             if (VulkanProvider.extension(physical, "VK_KHR_portability_subset")) extensions.add("VK_KHR_portability_subset");
@@ -148,7 +154,7 @@ final class VulkanComputeDriver implements ComputeDriver {
         var region = VkBufferCopy.calloc(1, stack); region.get(0).srcOffset(srcOffset).dstOffset(dstOffset).size(bytes); vkCmdCopyBuffer(cmd, src, dst, region);
     }
     @Override public Job submit(List<Command> commands) {
-        VkCommandBuffer cmd = null; long descriptorPool = 0, fence = 0;
+        VkCommandBuffer cmd = null; long descriptorPool = 0, fence = 0, queries = 0;
         List<Allocation> stages = new ArrayList<>(); Map<GpuReadback, Allocation> reads = new LinkedHashMap<>();
         try (var stack = MemoryStack.stackPush()) {
             int dispatches = 0, descriptors = 0;
@@ -161,6 +167,12 @@ final class VulkanComputeDriver implements ComputeDriver {
             var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(pool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
             var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer"); cmd = new VkCommandBuffer(pointer.get(0), device);
             check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin compute commands");
+            if (timestampBits > 0) {
+                var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(2);
+                var out = stack.mallocLong(1); check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
+                vkCmdResetQueryPool(cmd, queries, 0, 2);
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0);
+            }
             for (var command : commands) {
                 try (var local = MemoryStack.stackPush()) {
                     barrier(cmd, false, local);
@@ -193,24 +205,37 @@ final class VulkanComputeDriver implements ComputeDriver {
                     }
                 }
             }
+            if (queries != 0) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
             barrier(cmd, true, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
             var out = stack.mallocLong(1); check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
             var submit = VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd.address())); check(vkQueueSubmit(queue, submit, fence), "submit compute commands");
-        } catch (RuntimeException | Error ex) { cleanup(cmd, descriptorPool, fence, stages); throw ex; }
-        final VkCommandBuffer submitted = cmd; final long submittedPool = descriptorPool, submittedFence = fence;
+        } catch (RuntimeException | Error ex) { cleanup(cmd, descriptorPool, fence, queries, stages); throw ex; }
+        final VkCommandBuffer submitted = cmd; final long submittedPool = descriptorPool, submittedFence = fence, submittedQueries = queries;
         return new Job() {
+            private OptionalLong gpuNanos = OptionalLong.empty();
+            @Override public OptionalLong gpuNanos() { return gpuNanos; }
             @Override public GpuSubmission.Status poll() {
                 int status = vkGetFenceStatus(device, submittedFence); if (status == VK_NOT_READY) return GpuSubmission.Status.PENDING; check(status, "submission fence status");
+                if (submittedQueries != 0) {
+                    try (var stack = MemoryStack.stackPush()) {
+                        var ticks = stack.mallocLong(2);
+                        if (vkGetQueryPoolResults(device, submittedQueries, 0, 2, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                            long mask = timestampBits >= 64 ? -1L : (1L << timestampBits) - 1;
+                            gpuNanos = OptionalLong.of(Math.round(((ticks.get(1) - ticks.get(0)) & mask) * timestampPeriod));
+                        }
+                    }
+                }
                 reads.forEach((read, stage) -> {
                     byte[] result = new byte[Math.toIntExact(stage.bytes())]; map(stage, 0, stage.bytes(), Access.READ).get(result); unmap(stage, Access.READ); read.complete(result);
                 });
                 return GpuSubmission.Status.COMPLETE;
             }
-            @Override public void close() { cleanup(submitted, submittedPool, submittedFence, stages); }
+            @Override public void close() { cleanup(submitted, submittedPool, submittedFence, submittedQueries, stages); }
         };
     }
-    private void cleanup(VkCommandBuffer cmd, long descriptorPool, long fence, List<Allocation> stages) {
+    private void cleanup(VkCommandBuffer cmd, long descriptorPool, long fence, long queries, List<Allocation> stages) {
         if (fence != 0) vkDestroyFence(device, fence, null);
+        if (queries != 0) vkDestroyQueryPool(device, queries, null);
         if (cmd != null) vkFreeCommandBuffers(device, pool, cmd);
         if (descriptorPool != 0) vkDestroyDescriptorPool(device, descriptorPool, null); stages.forEach(this::releaseBuffer);
     }

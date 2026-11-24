@@ -18,6 +18,8 @@ public interface ComputeDriver extends AutoCloseable {
     interface Job extends AutoCloseable {
         /** COMPLETE includes host-read visibility and publication of every readback. */
         GpuSubmission.Status poll();
+        /** The GPU execution time in nanoseconds, after {@link #poll} returned COMPLETE and before {@link #close}; empty if not measured. */
+        default java.util.OptionalLong gpuNanos() { return java.util.OptionalLong.empty(); }
         @Override void close();
     }
     Object allocate(BufferDescriptor descriptor);

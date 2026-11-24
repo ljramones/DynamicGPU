@@ -88,6 +88,30 @@ public abstract class ComputeConformance {
             }
         }
     }
+    /** Where the device reports timestamps, a completed submission has a positive GPU time no longer than its wall time. */
+    @Test void measuresGpuTimeWhereTimestampsAreReported() {
+        int n = 1 << 20;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE);
+             var p = pipeline(n); var e = device.encoder()) {
+            e.fill(a, Float.floatToRawIntBits(1f)).fill(b, Float.floatToRawIntBits(2f));
+            for (int i = 0; i < 20; i++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+            long start = System.nanoTime();
+            try (var s = device.queue().submit(e)) {
+                await(s); long wall = System.nanoTime() - start;
+                var time = s.gpuTime();
+                System.out.println("gpu time=" + time.map(java.time.Duration::toNanos).orElse(-1L) + " ns, wall=" + wall + " ns, timestamps="
+                        + device.capabilities().timestamps() + " on " + device.adapter().name());
+                if (device.capabilities().timestamps()) {
+                    assertTrue(time.isPresent(), "timestamps reported but no GPU time");
+                    assertTrue(time.get().toNanos() > 0, "GPU time " + time.get());
+                    assertTrue(time.get().toNanos() <= wall + 1_000_000, "GPU time " + time.get().toNanos() + " ns exceeds wall time " + wall + " ns");
+                    assertEquals(time, s.gpuTime(), "stable");
+                } else {
+                    assertTrue(time.isEmpty(), "GPU time without timestamps");
+                }
+            }
+        }
+    }
     /** Reported data types and features are consistent: the baseline types, subgroup sizes, and features' prerequisites. */
     @Test void reportsConsistentCapabilityTiers() {
         var c = device.capabilities();

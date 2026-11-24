@@ -70,9 +70,13 @@ final class MetalDriver implements ComputeDriver {
             n.release("dg_batch_release", batch); stages.forEach(this::releaseBuffer); throw ex;
         }
         return new Job() {
+            private java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
+            @Override public java.util.OptionalLong gpuNanos() { return gpuNanos; }
             @Override public GpuSubmission.Status poll() {
                 int status = n.integer("dg_status", batch); if (status < 0) throw n.error("command buffer completion");
                 if (status == 0) return GpuSubmission.Status.PENDING;
+                double seconds = n.real("dg_gpu_seconds", batch);
+                if (seconds >= 0) gpuNanos = java.util.OptionalLong.of(Math.round(seconds * 1e9));
                 reads.forEach((read, stage) -> {
                     byte[] bytes = new byte[Math.toIntExact(stage.bytes())]; map(stage, 0, stage.bytes(), Access.READ).get(bytes); read.complete(bytes);
                 });

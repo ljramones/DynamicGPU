@@ -13,7 +13,7 @@ static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
 #define START @autoreleasepool { @try { errorText[0] = 0;
 #define END(value) } @catch (NSException *e) { error(e.reason); return value; } }
-uint32_t dg_abi(void) { return 2; }
+uint32_t dg_abi(void) { return 3; }
 const char *dg_error(void) { return errorText; }
 int dg_device_count(void) { START NSArray *a = MTLCopyAllDevices(); int n = (int)a.count; [a release]; return n; END(-1) }
 DGDevice *dg_device_open(int index) { START
@@ -112,4 +112,8 @@ int dg_status(DGBatch *b) { START
     if (b->command.status == MTLCommandBufferStatusError) { error(b->command.error.localizedDescription); return -1; }
     return b->command.status == MTLCommandBufferStatusCompleted ? 1 : 0;
 END(-1) }
+double dg_gpu_seconds(DGBatch *b) { START
+    CFTimeInterval start = b->command.GPUStartTime, end = b->command.GPUEndTime;
+    return end > start ? end - start : -1.0;
+END(-1.0) }
 void dg_batch_release(DGBatch *b) { START if (b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; } [b->command release]; free(b); } END() }

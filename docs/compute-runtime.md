@@ -148,7 +148,20 @@ features it supports. The backend enables them when it opens the device, and a p
   - **Exact checks:** correctly rounded half and double add and multiply; wrapping 8-, 16- and 64-bit integers;
     subgroup reductions, scans, shuffles, ballots and votes; exact float and 64-bit atomic sums.
   - **Backends:** every backend's conformance test inherits it.
-- **Still to come:** GPU timestamps and matrix hardware (Metal SIMD-group matrices, Vulkan cooperative matrices).
+- **Still to come:** matrix hardware (Metal SIMD-group matrices, Vulkan cooperative matrices).
+
+**GPU timestamps (1.3.0).** `GpuSubmission.gpuTime()` gives the GPU execution time of a completed submission, from the
+start of its first command to the end of its last. It excludes queueing and host work, so use it for kernel
+throughput.
+- **Where it's available:** devices whose `GpuCapabilities.timestamps()` is true.
+  - **Metal:** always. It uses the command buffer's `GPUStartTime` and `GPUEndTime`, through bridge ABI 3.
+  - **Vulkan:** where the compute queue family has timestamp bits. Each submission writes a timestamp at its start
+    and end into its own query pool, and the time is scaled by `timestampPeriod`.
+  - **Measured here:** native Metal, MoltenVK and lavapipe report it; the mock does not.
+- **When it's empty:** while the submission is pending, when it failed before its commands ran, and without
+  timestamps.
+- **Example:** twenty 1M-element vector adds take 1.1 ms of GPU time on an M4 Max, against 8 to 10 ms of wall time
+  around submit and wait.
 
 **Measured features (1.1.0).** `GpuDevice.capabilities()` adds features the device can only report by running
 code; the adapter's capabilities never include them.

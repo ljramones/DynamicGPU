@@ -12,8 +12,8 @@ final class MetalNative {
     private final Arena libraryArena = Arena.ofShared();
     private final SymbolLookup symbols;
     private final Map<String, MethodHandle> functions = new java.util.concurrent.ConcurrentHashMap<>();
-    /** The bridge ABI this code calls; 2 adds dg_device_features. */
-    static final int ABI = 2;
+    /** The bridge ABI this code calls; 2 adds dg_device_features, 3 dg_gpu_seconds. */
+    static final int ABI = 3;
     private static MetalNative singleton;
     static synchronized MetalNative instance() {
         if (singleton == null) singleton = new MetalNative();
@@ -51,6 +51,7 @@ final class MetalNative {
     }
     int integer(String name, Object... args) { return (int) call(name, JAVA_INT, args); }
     long number(String name, Object... args) { return (long) call(name, JAVA_LONG, args); }
+    double real(String name, Object... args) { return (double) call(name, JAVA_DOUBLE, args); }
     MemorySegment address(String name, Object... args) { return (MemorySegment) call(name, ADDRESS, args); }
     MemorySegment pointer(String name, Object... args) {
         var value = address(name, args); if (value.equals(MemorySegment.NULL)) throw error(name); return value;

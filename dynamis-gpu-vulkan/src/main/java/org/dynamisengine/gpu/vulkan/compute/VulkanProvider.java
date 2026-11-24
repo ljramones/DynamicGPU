@@ -103,6 +103,14 @@ public final class VulkanProvider implements GpuProvider {
             return -1;
         }
     }
+    /** Valid timestamp bits of the queue family (0 when it cannot write timestamps). */
+    static int timestampBits(VkPhysicalDevice physical, int family) {
+        try (var stack = MemoryStack.stackPush()) {
+            var count = stack.ints(0); vkGetPhysicalDeviceQueueFamilyProperties(physical, count, null);
+            var properties = VkQueueFamilyProperties.calloc(count.get(0), stack); vkGetPhysicalDeviceQueueFamilyProperties(physical, count, properties);
+            return properties.get(family).timestampValidBits();
+        }
+    }
     @Override public List<GpuAdapter> adapters() {
         var instance = instance();
         try (var stack = MemoryStack.stackPush()) {
@@ -116,7 +124,8 @@ public final class VulkanProvider implements GpuProvider {
                         Math.min(l.maxPerStageDescriptorStorageBuffers(), l.maxDescriptorSetStorageBuffers()), l.maxPushConstantsSize(),
                         new Dimensions(l.maxComputeWorkGroupSize(0), l.maxComputeWorkGroupSize(1), l.maxComputeWorkGroupSize(2)), l.maxComputeWorkGroupInvocations(),
                         new Dimensions(l.maxComputeWorkGroupCount(0), l.maxComputeWorkGroupCount(1), l.maxComputeWorkGroupCount(2)),
-                        features.dataTypes(), features.shaderFeatures(), false, features.minSubgroupSize(), features.maxSubgroupSize());
+                        features.dataTypes(), features.shaderFeatures(), timestampBits(physical, family(physical)) > 0 && l.timestampPeriod() > 0,
+                        features.minSubgroupSize(), features.maxSubgroupSize());
                 result.add(new Adapter(i, p.deviceNameString(), p.vendorID(), p.deviceID(), p.apiVersion(), p.driverVersion(), caps));
             }
             return List.copyOf(result);

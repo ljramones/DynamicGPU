@@ -230,6 +230,7 @@ public final class ComputeDevice implements GpuDevice {
         final Job job;
         Status state = Status.PENDING;
         ComputeException error;
+        java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
         Submission(Encoder encoder, Job job) { this.encoder = encoder; this.job = job; }
         void poll() {
             try {
@@ -238,6 +239,7 @@ public final class ComputeDevice implements GpuDevice {
                 if (result == Status.FAILED) throw new ComputeException(NATIVE_ERROR, "Backend reported failed submission without diagnostics");
                 if (queueFailure != null) throw queueFailure;
                 state = Status.COMPLETE;
+                gpuNanos = job.gpuNanos();
                 // Data-dependent kernel errors fail this submission only: the queue stays usable and the other
                 // readbacks keep their results for inspection.
                 for (var check : encoder.errorChecks) {
@@ -256,6 +258,9 @@ public final class ComputeDevice implements GpuDevice {
         }
         @Override public Status status() { thread(); if (state == Status.PENDING) progress(); return state; }
         @Override public Optional<ComputeException> failure() { status(); return Optional.ofNullable(error); }
+        @Override public Optional<Duration> gpuTime() {
+            status(); return gpuNanos.isPresent() ? Optional.of(Duration.ofNanos(gpuNanos.getAsLong())) : Optional.empty();
+        }
         @Override public boolean await(Duration timeout) {
             thread(); if (timeout.isNegative()) throw new IllegalArgumentException("Negative timeout");
             long budget; try { budget = timeout.toNanos(); } catch (ArithmeticException ex) { budget = Long.MAX_VALUE; }
