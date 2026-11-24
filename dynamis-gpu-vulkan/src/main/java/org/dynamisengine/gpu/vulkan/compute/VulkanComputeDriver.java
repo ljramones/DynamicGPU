@@ -363,8 +363,11 @@ final class VulkanComputeDriver implements ComputeDriver {
                 for (int i = 0; i < n; i++) {
                     switch (commands.get(i)) {
                         case Dispatch d -> {
-                            var setInfo = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default().descriptorPool(descriptorPool).pSetLayouts(stack.longs(((Pipeline) d.pipeline()).setLayout()));
-                            check(vkAllocateDescriptorSets(device, setInfo, out), "allocate compute descriptor set"); sets[i] = out.get(0);
+                            // a frame per dispatch: the thread's stack (64 KiB) held about 1,170 dispatches' worth before
+                            try (var local = MemoryStack.stackPush()) {
+                                var setInfo = VkDescriptorSetAllocateInfo.calloc(local).sType$Default().descriptorPool(descriptorPool).pSetLayouts(local.longs(((Pipeline) d.pipeline()).setLayout()));
+                                check(vkAllocateDescriptorSets(device, setInfo, out), "allocate compute descriptor set"); sets[i] = out.get(0);
+                            }
                             write(sets[i], d);
                         }
                         case Upload u -> {

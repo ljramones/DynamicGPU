@@ -50,6 +50,44 @@ public abstract class ComputeConformance {
             for (int i = 0; i < n; i++) assertEquals(i * 0.25f + 4, actual.getFloat(), 1e-6f);
         }
     }
+    /**
+     * A submission of 5,000 dependent dispatches, each with its own bindings, records and runs in order, and so does
+     * its recording replayed. (1.8.0: the Vulkan backend allocated every dispatch's descriptor-set info in one
+     * thread-stack frame and failed past about 1,170 dispatches.)
+     */
+    @Test void runsLongCommandLists() {
+        int n = 64, pairs = 2500;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE);
+             var p = pipeline(n)) {
+            var x = ByteBuffer.allocate(n * 4).order(ByteOrder.nativeOrder()); var one = ByteBuffer.allocate(n * 4).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) { x.putFloat(i); one.putFloat(1); }
+            GpuReadback r;
+            try (var e = device.encoder()) {
+                e.upload(a, x.array()).upload(b, one.array());
+                for (int d = 0; d < pairs; d++) {
+                    e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                    e.dispatch(p, Map.of(0, c, 1, b, 2, a), scalar(n), new Dimensions(1, 1, 1));
+                }
+                r = e.download(a); await(device.queue().submit(e));
+            }
+            var got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) assertEquals(i + 2f * pairs, got.getFloat(4 * i), "element " + i + " after " + 2 * pairs + " dispatches");
+            GpuRecording recording;
+            try (var e = device.encoder()) {
+                for (int d = 0; d < pairs; d++) {
+                    e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                    e.dispatch(p, Map.of(0, c, 1, b, 2, a), scalar(n), new Dimensions(1, 1, 1));
+                }
+                recording = e.record();
+            }
+            try (recording) {
+                for (int run = 0; run < 2; run++) await(device.queue().submit(recording));
+            }
+            try (var e = device.encoder()) { r = e.download(a); await(device.queue().submit(e)); }
+            got = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < n; i++) assertEquals(i + 6f * pairs, got.getFloat(4 * i), "element " + i + " after two replays");
+        }
+    }
     /** The fp_strict kernel for this backend (resources compute/fp_strict.*), or null when it has none. */
     protected KernelBundle strictKernel() { return null; }
     /**
