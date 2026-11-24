@@ -259,6 +259,28 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Per-dispatch timing (1.5.0).** `encoder.profile()` asks for one GPU time per dispatch, returned by
+`GpuSubmission.dispatchTimes()` in recording order. A recording made from a profiled encoder times every run.
+- **Vulkan:** a timestamp pair around each dispatch, in the submission's query pool.
+- **Metal:** Apple GPUs sample counters only at encoder boundaries, so a profiled batch gives each dispatch its own
+  encoder with start and end samples. GPU ticks convert to nanoseconds through the CPU clock (`sampleTimestamps` at
+  commit and completion).
+  - **Caveat:** an encoder's start sample is taken when it is scheduled. On an M4 Max, identical back-to-back 1M-element
+    dispatches read 70, 165 and 221 µs on native Metal, where MoltenVK reads 60–70 µs each. So Metal's figures include
+    queued time; use them to compare dispatches, not as exact durations.
+- **Unprofiled work and devices without `timestamps()`:** an empty list.
+
+**Pipeline cache (1.5.0).**
+- **Vulkan:** every device creates its pipelines through a `VkPipelineCache`.
+- **Persisting it:** with `-Ddynamisgpu.pipelineCache=<directory>`, the cache is loaded from and saved (atomically, on
+  close) to a file per device and driver build. Data from another device or build is ignored.
+- **Measured** on MoltenVK (M4 Max):
+  - repeating a pipeline in the same process fell from 4.3 to about 1 ms;
+  - three new pipelines in a later run fell from 21.6 to 13.3 ms.
+- **Metal:** it has no archive yet. Creating a pipeline from MSL source measured 3.7 ms in every process, and 0.4 ms
+  for a repeat in the same process. A binary archive would skip only the back-end compile; it is left until a
+  workload shows the cost.
+
 **Submission costs (1.5.0).** Measured on an M4 Max for one submission of 50 small dependent dispatches, in steady
 state:
 

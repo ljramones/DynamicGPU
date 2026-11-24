@@ -89,8 +89,15 @@ final class MetalDriver implements ComputeDriver {
         MemorySegment.copy(data, 0, contents(stage, 0, data.length), JAVA_BYTE, 0, data.length);
         return stage;
     }
-    @Override public Job submit(List<Command> commands) {
+    @Override public Job submit(List<Command> commands) { return submit(commands, false); }
+    @Override public Job submit(List<Command> commands, boolean profile) {
+        int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
+        return submitBatch(commands, profile ? dispatches : 0);
+    }
+    private Job submitBatch(List<Command> commands, int profiled) {
         var batch = n.pointer("dg_batch_create", device);
+        // a device without stage-boundary counters runs unprofiled
+        final int timed = profiled > 0 && n.integer("dg_batch_profile", batch, profiled) == 0 ? profiled : 0;
         List<MetalBuffer> stages = new ArrayList<>(); Map<GpuReadback, MetalBuffer> reads = new LinkedHashMap<>();
         try (var arena = Arena.ofConfined()) {
             for (var command : commands) {
@@ -127,6 +134,8 @@ final class MetalDriver implements ComputeDriver {
         return new Job() {
             private java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
             @Override public java.util.OptionalLong gpuNanos() { return gpuNanos; }
+            private long[] dispatchNanos;
+            @Override public long[] dispatchNanos() { return dispatchNanos; }
             @Override public boolean await(long nanos) {
                 int r = n.integer("dg_wait", batch, nanos); if (r < 0) throw n.error("command buffer wait"); return r == 1;
             }
@@ -135,6 +144,12 @@ final class MetalDriver implements ComputeDriver {
                 if (status == 0) return GpuSubmission.Status.PENDING;
                 double seconds = n.real("dg_gpu_seconds", batch);
                 if (seconds >= 0) gpuNanos = java.util.OptionalLong.of(Math.round(seconds * 1e9));
+                if (timed > 0) {
+                    try (var arena = Arena.ofConfined()) {
+                        var out = arena.allocate(JAVA_LONG, timed);
+                        if (n.integer("dg_dispatch_times", batch, out, timed) == 0) dispatchNanos = out.toArray(JAVA_LONG);
+                    }
+                }
                 reads.forEach((read, stage) -> {
                     byte[] bytes = new byte[Math.toIntExact(stage.bytes())]; map(stage, 0, stage.bytes(), Access.READ).get(bytes); read.complete(bytes);
                 });

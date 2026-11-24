@@ -252,6 +252,49 @@ public abstract class ComputeConformance {
         }
     }
 
+    /**
+     * Profiled work reports one GPU time per dispatch, each positive and together no longer than the submission;
+     * unprofiled work reports none. Recordings keep their profiling across runs.
+     */
+    @Test void timesEachDispatchWhenProfiled() {
+        int small = 64, large = 1 << 20;
+        try (var a = buffer(large * 4, Placement.PRIVATE); var b = buffer(large * 4, Placement.PRIVATE); var c = buffer(large * 4, Placement.PRIVATE);
+             var p = pipeline(large)) {
+            GpuSubmission s; GpuRecording rec;
+            try (var e = device.encoder()) {
+                e.profile().fill(a, 0).fill(b, 0);
+                e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(small), new Dimensions(1, 1, 1));
+                for (int i = 0; i < 3; i++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(large), new Dimensions(large / 64, 1, 1));
+                s = device.queue().submit(e);
+            }
+            await(s);
+            var times = s.dispatchTimes();
+            System.out.println("dispatch times=" + times.stream().map(java.time.Duration::toNanos).toList() + " gpu=" + s.gpuTime().map(java.time.Duration::toNanos).orElse(-1L)
+                    + " ns on " + device.adapter().name());
+            if (!device.capabilities().timestamps()) { assertTrue(times.isEmpty()); return; }
+            assertEquals(4, times.size());
+            long sum = 0;
+            for (var t : times) { assertTrue(t.toNanos() > 0, "dispatch time " + t); sum += t.toNanos(); }
+            assertTrue(sum <= s.gpuTime().orElseThrow().toNanos() + 100_000, "dispatches " + sum + " ns within the submission " + s.gpuTime().orElseThrow());
+            try (var e = device.encoder()) {
+                e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(small), new Dimensions(1, 1, 1));
+                var plain = device.queue().submit(e); await(plain);
+                assertTrue(plain.dispatchTimes().isEmpty(), "unprofiled work reports no dispatch times");
+            }
+            try (var e = device.encoder()) {
+                e.profile().dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(large), new Dimensions(large / 64, 1, 1));
+                rec = e.record();
+            }
+            try (rec) {
+                for (int run = 0; run < 2; run++) {
+                    var r = device.queue().submit(rec); await(r);
+                    assertEquals(1, r.dispatchTimes().size(), "recording run " + run);
+                    assertTrue(r.dispatchTimes().getFirst().toNanos() > 0);
+                }
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

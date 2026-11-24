@@ -7,7 +7,11 @@
 struct DGDevice { id<MTLDevice> device; id<MTLCommandQueue> queue; };
 struct DGBuffer { id<MTLBuffer> buffer; };
 struct DGPipeline { id<MTLComputePipelineState> pipeline; };
-struct DGBatch { DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; dispatch_semaphore_t done; int completed; };
+struct DGBatch {
+    DGDevice *device; id<MTLCommandBuffer> command; id<MTLComputeCommandEncoder> encoder; dispatch_semaphore_t done; int completed;
+    // per-dispatch timing (dg_batch_profile): a counter sample pair per dispatch, and CPU/GPU clock samples at commit
+    id<MTLCounterSampleBuffer> samples; uint32_t sampleDispatches, nextDispatch; MTLTimestamp cpu0, gpu0;
+};
 static _Thread_local char errorText[4096];
 static _Thread_local char deviceName[1024];
 static void error(NSString *message) { snprintf(errorText, sizeof(errorText), "%s", message.UTF8String ?: "Unknown Metal failure"); }
@@ -104,8 +108,31 @@ int dg_fill(DGBatch *b, DGBuffer *dst, uint64_t offset, uint64_t bytes, uint32_t
     uint32_t *words = stage.contents; for (uint64_t i = 0; i < bytes / 4; ++i) words[i] = pattern;
     DGBuffer source = {stage}; int result = dg_copy(b, &source, 0, dst, offset, bytes); [stage release]; return result;
 END(-1) }
+// Profiling: Apple GPUs sample counters at stage (encoder) boundaries only, so each dispatch gets its own encoder
+// with a start and end timestamp sample.
+int dg_batch_profile(DGBatch *b, uint32_t dispatches) { START
+    if (dispatches == 0) return 0;
+    id<MTLDevice> m = b->device->device;
+    if (![m supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) { error(@"no stage-boundary counter sampling"); return -1; }
+    id<MTLCounterSet> timestamps = nil;
+    for (id<MTLCounterSet> set in m.counterSets) if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) timestamps = set;
+    if (!timestamps) { error(@"no timestamp counter set"); return -1; }
+    MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
+    d.counterSet = timestamps; d.storageMode = MTLStorageModeShared; d.sampleCount = 2 * dispatches;
+    NSError *e = nil; b->samples = [m newCounterSampleBufferWithDescriptor:d error:&e]; [d release];
+    if (!b->samples) { error(e ? e.localizedDescription : @"counter sample buffer allocation failed"); return -1; }
+    b->sampleDispatches = dispatches; b->nextDispatch = 0; return 0;
+END(-1) }
 int dg_compute_begin(DGBatch *b, DGPipeline *p) { START
-    if (!b->encoder) {
+    if (b->samples && b->nextDispatch < b->sampleDispatches) {
+        end_compute(b);
+        MTLComputePassDescriptor *pd = [MTLComputePassDescriptor computePassDescriptor];
+        pd.sampleBufferAttachments[0].sampleBuffer = b->samples;
+        pd.sampleBufferAttachments[0].startOfEncoderSampleIndex = 2 * b->nextDispatch;
+        pd.sampleBufferAttachments[0].endOfEncoderSampleIndex = 2 * b->nextDispatch + 1;
+        b->encoder = [[b->command computeCommandEncoderWithDescriptor:pd] retain];
+        if (!b->encoder) { error(@"Compute encoder unavailable"); return -1; }
+    } else if (!b->encoder) {
         b->encoder = [[b->command computeCommandEncoder] retain]; if (!b->encoder) { error(@"Compute encoder unavailable"); return -1; }
     }
     [b->encoder setComputePipelineState:p->pipeline]; return 0;
@@ -114,10 +141,12 @@ int dg_compute_buffer(DGBatch *b, DGBuffer *buffer, uint64_t offset, uint32_t sl
 int dg_compute_parameters(DGBatch *b, const void *data, uint64_t bytes, uint32_t slot) { START [b->encoder setBytes:data length:bytes atIndex:slot]; return 0; END(-1) }
 int dg_compute_dispatch(DGBatch *b, uint32_t gx, uint32_t gy, uint32_t gz, uint32_t lx, uint32_t ly, uint32_t lz) { START
     [b->encoder dispatchThreadgroups:MTLSizeMake(gx, gy, gz) threadsPerThreadgroup:MTLSizeMake(lx, ly, lz)];
+    if (b->samples && b->nextDispatch < b->sampleDispatches) { end_compute(b); b->nextDispatch++; }
     return 0;
 END(-1) }
 int dg_commit(DGBatch *b) { START
     end_compute(b);
+    if (b->samples) [b->device->device sampleTimestamps:&b->cpu0 gpuTimestamp:&b->gpu0];
     // A completion handler signals a semaphore so dg_wait can block instead of polling. The handler holds its own
     // reference to the semaphore: it may run after dg_batch_release.
     b->done = dispatch_semaphore_create(0);
@@ -135,8 +164,25 @@ int dg_status(DGBatch *b) { START
     if (b->command.status == MTLCommandBufferStatusError) { error(b->command.error.localizedDescription); return -1; }
     return b->command.status == MTLCommandBufferStatusCompleted ? 1 : 0;
 END(-1) }
+// The profiled dispatches' GPU nanoseconds (ABI 4). GPU ticks become nanoseconds through the CPU clock: the CPU and
+// GPU timestamps sampled at commit and now give the ratio. sampleTimestamps reports the CPU timestamp in
+// nanoseconds (measured on an M4 Max: converting it again as mach ticks made every time 125/3 too large).
+int dg_dispatch_times(DGBatch *b, int64_t *out, uint32_t count) { START
+    if (!b->samples || count > b->sampleDispatches) { error(@"batch was not profiled for that many dispatches"); return -1; }
+    NSData *data = [b->samples resolveCounterRange:NSMakeRange(0, 2 * count)];
+    if (!data) { error(@"counter samples unavailable"); return -1; }
+    const MTLCounterResultTimestamp *t = (const MTLCounterResultTimestamp *) data.bytes;
+    MTLTimestamp cpu1, gpu1; [b->device->device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
+    double cpuNanos = (double) (cpu1 - b->cpu0), gpuTicks = (double) (gpu1 - b->gpu0);
+    double nanosPerTick = gpuTicks > 0 && cpuNanos > 0 ? cpuNanos / gpuTicks : 1.0;
+    for (uint32_t k = 0; k < count; k++) {
+        uint64_t s = t[2 * k].timestamp, e = t[2 * k + 1].timestamp;
+        out[k] = s == MTLCounterErrorValue || e == MTLCounterErrorValue || e < s ? -1 : (int64_t) ((e - s) * nanosPerTick + 0.5);
+    }
+    return 0;
+END(-1) }
 double dg_gpu_seconds(DGBatch *b) { START
     CFTimeInterval start = b->command.GPUStartTime, end = b->command.GPUEndTime;
     return end > start ? end - start : -1.0;
 END(-1.0) }
-void dg_batch_release(DGBatch *b) { START if (b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; } [b->command release]; if (b->done) dispatch_release(b->done); free(b); } END() }
+void dg_batch_release(DGBatch *b) { START if (b) { if (b->encoder) { [b->encoder endEncoding]; [b->encoder release]; } [b->command release]; if (b->done) dispatch_release(b->done); [b->samples release]; free(b); } END() }

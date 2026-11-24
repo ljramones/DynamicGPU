@@ -16,5 +16,14 @@ public interface GpuSubmission extends AutoCloseable {
      * @since 1.3.0
      */
     default Optional<Duration> gpuTime() { return Optional.empty(); }
+    /**
+     * How long each dispatch ran on the GPU, in recording order, for an encoder (or recording) that asked with
+     * {@link GpuCommandEncoder#profile()}. Empty otherwise, while pending, and on devices without
+     * {@link GpuCapabilities#timestamps()}. Each time spans the dispatch from start to end; Metal measures at its
+     * encoder boundaries, which profiling places around every dispatch.
+     *
+     * @since 1.5.0
+     */
+    default java.util.List<Duration> dispatchTimes() { return java.util.List.of(); }
     @Override void close();
 }

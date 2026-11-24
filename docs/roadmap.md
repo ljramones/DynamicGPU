@@ -51,7 +51,10 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   - **MoltenVK:** about a third, because it translates to Metal on every submit.
   - **Native Metal:** only the validation is saved.
 - **Memory budget:** done (`MemoryStats.budgetBytes`, `deviceUsageBytes`, `headroomBytes()`).
-- **Next:** per-dispatch timing and the pipeline cache.
+- **Per-dispatch timing:** done (`profile()`, `dispatchTimes()`).
+- **Pipeline cache:** done for Vulkan (`-Ddynamisgpu.pipelineCache`).
+  - **Metal binary archives:** deferred. Metal pipeline creation measured 3.7 ms and is already cached in-process.
+- **Milestone 1.5:** complete.
 - **Memory pools:**
   - Sub-allocate buffers from large device allocations (a per-placement pool with size classes and a free list).
   - Recycle the staging memory that uploads and downloads use today, one fresh buffer per transfer, through a ring.

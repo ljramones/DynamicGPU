@@ -29,6 +29,11 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkQueue queue;
     private final long pool;
     private final VulkanFeatures features;
+    /** The device's VkPipelineCache, and the file it is loaded from and saved to (null: in memory only). */
+    private final long pipelineCache;
+    private final java.nio.file.Path pipelineCacheFile;
+    /** System property naming a directory where pipeline caches persist across runs (opt-in). */
+    static final String PIPELINE_CACHE_PROPERTY = "dynamisgpu.pipelineCache";
     /** Whether VK_EXT_memory_budget is enabled (budget and usage per heap). */
     private final boolean memoryBudget;
     /** Every pooled range starts at a multiple of this: at least 256 and the device's buffer offset alignments. */
@@ -63,11 +68,61 @@ final class VulkanComputeDriver implements ComputeDriver {
             var out = stack.mallocPointer(1); check(vkCreateDevice(physical, info, null, out), "create compute device");
             device = created = new VkDevice(out.get(0), physical, info);
             vkGetDeviceQueue(device, family, 0, out); queue = new VkQueue(out.get(0), device);
+            pipelineCacheFile = cacheFile(physical);
+            pipelineCache = createPipelineCache(stack, pipelineCacheFile);
             var poolInfo = VkCommandPoolCreateInfo.calloc(stack).sType$Default().flags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(family);
             var handle = stack.mallocLong(1); check(vkCreateCommandPool(device, poolInfo, null, handle), "create compute command pool"); pool = createdPool = handle.get(0);
         } catch (RuntimeException | Error ex) {
             if (createdPool != 0) vkDestroyCommandPool(created, createdPool, null);
             if (created != null) vkDestroyDevice(created, null); vkDestroyInstance(instance, null); throw ex;
+        }
+    }
+    /** The cache file for this device and driver build, or null when caching to disk is off. */
+    private static java.nio.file.Path cacheFile(VkPhysicalDevice physical) {
+        String dir = System.getProperty(PIPELINE_CACHE_PROPERTY);
+        if (dir == null || dir.isBlank()) return null;
+        try (var stack = MemoryStack.stackPush()) {
+            var p = VkPhysicalDeviceProperties.calloc(stack); vkGetPhysicalDeviceProperties(physical, p);
+            var uuid = new StringBuilder(); var bytes = p.pipelineCacheUUID();
+            for (int i = 0; i < bytes.remaining(); i++) uuid.append(String.format("%02x", bytes.get(i)));
+            return java.nio.file.Path.of(dir, "vk-" + Integer.toHexString(p.vendorID()) + "-" + Integer.toHexString(p.deviceID()) + "-"
+                    + Integer.toHexString(p.driverVersion()) + "-" + uuid + ".bin");
+        }
+    }
+    /** A pipeline cache seeded from {@code file} when it exists (drivers ignore data from another device or build). */
+    private long createPipelineCache(MemoryStack stack, java.nio.file.Path file) {
+        var info = VkPipelineCacheCreateInfo.calloc(stack).sType$Default();
+        java.nio.ByteBuffer initial = null;
+        try {
+            if (file != null && java.nio.file.Files.isRegularFile(file)) {
+                byte[] data = java.nio.file.Files.readAllBytes(file);
+                initial = MemoryUtil.memAlloc(data.length).put(data).flip(); info.pInitialData(initial);
+            }
+            var out = stack.mallocLong(1);
+            int r = vkCreatePipelineCache(device, info, null, out);
+            if (r != VK_SUCCESS && initial != null) { info.pInitialData(null); r = vkCreatePipelineCache(device, info, null, out); } // unusable data
+            check(r, "create pipeline cache"); return out.get(0);
+        } catch (java.io.IOException e) {
+            var out = stack.mallocLong(1); info.pInitialData(null); check(vkCreatePipelineCache(device, info, null, out), "create pipeline cache"); return out.get(0);
+        } finally { if (initial != null) MemoryUtil.memFree(initial); }
+    }
+    /** Writes the pipeline cache to its file (atomically; failures only lose the cache). */
+    private void savePipelineCache() {
+        if (pipelineCacheFile == null) return;
+        try (var stack = MemoryStack.stackPush()) {
+            var size = stack.mallocPointer(1);
+            if (vkGetPipelineCacheData(device, pipelineCache, size, null) != VK_SUCCESS || size.get(0) == 0) return;
+            var data = MemoryUtil.memAlloc((int) size.get(0));
+            try {
+                if (vkGetPipelineCacheData(device, pipelineCache, size, data) != VK_SUCCESS) return;
+                byte[] bytes = new byte[(int) size.get(0)]; data.get(0, bytes);
+                java.nio.file.Files.createDirectories(pipelineCacheFile.getParent());
+                var tmp = java.nio.file.Files.createTempFile(pipelineCacheFile.getParent(), "vk-", ".tmp");
+                java.nio.file.Files.write(tmp, bytes);
+                java.nio.file.Files.move(tmp, pipelineCacheFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.io.IOException e) {
+                System.getLogger(VulkanComputeDriver.class.getName()).log(System.Logger.Level.WARNING, "pipeline cache not saved to " + pipelineCacheFile, e);
+            } finally { MemoryUtil.memFree(data); }
         }
     }
     @Override public Object allocate(BufferDescriptor d) {
@@ -191,7 +246,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                 stage.pSpecializationInfo(VkSpecializationInfo.calloc(stack).pMapEntries(entries).pData(data));
             }
             var info = VkComputePipelineCreateInfo.calloc(1, stack); info.get(0).sType$Default().stage(stage).layout(layout);
-            check(vkCreateComputePipelines(device, VK_NULL_HANDLE, info, null, out), "create compute pipeline"); pipeline = out.get(0);
+            check(vkCreateComputePipelines(device, pipelineCache, info, null, out), "create compute pipeline"); pipeline = out.get(0);
             return new Pipeline(pipeline, layout, setLayout);
         } catch (RuntimeException | Error ex) {
             if (pipeline != 0) vkDestroyPipeline(device, pipeline, null);
@@ -233,8 +288,11 @@ final class VulkanComputeDriver implements ComputeDriver {
         final Map<GpuReadback, Allocation> reads = new LinkedHashMap<>();
         VkCommandBuffer cmd;
         List<Command> recorded;            // the commands the command buffer holds
+        final boolean profile;             // a timestamp pair around each dispatch, after the submission's pair
+        int queryCount;
 
-        Batch(List<Command> commands) {
+        Batch(List<Command> commands, boolean profile) {
+            this.profile = profile;
             try (var stack = MemoryStack.stackPush()) {
                 int n = commands.size(), dispatches = 0, descriptors = 0;
                 sets = new long[n]; stages = new Allocation[n];
@@ -264,7 +322,8 @@ final class VulkanComputeDriver implements ComputeDriver {
                     }
                 }
                 if (timestampBits > 0) {
-                    var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(2);
+                    queryCount = 2 + (profile ? 2 * dispatches : 0);
+                    var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(queryCount);
                     check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
                 }
                 check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
@@ -291,7 +350,8 @@ final class VulkanComputeDriver implements ComputeDriver {
             try (var stack = MemoryStack.stackPush()) {
                 if (recorded != null) check(vkResetCommandBuffer(cmd, 0), "reset compute commands");
                 check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin compute commands");
-                if (queries != 0) { vkCmdResetQueryPool(cmd, queries, 0, 2); vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0); }
+                if (queries != 0) { vkCmdResetQueryPool(cmd, queries, 0, queryCount); vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0); }
+                int dispatchNumber = 0;
                 for (int i = 0; i < commands.size(); i++) {
                     try (var local = MemoryStack.stackPush()) {
                         barrier(cmd, false, local);
@@ -305,7 +365,11 @@ final class VulkanComputeDriver implements ComputeDriver {
                                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline());
                                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout(), 0, local.longs(sets[i]), null);
                                 if (d.parameters().length > 0) vkCmdPushConstants(cmd, p.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, local.bytes(d.parameters()));
+                                boolean timed = profile && queries != 0;
+                                if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 2 + 2 * dispatchNumber);
                                 vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
+                                if (timed) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 3 + 2 * dispatchNumber);
+                                dispatchNumber++;
                             }
                         }
                     }
@@ -337,7 +401,9 @@ final class VulkanComputeDriver implements ComputeDriver {
             }
             return new Job() {
                 private OptionalLong gpuNanos = OptionalLong.empty();
+                private long[] dispatchNanos;
                 @Override public OptionalLong gpuNanos() { return gpuNanos; }
+                @Override public long[] dispatchNanos() { return dispatchNanos; }
                 @Override public boolean await(long nanos) {
                     int r = vkWaitForFences(device, new long[] {fence}, true, Math.max(0, nanos));
                     if (r == VK_TIMEOUT) return false; check(r, "wait for submission fence"); return true;
@@ -346,10 +412,15 @@ final class VulkanComputeDriver implements ComputeDriver {
                     int status = vkGetFenceStatus(device, fence); if (status == VK_NOT_READY) return GpuSubmission.Status.PENDING; check(status, "submission fence status");
                     if (queries != 0) {
                         try (var stack = MemoryStack.stackPush()) {
-                            var ticks = stack.mallocLong(2);
-                            if (vkGetQueryPoolResults(device, queries, 0, 2, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                            var ticks = stack.mallocLong(queryCount);
+                            if (vkGetQueryPoolResults(device, queries, 0, queryCount, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
                                 long mask = timestampBits >= 64 ? -1L : (1L << timestampBits) - 1;
                                 gpuNanos = OptionalLong.of(Math.round(((ticks.get(1) - ticks.get(0)) & mask) * timestampPeriod));
+                                if (profile) {
+                                    dispatchNanos = new long[(queryCount - 2) / 2];
+                                    for (int k = 0; k < dispatchNanos.length; k++)
+                                        dispatchNanos[k] = Math.round(((ticks.get(3 + 2 * k) - ticks.get(2 + 2 * k)) & mask) * timestampPeriod);
+                                }
                             }
                         }
                     }
@@ -371,14 +442,17 @@ final class VulkanComputeDriver implements ComputeDriver {
         }
     }
 
-    @Override public Job submit(List<Command> commands) {
-        var batch = new Batch(commands);
+    @Override public Job submit(List<Command> commands) { return submit(commands, false); }
+    @Override public Job submit(List<Command> commands, boolean profile) {
+        var batch = new Batch(commands, profile);
         try { return batch.submit(commands, true); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
     }
-    @Override public Prepared prepare(List<Command> commands) { return new Batch(commands); }
+    @Override public Prepared prepare(List<Command> commands) { return prepare(commands, false); }
+    @Override public Prepared prepare(List<Command> commands, boolean profile) { return new Batch(commands, profile); }
     @Override public Job submit(Prepared prepared, List<Command> commands) { return ((Batch) prepared).submit(commands, false); }
     @Override public void close() {
         pools.values().forEach(MemoryPool::destroyAll);
+        savePipelineCache(); vkDestroyPipelineCache(device, pipelineCache, null);
         vkDestroyCommandPool(device, pool, null); vkDestroyDevice(device, null); vkDestroyInstance(instance, null);
     }
 }

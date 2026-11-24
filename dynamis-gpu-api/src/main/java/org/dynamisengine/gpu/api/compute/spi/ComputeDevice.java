@@ -154,7 +154,7 @@ public final class ComputeDevice implements GpuDevice {
         final List<List<Resource>> commandResources = new ArrayList<>();
         final Set<Resource> used = Collections.newSetFromMap(new IdentityHashMap<>());
         final List<GpuReadback> errorChecks = new ArrayList<>();
-        boolean consumed;
+        boolean consumed, profile;
         Encoder() { handles.add(this); }
         private void errorBuffer(GpuBuffer errors) {
             require(errors != null && errors.bytes() >= KernelErrors.BYTES, "A kernel error buffer needs at least " + KernelErrors.BYTES + " bytes");
@@ -207,6 +207,7 @@ public final class ComputeDevice implements GpuDevice {
             commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); commandResources.add(rs); return this;
         }
         void add(Command c, Resource... rs) { commands.add(c); commandResources.add(List.of(rs)); }
+        @Override public GpuCommandEncoder profile() { valid(); profile = true; return this; }
         void release() { for (var r : used) { r.recorded--; r.release(); } used.clear(); }
         @Override public GpuRecording record() {
             valid();
@@ -231,7 +232,7 @@ public final class ComputeDevice implements GpuDevice {
         require(encoder instanceof ComputeDevice.Encoder && handles.contains(encoder), "Foreign or consumed encoder");
         Encoder e = (Encoder) encoder; e.valid();
         Job job;
-        try { job = driver.submit(List.copyOf(e.commands)); }
+        try { job = driver.submit(List.copyOf(e.commands), e.profile); }
         catch (RuntimeException ex) {
             var reads = e.commands.stream().filter(c -> c instanceof Download).map(c -> ((Download) c).result()).toList();
             e.close();
@@ -253,6 +254,7 @@ public final class ComputeDevice implements GpuDevice {
         Status state = Status.PENDING;
         ComputeException error;
         java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
+        List<Duration> dispatchTimes = List.of();
         Submission(List<GpuReadback> errorChecks, List<Command> commands, Runnable done, Job job) {
             this.errorChecks = errorChecks; this.commands = commands; this.done = done; this.job = job;
         }
@@ -264,6 +266,8 @@ public final class ComputeDevice implements GpuDevice {
                 if (queueFailure != null) throw queueFailure;
                 state = Status.COMPLETE;
                 gpuNanos = job.gpuNanos();
+                long[] times = job.dispatchNanos();
+                if (times != null) dispatchTimes = Arrays.stream(times).mapToObj(Duration::ofNanos).toList();
                 // Data-dependent kernel errors fail this submission only: the queue stays usable and the other
                 // readbacks keep their results for inspection.
                 for (var check : errorChecks) {
@@ -282,6 +286,7 @@ public final class ComputeDevice implements GpuDevice {
         }
         @Override public Status status() { thread(); if (state == Status.PENDING) progress(); return state; }
         @Override public Optional<ComputeException> failure() { status(); return Optional.ofNullable(error); }
+        @Override public List<Duration> dispatchTimes() { status(); return dispatchTimes; }
         @Override public Optional<Duration> gpuTime() {
             status(); return gpuNanos.isPresent() ? Optional.of(Duration.ofNanos(gpuNanos.getAsLong())) : Optional.empty();
         }
@@ -316,7 +321,7 @@ public final class ComputeDevice implements GpuDevice {
             for (var r : e.used) if (!counts.containsKey(r)) r.release(); // never the case; keeps the books exact
             dispatchIndex = java.util.stream.IntStream.range(0, commands.size()).filter(i -> commands.get(i) instanceof Dispatch).toArray();
             Prepared p;
-            try { p = driver.prepare(List.copyOf(commands)); }
+            try { p = driver.prepare(List.copyOf(commands), e.profile); }
             catch (RuntimeException ex) { counts.keySet().forEach(Resource::release); throw ex; }
             prepared = p; handles.add(this);
         }

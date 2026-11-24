@@ -52,6 +52,25 @@ class VulkanComputeTest extends org.dynamisengine.gpu.test.compute.CapabilityTie
             System.out.println("undeclared " + t.requirement() + " refused");
         }
     }
+    /** With -Ddynamisgpu.pipelineCache, closing a device saves its pipeline cache; another device loads it; junk is ignored. */
+    @org.junit.jupiter.api.Test void pipelineCachePersistsAcrossDevices() throws java.io.IOException {
+        var dir = java.nio.file.Files.createTempDirectory("dynamisgpu-cache");
+        String previous = System.getProperty(VulkanComputeDriver.PIPELINE_CACHE_PROPERTY);
+        System.setProperty(VulkanComputeDriver.PIPELINE_CACHE_PROPERTY, dir.toString());
+        try {
+            try (var d = provider().adapters().getFirst().open(); var p = d.pipeline(pipeline(64).descriptor())) { org.junit.jupiter.api.Assertions.assertNotNull(p); }
+            java.nio.file.Path file;
+            try (var files = java.nio.file.Files.list(dir)) { file = files.filter(f -> f.toString().endsWith(".bin")).findFirst().orElseThrow(); }
+            org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.size(file) > 0, "cache saved");
+            try (var d = provider().adapters().getFirst().open(); var p = d.pipeline(pipeline(64).descriptor())) { org.junit.jupiter.api.Assertions.assertNotNull(p); }
+            java.nio.file.Files.write(file, new byte[] {1, 2, 3, 4, 5, 6, 7, 8});   // junk: ignored, not fatal
+            try (var d = provider().adapters().getFirst().open(); var p = d.pipeline(pipeline(64).descriptor())) { org.junit.jupiter.api.Assertions.assertNotNull(p); }
+            org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.size(file) > 8, "rewritten after junk");
+        } finally {
+            if (previous == null) System.clearProperty(VulkanComputeDriver.PIPELINE_CACHE_PROPERTY); else System.setProperty(VulkanComputeDriver.PIPELINE_CACHE_PROPERTY, previous);
+            try (var files = java.nio.file.Files.walk(dir)) { files.sorted(java.util.Comparator.reverseOrder()).forEach(f -> f.toFile().delete()); }
+        }
+    }
     @Override protected GpuProvider provider() { return new VulkanProvider(); }
     @Override protected KernelBundle kernel() {
         try (var stream = ComputeConformance.class.getResourceAsStream("/compute/vector_add.spv")) {
