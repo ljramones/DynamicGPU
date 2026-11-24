@@ -56,7 +56,7 @@ DynamisGPU is the GPU layer of the Dynamis engine and of its throughput (neural-
 | MoltenVK hardware suites | `SDK=~/VulkanSDK/1.4.341.0/macOS; VK_DRIVER_FILES=$SDK/share/vulkan/icd.d/MoltenVK_icd.json mvn -pl dynamis-gpu-vulkan,dynamis-gpu-primitives -am -Pvulkan-hardware -Ddynamisgpu.vk.loader=$SDK/lib/libvulkan.1.dylib test` |
 | Mesa lavapipe (Linux, CPU Vulkan; what CI runs) | `sh scripts/test-lavapipe.sh` (Docker) |
 | One test class | add `-Dtest=ClassName -Dsurefire.failIfNoSpecifiedTests=false` |
-| Benchmarks (GEMM, attention) | add `-Dgemm.benchmark=true` to a hardware run; results print to the test report XML |
+| Benchmarks | add `-Dgemm.benchmark=true` (GEMM, attention) or `-Dcompute.benchmark=true` (allocation, dispatch overhead, replay) to a hardware run; results print to the test report XML |
 | Rebuild the Slang kernels (after editing any `.slang`) | `sh scripts/build-slang-kernels.sh`, then commit the regenerated resources |
 | Regenerate the `ShaderLayout` glslang golden | `python3 scripts/gen-shader-layout-golden.py dynamis-gpu-api/src/test/resources/gpu/shader-layout-golden.txt` |
 
@@ -220,5 +220,8 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.4.0 are on GitHub. 1.4.0 (1220cf9) added the GEMM forms, `Softmax` and `AttentionF16`.
-- **Next:** milestone 1.5 (memory pools, recorded replay, per-dispatch timing, pipeline cache).
+- **Published:** 1.0.x to 1.5.0 are on GitHub.
+  - **1.4.0** added the GEMM forms, `Softmax` and `AttentionF16`.
+  - **1.5.0** completed milestone 1.5: memory pools, blocking waits, recordings, the memory budget, per-dispatch
+    timing and the Vulkan pipeline cache.
+- **Next:** milestone 1.6 (queues and synchronization, indirect dispatch, arenas, interop).
