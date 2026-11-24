@@ -1,6 +1,6 @@
 // The tiled GEMM, shared by gemm_f16.slang (FP32 C) and gemm_f16_h.slang (FP16 C), which define OUT_T and ENTRY and
 // include this file. C = alpha * A * B + beta * C, A (m x k, or k x m with transA) and B (k x n, or n x k with
-// transB) in FP16, then the fused epilogue (gemm_common.slang), row-major
+// transB) in FP16, then the fused epilogue (gemm_epilogue.slang), row-major
 // with leading dimensions lda, ldb and ldc (in elements). Group z is the batch index: matrix z of A, B and C starts
 // at z * strideA, z * strideB and z * strideC (a stride of 0 shares one matrix across the batch).
 //
@@ -22,73 +22,12 @@
 [[vk::binding(0, 0)]] RWStructuredBuffer<half> a;
 [[vk::binding(1, 0)]] RWStructuredBuffer<half> b;
 #include "gemm_common.slang"
-
-static const uint BM = 64;
-static const uint BN = 64;
-static const uint BK = 16;
-
-groupshared float tileA[BK][BM];
-groupshared float tileB[BK][BN];
+#include "gemm_epilogue.slang"
+#include "gemm_tile.slang"
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
-    uint tx = local.x, ty = local.y, lid = ty * 16 + tx;
-    uint row0 = group.y * BM, col0 = group.x * BN;
-    uint baseA = group.z * p.strideA, baseB = group.z * p.strideB, baseC = group.z * p.strideC;
-    float acc[4][4];
-    [ForceUnroll]
-    for (uint i = 0; i < 4; i++)
-        [ForceUnroll]
-        for (uint j = 0; j < 4; j++)
-            acc[i][j] = 0.0f;
-
-    for (uint k0 = 0; k0 < p.k; k0 += BK)
-    {
-        // each thread loads 4 elements of each tile; out-of-range elements are zero
-        [ForceUnroll]
-        for (uint q = 0; q < 4; q++)
-        {
-            uint e = lid * 4 + q;
-            uint ar = e / BK, ak = e % BK;
-            uint gr = row0 + ar, gk = k0 + ak;
-            uint ai = p.transA != 0 ? gk * p.lda + gr : gr * p.lda + gk;
-            tileA[ak][ar] = gr < p.m && gk < p.k ? float(a[baseA + ai]) : 0.0f;
-            uint br = e / BN, bc = e % BN;
-            uint hk = k0 + br, gc = col0 + bc;
-            uint bi = p.transB != 0 ? gc * p.ldb + hk : hk * p.ldb + gc;
-            tileB[br][bc] = hk < p.k && gc < p.n ? float(b[baseB + bi]) : 0.0f;
-        }
-        GroupMemoryBarrierWithGroupSync();
-        [ForceUnroll]
-        for (uint kk = 0; kk < BK; kk++)
-        {
-            float av[4], bv[4];
-            [ForceUnroll]
-            for (uint i = 0; i < 4; i++) av[i] = tileA[kk][ty + 16 * i];
-            [ForceUnroll]
-            for (uint j = 0; j < 4; j++) bv[j] = tileB[kk][tx + 16 * j];
-            [ForceUnroll]
-            for (uint i = 0; i < 4; i++)
-                [ForceUnroll]
-                for (uint j = 0; j < 4; j++)
-                    acc[i][j] = fma(av[i], bv[j], acc[i][j]);
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-    [ForceUnroll]
-    for (uint i = 0; i < 4; i++)
-    {
-        uint r = row0 + ty + 16 * i;
-        if (r >= p.m) continue;
-        [ForceUnroll]
-        for (uint j = 0; j < 4; j++)
-        {
-            uint col = col0 + tx + 16 * j;
-            if (col >= p.n) continue;
-            gemmStore(r, col, baseC + r * p.ldc + col, acc[i][j]);
-        }
-    }
+    gemmTile(gemmBatchProblem(group.z), group.xy, local);
 }

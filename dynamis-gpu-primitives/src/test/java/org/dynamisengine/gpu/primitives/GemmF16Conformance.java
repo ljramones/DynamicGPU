@@ -286,6 +286,105 @@ abstract class GemmF16Conformance {
         });
     }
 
+    /**
+     * Runs a grouped GEMM over {@code problems} in shared buffers of {@code aLen}, {@code bLen} and {@code cLen}
+     * elements and returns C, or throws the submission's failure.
+     */
+    float[] grouped(GemmF16 g, java.util.List<GemmF16.Problem> problems, GemmF16.Grouped gr, GemmF16.Epilogue ep, int aLen, int bLen,
+            int cLen, short[] a, short[] b, float[] c, float[] bias, float[] residual) {
+        boolean fp32 = g.output() == Precision.FP32;
+        byte[] ab = bytes(java.util.Arrays.copyOf(a, a.length + (a.length & 1))), bb = bytes(java.util.Arrays.copyOf(b, b.length + (b.length & 1)));
+        byte[] cb = encode(c, fp32), pb = GemmF16.Problem.encode(problems), biasb = encode(bias, fp32), rb = encode(residual, fp32);
+        try (var ga = buffer(ab.length); var gb = buffer(bb.length); var gc = buffer(cb.length); var gp = buffer(pb.length);
+             var gbias = buffer(biasb.length); var gres = buffer(rb.length); var e = device.encoder()) {
+            e.upload(ga, ab).upload(gb, bb).upload(gc, cb).upload(gp, pb).upload(gbias, biasb).upload(gres, rb);
+            g.encodeGrouped(e, ga, gb, gc, gp, gr, ep, ep.bias() == GemmF16.Epilogue.Bias.NONE ? null : gbias, null, ep.residual() ? gres : null);
+            var read = e.download(gc);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
+            var got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
+            float[] r = new float[cLen];
+            for (int i = 0; i < cLen; i++) r[i] = fp32 ? got.getFloat(4 * i) : Float.float16ToFloat(got.getShort(2 * i));
+            return r;
+        }
+    }
+
+    /**
+     * A grouped GEMM: mixture-of-experts problems (tokens routed to experts, one of them empty, B^T weights per
+     * expert) and problems of unrelated shapes, with a per-problem bias and an exact epilogue, bit for bit against
+     * referenceGrouped for both output types. A problem out of range, or beyond maxM, fails the submission.
+     */
+    @Test void groupedProblems() {
+        if (!GemmF16.supports(device, Algorithm.TILED)) return;
+        var r = new SplittableRandom(77);
+        for (var output : Precision.values()) {
+            boolean fp32 = output == Precision.FP32;
+            try (var g = GemmF16.create(device, Algorithm.TILED, output)) {
+                // experts: n = 48, k = 40, tokens 5, 0, 70, 33 (rows of one token matrix)
+                int n = 48, k = 40;
+                int[] tokens = {5, 0, 70, 33};
+                var moe = new java.util.ArrayList<GemmF16.Problem>();
+                int row = 0;
+                for (int ex = 0; ex < tokens.length; ex++) {
+                    moe.add(GemmF16.Problem.dense(tokens[ex], n, k, false, true, (long) row * k, (long) ex * n * k, (long) row * n, (long) ex * n));
+                    row += tokens[ex];
+                }
+                // unrelated shapes, B not transposed, packed one after another
+                var mixed = java.util.List.of(new GemmF16.Problem(65, 17, 9, 9, 17, 20, 0, 0, 0, 0),
+                        new GemmF16.Problem(3, 130, 70, 72, 131, 130, 65 * 9 + 5, 9 * 17 + 3, 65 * 20 + 1, 17),
+                        new GemmF16.Problem(1, 1, 1, 1, 1, 1, 65 * 9 + 5 + 3 * 72, 9 * 17 + 3 + 70 * 131, 65 * 20 + 1 + 3 * 130, 17 + 130));
+                record Case(java.util.List<GemmF16.Problem> problems, GemmF16.Grouped grouped, GemmF16.Epilogue epilogue) { }
+                var cases = java.util.List.of(
+                        new Case(moe, new GemmF16.Grouped(moe.size(), 70, n, 1f, 0f, false, true),
+                                GemmF16.Epilogue.NONE.withBias(GemmF16.Epilogue.Bias.COLUMN).withActivation(GemmF16.Epilogue.Activation.RELU)),
+                        new Case(mixed, new GemmF16.Grouped(mixed.size(), 65, 130, 0.5f, 0.75f, false, false),
+                                GemmF16.Epilogue.NONE.withBias(GemmF16.Epilogue.Bias.ROW).withResidual()));
+                for (var cs : cases) {
+                    int aLen = 0, bLen = 0, cLen = 0, biasLen = 0;
+                    for (var q : cs.problems()) {
+                        if (q.m() == 0) continue;
+                        aLen = (int) Math.max(aLen, q.offsetA() + (long) (q.m() - 1) * q.lda() + q.k());
+                        bLen = (int) Math.max(bLen, q.offsetB() + (long) ((cs.grouped().transposeB() ? q.n() : q.k()) - 1) * q.ldb()
+                                + (cs.grouped().transposeB() ? q.k() : q.n()));
+                        cLen = (int) Math.max(cLen, q.offsetC() + (long) (q.m() - 1) * q.ldc() + q.n());
+                        biasLen = (int) Math.max(biasLen, q.offsetBias() + (cs.epilogue().bias() == GemmF16.Epilogue.Bias.ROW ? q.m() : q.n()));
+                    }
+                    bLen = Math.max(bLen, tokens.length * n * k);
+                    short[] a = halves(aLen + 1, r), b = halves(bLen + 1, r);
+                    float[] c = floats(cLen, r), bias = floats(biasLen, r), residual = floats(cLen, r);
+                    if (!fp32) for (float[] f : new float[][] {c, bias, residual}) for (int i = 0; i < f.length; i++) f[i] = Float.float16ToFloat(Float.floatToFloat16(f[i]));
+                    float[] got = grouped(g, cs.problems(), cs.grouped(), cs.epilogue(), a.length, b.length, cLen, a, b, c, bias, residual);
+                    float[] expect;
+                    if (fp32) {
+                        expect = c.clone();
+                        GemmF16.referenceGrouped(a, b, expect, cs.problems(), cs.grouped(), cs.epilogue(), bias, null, residual);
+                    } else {
+                        short[] h = new short[cLen];
+                        for (int i = 0; i < cLen; i++) h[i] = Float.floatToFloat16(c[i]);
+                        short[] hb = new short[bias.length], hr = new short[cLen];
+                        for (int i = 0; i < bias.length; i++) hb[i] = Float.floatToFloat16(bias[i]);
+                        for (int i = 0; i < cLen; i++) hr[i] = Float.floatToFloat16(residual[i]);
+                        GemmF16.referenceGroupedF16(a, b, h, cs.problems(), cs.grouped(), cs.epilogue(), hb, null, hr);
+                        expect = new float[cLen];
+                        for (int i = 0; i < cLen; i++) expect[i] = Float.float16ToFloat(h[i]);
+                    }
+                    int differ = 0;
+                    for (int i = 0; i < cLen; i++) if (Float.floatToRawIntBits(got[i]) != Float.floatToRawIntBits(expect[i])) differ++;
+                    assertEquals(0, differ, "grouped " + output + " " + cs.problems().size() + " problems: elements differing from referenceGrouped");
+                }
+                // a problem reaching past A, and one beyond maxM: the submission fails
+                var bad = java.util.List.of(GemmF16.Problem.dense(4, 8, 8, false, false, 0, 0, 0, 0), GemmF16.Problem.dense(4, 8, 8, false, false, 1000, 0, 32, 0));
+                var tooBig = java.util.List.of(GemmF16.Problem.dense(9, 8, 8, false, false, 0, 0, 0, 0));
+                short[] a = halves(64, r), b = halves(64, r);
+                float[] c = new float[64], none = new float[2];
+                for (var problems : java.util.List.of(bad, tooBig)) {
+                    var gr = new GemmF16.Grouped(problems.size(), 8, 8, 1f, 0f, false, false);
+                    var ex = assertThrows(ComputeException.class, () -> grouped(g, problems, gr, GemmF16.Epilogue.NONE, 64, 64, 64, a, b, c, none, c));
+                    assertEquals(ComputeException.Code.KERNEL_ERROR, ex.code(), "an out-of-range problem fails its submission");
+                }
+            }
+        }
+    }
+
     /** The epilogue's operands are checked: given exactly when used, and large enough. */
     @Test void rejectsMissingOrUnusedEpilogueOperands() {
         var s = Shape.of(8, 8, 8, 1, 0);
@@ -346,8 +445,8 @@ abstract class GemmF16Conformance {
      */
     @Test void dispatchesByShapeWithinLimits() {
         if (!GemmF16.supports(device, Algorithm.TILED)) return;
-        var shapes = new Shape[] {Shape.of(16, 300, 200, 1, 0), Shape.ofTransposedB(8, 300, 200, 1, 0), Shape.ofTransposedB(40, 300, 200, 1, 0),
-                Shape.of(128, 160, 96, 1, 0), Shape.ofTransposedB(96, 64, 72, 1, 0), Shape.of(2, 300, 200, 1, 0)};
+        var shapes = new Shape[] {Shape.ofTransposedB(1, 1024, 1024, 1, 0), Shape.of(16, 16, 16, 1, 0).batched(64), Shape.of(512, 512, 64, 1, 0),
+                Shape.ofTransposedB(8, 300, 200, 1, 0), Shape.of(128, 160, 96, 1, 0), Shape.ofTransposedA(96, 64, 72, 1, 0), Shape.of(2, 300, 200, 1, 0)};
         for (var s : shapes) assertEquals(java.util.List.of(), GemmF16.REGISTRY.checkLimits(device, s), "limits for " + s);
         try (var g = GemmF16.create(device)) {
             gemm = g;
@@ -355,19 +454,18 @@ abstract class GemmF16Conformance {
                 assertEquals(GemmF16.REGISTRY.select(device, s), g.algorithm(s), s.toString());
                 check(s, s.m() * 31L + s.n(), false);   // bit for bit where the registry picks a fixed-order kernel
             }
-            assertEquals(Algorithm.TILED, g.algorithm(shapes[0]), "m = 16, B not transposed: tiled");
-            assertEquals(Algorithm.SKINNY, g.algorithm(shapes[1]), "m <= 16, B transposed: skinny");
-            assertEquals(Algorithm.TILED, g.algorithm(shapes[2]), "m = 40, B transposed: tiled");
-            assertEquals(Algorithm.SKINNY, g.algorithm(shapes[5]), "m = 2, B not transposed: skinny");
+            assertEquals(Algorithm.SKINNY, g.algorithm(shapes[0]), "decode: skinny");
+            assertEquals(Algorithm.SMALL, g.algorithm(shapes[1]), "a batch of 16 x 16: small");
             assertEquals(GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED,
-                    g.algorithm(shapes[3]), "m >= 64: matrix where available");
+                    g.algorithm(shapes[2]), "512 x 512: matrix where available, else tiled");
+            assertEquals(Algorithm.SMALL, g.algorithm(shapes[3]), "too small for skinny: small");
         } finally { gemm = null; }
     }
 
     /** GPU nanoseconds per multiply of {@code s} with {@code g}: the best of 4 rounds of back-to-back dispatches. */
     double nanosPer(GemmF16 g, Shape s) {
         try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes())) {
-            int reps = (int) Math.max(4, Math.min(2000, 4e10 / s.flops()));
+            int reps = (int) Math.max(4, Math.min(Integer.getInteger("gemm.reps", 2000), 4e10 / s.flops()));
             double best = Double.MAX_VALUE;
             for (int round = 0; round < 4; round++) {
                 try (var e = device.encoder()) {
@@ -382,20 +480,34 @@ abstract class GemmF16Conformance {
         }
     }
 
-    /** -Dgemm.shapes=true: both algorithms over decode, small and attention shapes, for the shape registry's heuristic. */
+    /**
+     * -Dgemm.shapes=true: every algorithm over decode, small (batched) and attention shapes, for the shape registry's
+     * costs; prints each algorithm's time relative to TILED.
+     */
     @Test void shapeSweep() {
         Assumptions.assumeTrue(Boolean.getBoolean("gemm.shapes"), "set -Dgemm.shapes=true");
-        Assumptions.assumeTrue(GemmF16.supports(device, GemmF16.Algorithm.SIMDGROUP_MATRIX), "needs both algorithms");
-        try (var tiled = GemmF16.create(device, GemmF16.Algorithm.TILED); var matrix = GemmF16.create(device, GemmF16.Algorithm.SIMDGROUP_MATRIX)) {
-            int[][] shapes = {{1, 4096, 4096}, {4, 4096, 4096}, {16, 4096, 4096}, {32, 4096, 4096}, {64, 4096, 4096},
-                    {64, 64, 64}, {128, 128, 128}, {256, 256, 256}, {512, 512, 512}, {32, 2048, 128}, {2048, 2048, 128}, {8, 8, 4096}};
+        var kernels = new java.util.EnumMap<Algorithm, GemmF16>(Algorithm.class);
+        try {
+            for (var a : Algorithm.values()) if (GemmF16.supports(device, a)) kernels.put(a, GemmF16.create(device, a));
+            int[][] shapes = {{1, 4096, 4096, 1}, {16, 4096, 4096, 1}, {32, 4096, 4096, 1}, {64, 4096, 4096, 1}, {128, 128, 128, 1},
+                    {512, 512, 512, 1}, {2048, 2048, 128, 1}, {8, 8, 4096, 1}, {16, 16, 16, 4096}, {32, 32, 32, 4096}, {16, 16, 256, 512},
+                    {32, 32, 128, 1024}, {8, 32, 64, 2048}, {64, 64, 64, 512}, {48, 48, 48, 1024}, {32, 64, 64, 512}, {8, 300, 200, 1},
+                    {1, 1024, 1024, 1}, {4, 2048, 512, 1}, {16, 1024, 1024, 1}, {256, 256, 256, 1}, {96, 160, 96, 1}};
             for (int[] m : shapes) {
-                for (var shape : new Shape[] {Shape.of(m[0], m[1], m[2], 1, 0), Shape.ofTransposedB(m[0], m[1], m[2], 1, 0)}) {
-                    double t = nanosPer(tiled, shape), x = nanosPer(matrix, shape);
-                    System.out.printf("gemm shape %d x %d x %d %s: TILED %.1f us, SIMDGROUP_MATRIX %.1f us (%.2fx)%n", m[0], m[1], m[2],
-                            shape.transposeB() ? "B^T" : "B", t / 1e3, x / 1e3, t / x);
+                for (boolean t : new boolean[] {false, true}) {
+                    var shape = (t ? Shape.ofTransposedB(m[0], m[1], m[2], 1, 0) : Shape.of(m[0], m[1], m[2], 1, 0));
+                    if (m[3] > 1) shape = shape.batched(m[3]);
+                    double tiled = nanosPer(kernels.get(Algorithm.TILED), shape);
+                    var line = new StringBuilder(String.format("gemm shape %d x %d x %d x %d %s: TILED %.1f us", m[0], m[1], m[2], m[3], t ? "B^T" : "B", tiled / 1e3));
+                    for (var k : kernels.entrySet()) {
+                        if (k.getKey() == Algorithm.TILED || k.getKey() == Algorithm.SKINNY && m[0] > GemmF16.SKINNY_MAX_M) continue;
+                        line.append(String.format(", %s %.2f", k.getKey(), nanosPer(k.getValue(), shape) / tiled));
+                    }
+                    System.out.println(line);
                 }
             }
+        } finally {
+            kernels.values().forEach(GemmF16::close);
         }
     }
 

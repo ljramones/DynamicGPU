@@ -87,6 +87,54 @@ class GemmF16Test {
         assertFalse(gelu.exact());
     }
 
+    /**
+     * The registry's cost model against the measured shape sweep (Apple M4 Max, native Metal; times relative to TILED,
+     * -1 where the algorithm does not apply): with every algorithm (Metal) and without the matrix kernel (Vulkan), the
+     * model's choice must be the fastest measured or within 1.2 times of it.
+     */
+    @Test void costModelPicksTheMeasuredFastest() {
+        // m, n, k, batch, B^T, then SIMDGROUP_MATRIX, SKINNY, SMALL relative to TILED
+        double[][] measured = {
+            {1, 4096, 4096, 1, 0, 1.44, .22, .57}, {1, 4096, 4096, 1, 1, .68, .14, .48}, {16, 4096, 4096, 1, 0, 1.63, 1.63, .59},
+            {16, 4096, 4096, 1, 1, .86, .50, .49}, {32, 4096, 4096, 1, 0, 1.88, -1, .99}, {32, 4096, 4096, 1, 1, 1.06, -1, .84},
+            {64, 4096, 4096, 1, 0, .54, -1, 1.76}, {64, 4096, 4096, 1, 1, .40, -1, 1.50}, {128, 128, 128, 1, 0, .76, -1, .29},
+            {128, 128, 128, 1, 1, .73, -1, .27}, {512, 512, 512, 1, 0, .52, -1, 1.68}, {512, 512, 512, 1, 1, .56, -1, 1.67},
+            {2048, 2048, 128, 1, 0, .57, -1, 2.01}, {2048, 2048, 128, 1, 1, .57, -1, 1.99}, {8, 8, 4096, 1, 0, .98, .55, .28},
+            {8, 8, 4096, 1, 1, .87, .08, .25}, {16, 16, 16, 4096, 0, 2.25, 17.81, .26}, {16, 16, 16, 4096, 1, 2.11, 11.87, .26},
+            {32, 32, 32, 4096, 0, 1.67, -1, .62}, {32, 32, 32, 4096, 1, 1.39, -1, .65}, {16, 16, 256, 512, 0, 1.06, 2.12, .17},
+            {16, 16, 256, 512, 1, .76, .79, .17}, {32, 32, 128, 1024, 0, 1.31, -1, .58}, {32, 32, 128, 1024, 1, .96, -1, .59},
+            {8, 32, 64, 2048, 0, 1.12, 2.58, .31}, {8, 32, 64, 2048, 1, .80, 2.95, .31}, {64, 64, 64, 512, 0, .75, -1, 1.57},
+            {64, 64, 64, 512, 1, .72, -1, 1.57}, {48, 48, 48, 1024, 0, 1.55, -1, 1.09}, {48, 48, 48, 1024, 1, 1.35, -1, 1.14},
+            {32, 64, 64, 512, 0, 1.28, -1, .99}, {32, 64, 64, 512, 1, 1.02, -1, 1.01}, {8, 300, 200, 1, 0, 1.15, 1.15, .33},
+            {8, 300, 200, 1, 1, .99, .59, .30}, {1, 1024, 1024, 1, 0, 1.08, .18, .28}, {1, 1024, 1024, 1, 1, .84, .04, .26},
+            {4, 2048, 512, 1, 0, 1.09, .47, .41}, {4, 2048, 512, 1, 1, .87, .35, .43}, {16, 1024, 1024, 1, 0, 1.18, 1.23, .29},
+            {16, 1024, 1024, 1, 1, .95, .34, .29}, {256, 256, 256, 1, 0, .66, -1, .60}, {256, 256, 256, 1, 1, .58, -1, .58},
+            {96, 160, 96, 1, 0, 1.50, -1, .28}, {96, 160, 96, 1, 1, 1.27, -1, .28},
+        };
+        var algorithms = new GemmF16.Algorithm[] {GemmF16.Algorithm.TILED, GemmF16.Algorithm.SIMDGROUP_MATRIX, GemmF16.Algorithm.SKINNY, GemmF16.Algorithm.SMALL};
+        for (boolean matrix : new boolean[] {true, false}) {
+            var misses = new java.util.ArrayList<String>();
+            for (double[] row : measured) {
+                var shape = row[4] == 1 ? GemmF16.Shape.ofTransposedB((int) row[0], (int) row[1], (int) row[2], 1, 0)
+                        : GemmF16.Shape.of((int) row[0], (int) row[1], (int) row[2], 1, 0);
+                if (row[3] > 1) shape = shape.batched((int) row[3]);
+                double[] time = {1, matrix ? row[5] : -1, GemmF16.Costs.skinnyApplies(shape) ? row[6] : -1, row[7]};
+                double[] cost = {GemmF16.Costs.tiled(shape), GemmF16.Costs.simdgroup(shape), GemmF16.Costs.skinny(shape), GemmF16.Costs.small(shape)};
+                int pick = -1, best = -1;
+                for (int i = 0; i < 4; i++) {
+                    if (time[i] < 0) continue;
+                    if (pick < 0 || cost[i] < cost[pick]) pick = i;
+                    if (best < 0 || time[i] < time[best]) best = i;
+                }
+                if (time[pick] > 1.2 * time[best])
+                    misses.add(shape.m() + "x" + shape.n() + "x" + shape.k() + "x" + shape.batch() + (shape.transposeB() ? " B^T" : " B")
+                            + ": picks " + algorithms[pick] + " (" + time[pick] + "), fastest " + algorithms[best] + " (" + time[best] + ")");
+            }
+            System.out.println("gemm cost model, " + (matrix ? "with" : "without") + " the matrix kernel: " + misses.size() + " misses " + misses);
+            assertEquals(java.util.List.of(), misses);
+        }
+    }
+
     @Test void refusesDevicesWithoutFp16() {
         try (var device = new MockComputeProvider().adapters().getFirst().open()) {
             assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> GemmF16.create(device)).code());

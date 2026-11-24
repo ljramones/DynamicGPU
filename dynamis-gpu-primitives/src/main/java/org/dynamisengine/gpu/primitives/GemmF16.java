@@ -66,8 +66,17 @@ public final class GemmF16 implements AutoCloseable {
          * same bits everywhere, bit for bit with {@link #referenceSkinny}, which sums in a fixed split order rather
          * than in order of k. A and B are bound at offsets that are multiples of 4 bytes. @since 1.8.0
          */
-        SKINNY
+        SKINNY,
+        /**
+         * Small multiplies (such as the layers of a game-AI network, usually as a batch): 16 x 16 tiles, one element
+         * per thread, where TILED's 64 x 64 tiles would be mostly padding or too few to fill the GPU. Every device with
+         * FP16; sums in order of k like TILED, so bit for bit {@link #reference}. Any shape runs; the registry picks
+         * it by estimated time ({@link Costs}). @since 1.8.0
+         */
+        SMALL
     }
+
+    static final int SMALL_TILE = 16;
 
     /** The largest {@code m} {@link Algorithm#SKINNY} computes. @since 1.8.0 */
     public static final int SKINNY_MAX_M = 16;
@@ -199,26 +208,107 @@ public final class GemmF16 implements AutoCloseable {
     }
 
     /**
-     * The algorithms by shape (1.7.0). Costs are relative GPU times measured on an Apple M4 Max (the
-     * {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps):
+     * One multiply of a grouped GEMM ({@link #encodeGrouped}; 1.8.0): its sizes, leading dimensions, and element
+     * offsets into the shared A, B and C (also gate and residual) buffers and into bias. On the GPU it is a record of
+     * {@link #BYTES} bytes, 12 uint32 in native order: {@code m, n, k, lda, ldb, ldc, offsetA, offsetB, offsetC,
+     * offsetBias, 0, 0}, so a kernel (a mixture-of-experts router, say) can write the table itself. Sizes may be 0
+     * (an expert with no tokens).
+     */
+    public record Problem(int m, int n, int k, int lda, int ldb, int ldc, long offsetA, long offsetB, long offsetC, long offsetBias) {
+        /** Bytes of one record. */
+        public static final int BYTES = 48;
+        public Problem {
+            if (m < 0 || n < 0 || k < 0 || lda < 0 || ldb < 0 || ldc < 0)
+                throw new IllegalArgumentException("sizes must not be negative: " + m + "x" + n + "x" + k + " lda=" + lda + " ldb=" + ldb + " ldc=" + ldc);
+            for (long o : new long[] {offsetA, offsetB, offsetC, offsetBias})
+                if (o < 0 || o > MAX_INDEX) throw new IllegalArgumentException("offset out of range: " + o);
+        }
+        /** Densely packed operands at the given offsets: leading dimensions from the layouts. */
+        public static Problem dense(int m, int n, int k, boolean transposeA, boolean transposeB, long offsetA, long offsetB,
+                long offsetC, long offsetBias) {
+            return new Problem(m, n, k, transposeA ? m : k, transposeB ? k : n, n, offsetA, offsetB, offsetC, offsetBias);
+        }
+        /** The GPU records of {@code problems}, in native byte order. */
+        public static byte[] encode(List<Problem> problems) {
+            var out = java.nio.ByteBuffer.allocate(BYTES * problems.size()).order(java.nio.ByteOrder.nativeOrder());
+            for (var q : problems) {
+                out.putInt(q.m).putInt(q.n).putInt(q.k).putInt(q.lda).putInt(q.ldb).putInt(q.ldc).putInt((int) q.offsetA)
+                        .putInt((int) q.offsetB).putInt((int) q.offsetC).putInt((int) q.offsetBias).putInt(0).putInt(0);
+            }
+            return out.array();
+        }
+    }
+
+    /**
+     * What every problem of a grouped GEMM shares (1.8.0): their number, bounds on their {@code m} and {@code n}
+     * (which size the dispatch; a problem beyond them is reported as an error), the scalars and the layouts.
+     */
+    public record Grouped(int count, int maxM, int maxN, float alpha, float beta, boolean transposeA, boolean transposeB) {
+        /** The most problems one dispatch takes (the minimum group count of a dispatch's third dimension). */
+        public static final int MAX_COUNT = 65535;
+        public Grouped {
+            if (count < 1 || count > MAX_COUNT) throw new IllegalArgumentException("count out of range: " + count);
+            if (maxM < 1 || maxN < 1) throw new IllegalArgumentException("maxM and maxN must be positive: " + maxM + ", " + maxN);
+        }
+    }
+
+    /**
+     * Estimated GPU time in microseconds of each algorithm for a shape, the shape registry's costs (1.8.0). Fitted to
+     * the {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps on an Apple M4 Max (native Metal and
+     * MoltenVK agree): on all 46 measured shapes it picks the fastest algorithm or one within 1.2 times of it, with the
+     * matrix kernel and without ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
      * <ul>
-     * <li>the matrix kernel's 64 x 64 tiles waste most of their work when {@code m < 64}, where TILED runs 1.5 to 1.9
-     * times faster, except that with B transposed the matrix kernel still wins up to {@code m = 16}; from
-     * {@code m = 64} the matrix kernel runs 1.2 to 2.5 times faster;</li>
-     * <li>SKINNY (1.8.0) takes 0.14 of TILED's time at {@code m = 1} with B transposed (79% of the measured
-     * streaming-read bandwidth) and 0.5 at {@code m = 16}; without, 0.2 at {@code m = 1}, 0.8 at {@code m = 8}, and
-     * 1.55 times TILED's time at {@code m = 16}.</li>
+     * <li>TILED runs 5.5 TFLOP/s over its 64-padded work when the GPU is full, which takes about 100 of its groups:
+     * a 128^3 multiply (4 groups) runs at 4% of that;</li>
+     * <li>SMALL runs 2.15 TFLOP/s over its 16-padded work, full from about 190 groups; it wins wherever TILED's tiles
+     * are mostly padding (m or n up to 32) or too few to fill the GPU;</li>
+     * <li>SKINNY streams B at 400 GB/s with B transposed (300 without) when full (256 groups of 16 columns; 64 of 64),
+     * slower by 17% (45%) per extra row of A; it is offered only for decode-sized products ({@link #skinnyApplies});</li>
+     * <li>SIMDGROUP_MATRIX runs in 0.5 of TILED's time from m = 64, 0.75 for B transposed and m up to 16, else 1.5
+     * (1.7.0).</li>
      * </ul>
      */
+    static final class Costs {
+        private Costs() { }
+        static long pad(long x, int to) { return Math.ceilDiv(x, to) * to; }
+        static double fill(double groups, double full) { return Math.min(1, groups / full); }
+        static double tiled(Shape s) {
+            double groups = (double) Math.ceilDiv(s.m(), TILE) * Math.ceilDiv(s.n(), TILE) * s.batch();
+            return 2.0 * pad(s.m(), TILE) * pad(s.n(), TILE) * s.k() * s.batch() / (5.5e6 * fill(groups, 100));
+        }
+        static double small(Shape s) {
+            double groups = (double) Math.ceilDiv(s.m(), SMALL_TILE) * Math.ceilDiv(s.n(), SMALL_TILE) * s.batch();
+            return 2.0 * pad(s.m(), SMALL_TILE) * pad(s.n(), SMALL_TILE) * s.k() * s.batch() / (2.15e6 * fill(groups, 190));
+        }
+        static double skinny(Shape s) {
+            double groups = (double) Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * s.batch();
+            double rate = s.transposeB() ? 4e5 * fill(groups, 256) : 3e5 * fill(groups, 64);
+            return s.bBytes() / rate * (1 + (s.transposeB() ? 0.17 : 0.45) * (s.m() - 1));
+        }
+        /**
+         * Whether the registry offers SKINNY for {@code s}: m up to 16, A not transposed, and a decode-sized product
+         * (k at least 256 and at least 32 groups). Below that the kernel is latency-bound, which the bandwidth estimate
+         * does not see: 8 x 300 x 200 with B^T took twice SMALL's time.
+         */
+        static boolean skinnyApplies(Shape s) {
+            long groups = Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * (long) s.batch();
+            return s.m() <= SKINNY_MAX_M && !s.transposeA() && s.k() >= 256 && groups >= 32;
+        }
+        static double simdgroup(Shape s) {
+            return tiled(s) * (s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5);
+        }
+    }
+
+    /** The algorithms by shape: each supported one with its estimated time ({@link Costs}); 1.7.0, costs 1.8.0. */
     public static final ShapeRegistry<Shape, Algorithm> REGISTRY = ShapeRegistry.<Shape, Algorithm>builder()
-            .add("gemm.tiled", Algorithm.TILED, (d, s) -> supports(d, Algorithm.TILED), (d, s) -> 1.0,
+            .add("gemm.tiled", Algorithm.TILED, (d, s) -> supports(d, Algorithm.TILED), (d, s) -> Costs.tiled(s),
                     (d, s) -> descriptor(d, Algorithm.TILED, Precision.FP32))
             .add("gemm.simdgroup", Algorithm.SIMDGROUP_MATRIX, (d, s) -> supports(d, Algorithm.SIMDGROUP_MATRIX),
-                    (d, s) -> s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5,
-                    (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Precision.FP32))
-            .add("gemm.skinny", Algorithm.SKINNY, (d, s) -> supports(d, Algorithm.SKINNY) && s.m() <= SKINNY_MAX_M && !s.transposeA(),
-                    (d, s) -> s.transposeB() ? 0.12 + 0.025 * s.m() : 0.1 + 0.09 * s.m(),
-                    (d, s) -> descriptor(d, Algorithm.SKINNY, Precision.FP32))
+                    (d, s) -> Costs.simdgroup(s), (d, s) -> descriptor(d, Algorithm.SIMDGROUP_MATRIX, Precision.FP32))
+            .add("gemm.skinny", Algorithm.SKINNY, (d, s) -> supports(d, Algorithm.SKINNY) && Costs.skinnyApplies(s),
+                    (d, s) -> Costs.skinny(s), (d, s) -> descriptor(d, Algorithm.SKINNY, Precision.FP32))
+            .add("gemm.small", Algorithm.SMALL, (d, s) -> supports(d, Algorithm.SMALL), (d, s) -> Costs.small(s),
+                    (d, s) -> descriptor(d, Algorithm.SMALL, Precision.FP32))
             .build();
 
     private final GpuDevice device;
@@ -233,6 +323,9 @@ public final class GemmF16 implements AutoCloseable {
     private final ParameterLayout layout;
     /** Binds the absent epilogue operands. */
     private PipelineSet placeholders;
+    /** The grouped kernel, compiled on first use. */
+    private GpuComputePipeline grouped;
+    private ParameterLayout groupedLayout;
 
     private GemmF16(GpuDevice device, Map<Algorithm, GpuComputePipeline> pipelines, GpuComputePipeline skinnyVector,
             Algorithm algorithm, boolean dispatch, Precision output) {
@@ -290,6 +383,7 @@ public final class GemmF16 implements AutoCloseable {
         PipelineDescriptor descriptor = switch (algorithm) {
             case TILED -> KERNELS.pipeline(kernel(output), accesses, types, Set.of());
             case SKINNY -> KERNELS.pipeline(output == Precision.FP32 ? "gemm_skinny" : "gemm_skinny_h", accesses, types, Set.of());
+            case SMALL -> KERNELS.pipeline(output == Precision.FP32 ? "gemm_small" : "gemm_small_h", accesses, types, Set.of());
             case SIMDGROUP_MATRIX -> {
                 if (device.adapter().backend() != Backend.METAL)
                     throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
@@ -334,14 +428,14 @@ public final class GemmF16 implements AutoCloseable {
         var inputs = List.of("FP16", "FP16");
         String out = output + ", epilogue(fl(fl(alpha acc) + fl(beta c)))" + (output == Precision.FP16 ? " rounded once to half" : "");
         String accumulation = switch (algorithm) {
-            case TILED -> "FP32, in order of k";
+            case TILED, SMALL -> "FP32, in order of k";
             case SKINNY -> "FP32, k dealt to 32 lanes in chunks of 8 (B^T) or 16 lanes in chunks of 2, each lane in order of k, then a fixed tree";
             case SIMDGROUP_MATRIX -> "FP32, the hardware's order";
         };
         if (algorithm == Algorithm.SIMDGROUP_MATRIX)
             return new AccuracyContract(name, inputs, accumulation, out, AccuracyContract.Order.DEVICE, AccuracyContract.Bound.formula(bound), "");
         String reference = epilogue.equals(Epilogue.NONE)
-                ? algorithm == Algorithm.TILED ? (output == Precision.FP32 ? "GemmF16.reference" : "GemmF16.referenceF16")
+                ? algorithm != Algorithm.SKINNY ? (output == Precision.FP32 ? "GemmF16.reference" : "GemmF16.referenceF16")
                         : (output == Precision.FP32 ? "GemmF16.referenceSkinny" : "GemmF16.referenceSkinnyF16")
                 : output == Precision.FP32 ? "GemmF16.reference(Algorithm, ...)" : "GemmF16.referenceF16(Algorithm, ...)";
         var b = epilogue.exact() ? new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound)
@@ -416,10 +510,53 @@ public final class GemmF16 implements AutoCloseable {
         }
         var groups = switch (run) {
             case SKINNY -> new Dimensions(Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N), 1, s.batch());
+            case SMALL -> new Dimensions(Math.ceilDiv(s.n(), SMALL_TILE), Math.ceilDiv(s.m(), SMALL_TILE), s.batch());
             default -> new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
         };
         var pipeline = run == Algorithm.SKINNY && vectorized(s, a, b) ? skinnyVector : pipelines.get(run);
         return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c, 3, bias, 4, gate, 5, residual), params, groups, label(run));
+    }
+
+    /**
+     * Records a grouped GEMM: for each of {@code g.count()} problems in {@code problems} ({@link Problem} records,
+     * which the GPU may have written), {@code C = epilogue(alpha op(A) op(B) + beta C)} at the problem's offsets into
+     * the shared buffers, with the tiled kernel, so every problem is bit for bit {@link #referenceGrouped}. The
+     * epilogue's operands are shared too (gate and residual laid out as C; bias at each problem's offset). A problem
+     * that reaches outside a buffer, or beyond {@code maxM} or {@code maxN}, is skipped and fails the submission with
+     * {@link ComputeException.Code#KERNEL_ERROR}. @since 1.8.0
+     */
+    public GpuCommandEncoder encodeGrouped(GpuCommandEncoder encoder, GpuBuffer a, GpuBuffer b, GpuBuffer c, GpuBuffer problems,
+            Grouped g, Epilogue epilogue, GpuBuffer bias, GpuBuffer gate, GpuBuffer residual) {
+        Checks.notNull(g, "grouped"); Checks.notNull(epilogue, "epilogue");
+        Checks.range(problems, 0, (long) g.count() * Problem.BYTES / 4, 4, "problems");
+        long cLength = c.bytes() / output.bytes();
+        bias = operand(bias, epilogue.bias() != Epilogue.Bias.NONE, 1, "bias");
+        gate = operand(gate, epilogue.gated(), 1, "gate");
+        residual = operand(residual, epilogue.residual(), 1, "residual");
+        if (epilogue.gated()) cLength = Math.min(cLength, gate.bytes() / output.bytes());
+        if (epilogue.residual()) cLength = Math.min(cLength, residual.bytes() / output.bytes());
+        if (grouped == null) {
+            String kernel = output == Precision.FP32 ? "gemm_grouped" : "gemm_grouped_h";
+            var accesses = new java.util.ArrayList<>(ACCESSES);
+            accesses.add(Access.READ); accesses.add(Access.READ_WRITE);
+            grouped = device.pipeline(KERNELS.pipeline(kernel, accesses, Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16), Set.of()));
+            groupedLayout = ParameterLayout.of(KERNELS, kernel);
+        }
+        byte[] params = groupedLayout.block().u32("m", g.maxM()).u32("n", g.maxN()).u32("k", 0).u32("lda", 0).u32("ldb", 0).u32("ldc", 0)
+                .f32("alpha", g.alpha()).f32("beta", g.beta()).bool("transB", g.transposeB()).u32("strideA", 0).u32("strideB", 0)
+                .u32("strideC", 0).bool("transA", g.transposeA()).u32("bias", epilogue.bias().ordinal())
+                .u32("act", epilogue.activation().ordinal()).bool("gated", epilogue.gated()).bool("residual", epilogue.residual())
+                .u32("count", g.count()).u32("aLength", Math.min(a.bytes() / 2, MAX_INDEX)).u32("bLength", Math.min(b.bytes() / 2, MAX_INDEX))
+                .u32("cLength", Math.min(cLength, MAX_INDEX)).u32("biasLength", Math.min(bias.bytes() / output.bytes(), MAX_INDEX)).bytes();
+        var groups = new Dimensions(Math.ceilDiv(g.maxN(), TILE), Math.ceilDiv(g.maxM(), TILE), g.count());
+        // a fresh error buffer per dispatch: closing the handle keeps it alive for the recorded commands
+        try (var errors = device.allocate(KernelErrors.descriptor().withLabel("gemm-grouped-errors"))) {
+            encoder.resetErrors(errors);
+            encoder.dispatch(grouped, Map.of(0, a, 1, b, 2, c, 3, bias, 4, gate, 5, residual, 6, problems, 7, errors), params, groups,
+                    "gemm.grouped");
+            encoder.checkErrors(errors);
+        }
+        return encoder;
     }
 
     /** {@code buffer}, checked to hold {@code elements} of C's type when {@code used}; else a placeholder. */
@@ -445,12 +582,13 @@ public final class GemmF16 implements AutoCloseable {
             case TILED -> "gemm.tiled";
             case SIMDGROUP_MATRIX -> "gemm.simdgroup";
             case SKINNY -> "gemm.skinny";
+            case SMALL -> "gemm.small";
         };
     }
 
     /** The fixed-order sum of {@code algorithm} for C[z][i][j], from halves given as raw bits. */
     private static float sum(Algorithm algorithm, short[] a, short[] b, Shape s, int z, int i, int j) {
-        if (algorithm == Algorithm.TILED) {
+        if (algorithm == Algorithm.TILED || algorithm == Algorithm.SMALL) {
             float acc = 0;
             for (int q = 0; q < s.k(); q++) acc += Float.float16ToFloat(a[(int) s.aIndex(z, i, q)]) * Float.float16ToFloat(b[(int) s.bIndex(z, q, j)]);
             return acc;
@@ -561,6 +699,52 @@ public final class GemmF16 implements AutoCloseable {
         referenceF16(Algorithm.SKINNY, a, b, c, s, Epilogue.NONE, null, null, null);
     }
 
+    /**
+     * The CPU result of {@link #encodeGrouped} with an FP32 C, bit for bit where the epilogue is
+     * {@link Epilogue#exact}: each problem as {@link #reference(Algorithm, short[], short[], float[], Shape, Epilogue,
+     * float[], float[], float[])} with TILED's order, at its offsets. @since 1.8.0
+     */
+    public static void referenceGrouped(short[] a, short[] b, float[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
+            float[] bias, float[] gate, float[] residual) {
+        for (var q : problems) {
+            for (int i = 0; i < q.m(); i++) {
+                for (int j = 0; j < q.n(); j++) {
+                    int idx = (int) (q.offsetC() + (long) i * q.ldc() + j);
+                    float acc = groupedSum(a, b, q, g, i, j);
+                    float r = g.beta() == 0 ? g.alpha() * acc : g.alpha() * acc + g.beta() * c[idx];
+                    Operand biasAt = bias == null ? floats(null) : x -> bias[(int) (q.offsetBias() + x)];
+                    c[idx] = epilogue(r, i, j, idx, epilogue, biasAt, floats(gate), floats(residual));
+                }
+            }
+        }
+    }
+
+    /** As {@link #referenceGrouped} with an FP16 C and FP16 operands (raw bits), rounded once to half. @since 1.8.0 */
+    public static void referenceGroupedF16(short[] a, short[] b, short[] c, List<Problem> problems, Grouped g, Epilogue epilogue,
+            short[] bias, short[] gate, short[] residual) {
+        for (var q : problems) {
+            for (int i = 0; i < q.m(); i++) {
+                for (int j = 0; j < q.n(); j++) {
+                    int idx = (int) (q.offsetC() + (long) i * q.ldc() + j);
+                    float acc = groupedSum(a, b, q, g, i, j);
+                    float r = g.beta() == 0 ? g.alpha() * acc : g.alpha() * acc + g.beta() * Float.float16ToFloat(c[idx]);
+                    Operand biasAt = bias == null ? halves(null) : x -> Float.float16ToFloat(bias[(int) (q.offsetBias() + x)]);
+                    c[idx] = Float.floatToFloat16(epilogue(r, i, j, idx, epilogue, biasAt, halves(gate), halves(residual)));
+                }
+            }
+        }
+    }
+
+    private static float groupedSum(short[] a, short[] b, Problem q, Grouped g, int i, int j) {
+        float acc = 0;
+        for (int t = 0; t < q.k(); t++) {
+            long ai = q.offsetA() + (g.transposeA() ? (long) t * q.lda() + i : (long) i * q.lda() + t);
+            long bi = q.offsetB() + (g.transposeB() ? (long) j * q.ldb() + t : (long) t * q.ldb() + j);
+            acc += Float.float16ToFloat(a[(int) ai]) * Float.float16ToFloat(b[(int) bi]);
+        }
+        return acc;
+    }
+
     /** The device this multiply runs on. */
     public GpuDevice device() { return device; }
 
@@ -568,6 +752,7 @@ public final class GemmF16 implements AutoCloseable {
         var all = new java.util.ArrayList<AutoCloseable>(pipelines.values());
         all.add(skinnyVector);
         all.add(placeholders);
+        all.add(grouped);
         PipelineSet.closeAll(all.toArray(AutoCloseable[]::new));
     }
 }

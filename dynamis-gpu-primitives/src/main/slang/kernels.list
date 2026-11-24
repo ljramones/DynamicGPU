@@ -6,6 +6,10 @@ gemm_skinny gemm_skinny.slang gemm_skinny
 gemm_skinny_h gemm_skinny_h.slang gemm_skinny_h
 gemm_skinny_v gemm_skinny_v.slang gemm_skinny_v
 gemm_skinny_vh gemm_skinny_vh.slang gemm_skinny_vh
+gemm_small gemm_small.slang gemm_small
+gemm_small_h gemm_small_h.slang gemm_small_h
+gemm_grouped gemm_grouped.slang gemm_grouped
+gemm_grouped_h gemm_grouped_h.slang gemm_grouped_h
 softmax_f32 softmax_f32.slang softmax_f32
 softmax_f16 softmax_f16.slang softmax_f16
 # kernel kit primitives (1.7.0): the operation is a specialization constant
