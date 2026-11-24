@@ -259,6 +259,27 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Interop (1.6.0).** `GpuDevice.interop()` gives engine code that drives the same GPU directly (LightEngine's
+renderer) the native objects. It is UNSUPPORTED on the mock.
+- **Handles:**
+  - `nativeDevice()`: the VkInstance, VkPhysicalDevice, VkDevice, compute VkQueue and family, or the
+    `id<MTLDevice>` and command queue.
+  - `nativeBuffer(buffer)`: the VkBuffer or `id<MTLBuffer>`, with the offset and size the GpuBuffer covers. Pooled
+    buffers share blocks, so use only that range.
+  - `nativeFence(fence)`: the timeline VkSemaphore or `id<MTLSharedEvent>`, so graphics submissions can wait for or
+    signal compute.
+- **Recording into the caller's command buffer (Vulkan):** `recordInto(encoder, commandBuffer)` records an encoder
+  into a VkCommandBuffer the caller is recording.
+  - **The encoder:** it may hold no downloads, error checks or fence operations.
+  - **The commands:** they end with a barrier, so the caller's later commands see their writes.
+  - **The result:** close it after the caller's command buffer completes; it holds the buffers, pipelines and
+    staging the commands use. Tested by an engine-style test that records DynamisGPU work, adds its own copy
+    through exported handles, and submits.
+- **The caller's obligations:**
+  - Keep buffers open until its own GPU work on them completes.
+  - Order work with fences.
+  - Submit to the exported queue only from the device's owner thread, or synchronize with it.
+
 **Transient arenas (1.6.0).** `GpuDevice.arena(descriptor)` allocates one backing buffer. `arena.scope()` opens a
 stack-like scope whose `allocate(bytes)` hands out aligned sub-buffers.
 - **Reuse:** closing a scope closes its buffers, and the next scope reuses the same memory, for example one layer's

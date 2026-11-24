@@ -50,6 +50,15 @@ public interface ComputeDriver extends AutoCloseable {
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
     Job submit(List<Command> commands);
+    /** Interop: the device's native handles. */
+    default GpuInterop.NativeDevice nativeDevice() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "no interop on this backend"); }
+    /** Interop: the native buffer and range of {@code bytes} at {@code offset} of an allocation. */
+    default GpuInterop.NativeBuffer nativeBuffer(Object allocation, long offset, long bytes) { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "no interop on this backend"); }
+    default long nativeFence(Object fence) { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "no interop on this backend"); }
+    /** Records {@code commands} (no downloads) into a caller's command buffer; the result frees its state on close. */
+    default Prepared recordInto(long commandBuffer, List<Command> commands) {
+        throw new ComputeException(ComputeException.Code.UNSUPPORTED, "recording into external command buffers is not supported by this backend");
+    }
     /** Whether the backend runs {@link Dispatch}es with an {@code indirect} region. */
     default boolean indirectDispatch() { return false; }
     /** The hardware queue for transfers (queue 0 is compute), or -1 if transfers share queue 0. */

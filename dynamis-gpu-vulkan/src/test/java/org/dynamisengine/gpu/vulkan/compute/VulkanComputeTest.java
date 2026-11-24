@@ -71,6 +71,54 @@ class VulkanComputeTest extends org.dynamisengine.gpu.test.compute.CapabilityTie
             try (var files = java.nio.file.Files.walk(dir)) { files.sorted(java.util.Comparator.reverseOrder()).forEach(f -> f.toFile().delete()); }
         }
     }
+    /**
+     * Interop as an engine would use it: rebuild LWJGL handles from the exported ones, record DynamisGPU work into an
+     * engine-owned command buffer, follow it with an engine copy through an exported buffer handle, submit, and close
+     * the external recording after the engine's fence.
+     */
+    @org.junit.jupiter.api.Test void recordsIntoAnEngineCommandBuffer() {
+        int n = 256;
+        var interop = device.interop(); var nd = interop.nativeDevice();
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE);
+             var d = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n); var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            var app = org.lwjgl.vulkan.VkApplicationInfo.calloc(stack).sType$Default().apiVersion(VulkanProvider.instanceApiVersion());
+            var instance = new org.lwjgl.vulkan.VkInstance(nd.instance(), org.lwjgl.vulkan.VkInstanceCreateInfo.calloc(stack).sType$Default().pApplicationInfo(app));
+            var physical = new org.lwjgl.vulkan.VkPhysicalDevice(nd.physicalDevice(), instance);
+            var vk = new org.lwjgl.vulkan.VkDevice(nd.device(), physical, org.lwjgl.vulkan.VkDeviceCreateInfo.calloc(stack).sType$Default());
+            var queue = new org.lwjgl.vulkan.VkQueue(nd.queue(), vk);
+            var out = stack.mallocLong(1);
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkCreateCommandPool(vk, org.lwjgl.vulkan.VkCommandPoolCreateInfo.calloc(stack).sType$Default().queueFamilyIndex(nd.queueFamily()), null, out), "engine pool");
+            long pool = out.get(0);
+            var ptr = stack.mallocPointer(1);
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkAllocateCommandBuffers(vk, org.lwjgl.vulkan.VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(pool)
+                    .level(org.lwjgl.vulkan.VK10.VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1), ptr), "engine command buffer");
+            var cmd = new org.lwjgl.vulkan.VkCommandBuffer(ptr.get(0), vk);
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkBeginCommandBuffer(cmd, org.lwjgl.vulkan.VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin");
+            AutoCloseable external;
+            try (var e = device.encoder()) {
+                var x = java.nio.ByteBuffer.allocate(n * 4).order(java.nio.ByteOrder.nativeOrder()); var y = java.nio.ByteBuffer.allocate(n * 4).order(java.nio.ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) { x.putFloat(i); y.putFloat(100); }
+                e.upload(a, x.array()).upload(b, y.array()).dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1));
+                external = interop.recordInto(e, cmd.address());
+            }
+            // the engine copies DynamisGPU's result into d through the exported handles
+            var nc = interop.nativeBuffer(c); var ndst = interop.nativeBuffer(d);
+            var region = org.lwjgl.vulkan.VkBufferCopy.calloc(1, stack); region.get(0).srcOffset(nc.offset()).dstOffset(ndst.offset()).size(n * 4L);
+            org.lwjgl.vulkan.VK10.vkCmdCopyBuffer(cmd, nc.handle(), ndst.handle(), region);
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkEndCommandBuffer(cmd), "end");
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkCreateFence(vk, org.lwjgl.vulkan.VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "engine fence");
+            long fence = out.get(0);
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkQueueSubmit(queue, org.lwjgl.vulkan.VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd.address())), fence), "engine submit");
+            VulkanProvider.check(org.lwjgl.vulkan.VK10.vkWaitForFences(vk, new long[] {fence}, true, 10_000_000_000L), "engine wait");
+            external.close();
+            org.lwjgl.vulkan.VK10.vkDestroyFence(vk, fence, null); org.lwjgl.vulkan.VK10.vkDestroyCommandPool(vk, pool, null);
+            try (var e = device.encoder()) {
+                var r = e.download(d); await(device.queue().submit(e));
+                var got = java.nio.ByteBuffer.wrap(r.bytes()).order(java.nio.ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) org.junit.jupiter.api.Assertions.assertEquals(i + 100f, got.getFloat(4 * i), "element " + i);
+            }
+        } catch (Exception ex) { throw new AssertionError(ex); }
+    }
     @Override protected GpuProvider provider() { return new VulkanProvider(); }
     @Override protected KernelBundle kernel() {
         try (var stream = ComputeConformance.class.getResourceAsStream("/compute/vector_add.spv")) {

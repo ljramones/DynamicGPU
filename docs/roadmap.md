@@ -108,9 +108,19 @@ The two biggest costs outside the kernels today are allocation and re-recording.
 
 ### 1.6: Runtime II, queues and synchronization
 
-**Progress (branch `feat/runtime-queues`):** labels, names, tags, memory classes, queue counters and backend debug
-labels are done. So are timeline fences (`GpuFence`), the transfer queue, indirect dispatch and transient arenas. Next
-comes interop.
+**Status: complete on branch `feat/runtime-queues`, ready to release as 1.6.0.** Done:
+- labels, names, tags, memory classes, queue counters and backend debug labels;
+- timeline fences (`GpuFence`);
+- the transfer queue;
+- indirect dispatch;
+- transient arenas (`GpuArena`);
+- interop (`GpuInterop`): native handles for devices, buffers and fences, and on Vulkan, recording into a caller's
+  command buffer.
+
+Not done, deliberately:
+- **A same-family second Vulkan queue:** no available device could test it.
+- **Metal external command buffers:** the bridge owns encoding. A Metal engine shares buffers and orders its work
+  with the exported `MTLSharedEvent`.
 
 **First, observability for cost models** (from the token-efficiency review, 2026-11-24). The runtime provides generic
 hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers above.

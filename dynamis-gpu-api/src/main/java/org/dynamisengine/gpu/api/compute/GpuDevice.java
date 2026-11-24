@@ -13,6 +13,8 @@ public interface GpuDevice extends AutoCloseable {
      * shares it. Order work across queues with fences. @since 1.6.0
      */
     default GpuQueue queue(QueueKind kind) { return queue(); }
+    /** Native handles for engine interop (see {@link GpuInterop}); UNSUPPORTED on the mock. @since 1.6.0 */
+    default GpuInterop interop() { throw new ComputeException(ComputeException.Code.UNSUPPORTED, "interop is not supported here"); }
     /**
      * A transient arena over one backing buffer of {@code descriptor} (its bytes are the capacity; its usages and
      * placement apply to every buffer the arena hands out; its label is the memory class). @since 1.6.0

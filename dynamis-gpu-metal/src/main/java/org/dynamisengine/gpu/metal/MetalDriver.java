@@ -100,6 +100,16 @@ final class MetalDriver implements ComputeDriver {
     }
     @Override public int transferQueue() { return 1; }
     @Override public boolean indirectDispatch() { return true; }
+    // Interop: native handles (MTLDevice, MTLCommandQueue, MTLBuffer, MTLSharedEvent pointers).
+    @Override public GpuInterop.NativeDevice nativeDevice() {
+        return new GpuInterop.NativeDevice(Backend.METAL, n.pointer("dg_device_native", device).address(), 0, 0,
+                n.pointer("dg_queue_native", device).address(), -1);
+    }
+    @Override public GpuInterop.NativeBuffer nativeBuffer(Object allocation, long offset, long bytes) {
+        var b = (MetalBuffer) allocation;
+        return new GpuInterop.NativeBuffer(Backend.METAL, n.pointer("dg_buffer_native", b.handle()).address(), b.base() + offset, bytes);
+    }
+    @Override public long nativeFence(Object fence) { return n.pointer("dg_event_native", (MemorySegment) fence).address(); }
     @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         int dispatches = (int) commands.stream().filter(c -> c instanceof Dispatch).count();
         return submitBatch(q, commands, profile ? dispatches : 0, waits, signals);

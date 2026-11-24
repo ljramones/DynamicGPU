@@ -77,6 +77,33 @@ public final class ComputeDevice implements GpuDevice {
     }
     @Override public GpuCommandEncoder encoder() { check(); return new Encoder(); }
     @Override public GpuFence fence() { check(); return new Fence(driver.fence()); }
+    @Override public GpuInterop interop() {
+        check(); driver.nativeDevice();   // UNSUPPORTED here, not on first use, for a backend without interop
+        return new GpuInterop() {
+            @Override public NativeDevice nativeDevice() { check(); return driver.nativeDevice(); }
+            @Override public NativeBuffer nativeBuffer(GpuBuffer buffer) { Buffer b = buffer(buffer); return driver.nativeBuffer(b.resource.nativeObject, b.offset, b.bytes); }
+            @Override public long nativeFence(GpuFence fence) { return driver.nativeFence(fence(fence).nativeObject); }
+            @Override public AutoCloseable recordInto(GpuCommandEncoder encoder, long commandBuffer) {
+                check();
+                require(encoder instanceof ComputeDevice.Encoder && handles.contains(encoder), "Foreign or consumed encoder");
+                Encoder e = (Encoder) encoder; e.valid();
+                require(e.errorChecks.isEmpty() && e.commands.stream().noneMatch(c -> c instanceof Download), "External recordings hold no readbacks");
+                require(e.waits.isEmpty() && e.signals.isEmpty(), "External recordings take no fence operations: the caller's submission orders them");
+                var prepared = driver.recordInto(commandBuffer, List.copyOf(e.commands));
+                e.consumed = true; handles.remove(e);
+                // the resources stay in use (recorded) until the caller says its command buffer has completed
+                AutoCloseable[] self = new AutoCloseable[1];
+                self[0] = new AutoCloseable() {
+                    boolean done;
+                    @Override public void close() {
+                        thread(); if (done) return; done = true; handles.remove(self[0]);
+                        try { prepared.close(); } finally { e.release(); e.commands.clear(); }
+                    }
+                };
+                handles.add(self[0]); return self[0];
+            }
+        };
+    }
     @Override public GpuArena arena(BufferDescriptor descriptor) {
         check(); Buffer backing = (Buffer) allocate(descriptor); backing.resource.arena = true; return new Arena(backing);
     }

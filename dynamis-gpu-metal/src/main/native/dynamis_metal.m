@@ -66,6 +66,11 @@ int dg_event_wait(DGEvent *e, uint64_t value, int64_t nanos) { START
     return r == 0 || e->event.signaledValue >= value ? 1 : 0;
 END(-1) }
 void dg_event_release(DGEvent *e) { START if (e) { [e->event release]; free(e); } END() }
+// ABI 5, interop: the native objects behind the bridge's wrappers (unretained; valid while the wrapper lives).
+void *dg_device_native(DGDevice *d) { START return (void *) d->device; END(NULL) }
+void *dg_queue_native(DGDevice *d) { START return (void *) d->queue; END(NULL) }
+void *dg_buffer_native(DGBuffer *b) { START return (void *) b->buffer; END(NULL) }
+void *dg_event_native(DGEvent *e) { START return (void *) e->event; END(NULL) }
 void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->transfer release]; [d->device release]; free(d); } END() }
 DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { START
     id<MTLBuffer> b = [d->device newBufferWithLength:bytes options:privateStorage ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared];

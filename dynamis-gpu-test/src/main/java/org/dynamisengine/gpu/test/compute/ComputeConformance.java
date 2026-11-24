@@ -552,6 +552,23 @@ public abstract class ComputeConformance {
         assertNull(device.memoryByLabel().get("scratch"));
     }
 
+    /** Interop: native handles are consistent; pooled buffers export their block's handle with their own offsets. */
+    @Test void exportsNativeHandles() {
+        GpuInterop interop;
+        try { interop = device.interop(); } catch (ComputeException e) { assertEquals(ComputeException.Code.UNSUPPORTED, e.code()); return; }
+        var nd = interop.nativeDevice();
+        assertEquals(device.adapter().backend(), nd.backend()); assertNotEquals(0, nd.device()); assertNotEquals(0, nd.queue());
+        try (var a = buffer(1024, Placement.PRIVATE); var b = buffer(1024, Placement.PRIVATE)) {
+            var na = interop.nativeBuffer(a); var nb = interop.nativeBuffer(b);
+            assertNotEquals(0, na.handle()); assertEquals(1024, na.size());
+            assertEquals(na.handle(), nb.handle(), "small buffers share a pool block");
+            assertTrue(Math.abs(na.offset() - nb.offset()) >= 1024, "their ranges do not overlap: " + na + " " + nb);
+            var slice = interop.nativeBuffer(a.slice(256, 512));
+            assertEquals(na.offset() + 256, slice.offset()); assertEquals(512, slice.size());
+            try (var f = device.fence()) { assertNotEquals(0, interop.nativeFence(f)); } catch (ComputeException e) { assertEquals(ComputeException.Code.UNSUPPORTED, e.code()); }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

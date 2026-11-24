@@ -340,12 +340,16 @@ final class VulkanComputeDriver implements ComputeDriver {
         final boolean transferStages;
         final int bits;                    // valid timestamp bits on that queue
 
-        Batch(List<Command> commands, boolean profile) { this(commands, profile, 0); }
-        Batch(List<Command> commands, boolean profile, int q) {
-            this.profile = profile;
+        /** Records into a caller's command buffer: no fence, no timestamps, no begin/end; the caller submits it. */
+        final boolean external;
+
+        Batch(List<Command> commands, boolean profile) { this(commands, profile, 0, null); }
+        Batch(List<Command> commands, boolean profile, int q) { this(commands, profile, q, null); }
+        Batch(List<Command> commands, boolean profile, int q, VkCommandBuffer externalCommands) {
+            this.profile = profile; this.external = externalCommands != null;
             boolean onTransfer = q == 1 && transfer != null;
             target = onTransfer ? transfer : queue; commandPool = onTransfer ? transferPool : pool;
-            transferStages = onTransfer && transferOnly; bits = onTransfer ? transferTimestampBits : timestampBits;
+            transferStages = onTransfer && transferOnly; bits = external ? 0 : onTransfer ? transferTimestampBits : timestampBits;
             try (var stack = MemoryStack.stackPush()) {
                 int n = commands.size(), dispatches = 0, descriptors = 0;
                 sets = new long[n]; stages = new Allocation[n];
@@ -379,10 +383,13 @@ final class VulkanComputeDriver implements ComputeDriver {
                     var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(queryCount);
                     check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
                 }
-                check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
-                var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(commandPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
-                var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer");
-                cmd = new VkCommandBuffer(pointer.get(0), device);
+                if (external) cmd = externalCommands;
+                else {
+                    check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
+                    var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(commandPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
+                    var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer");
+                    cmd = new VkCommandBuffer(pointer.get(0), device);
+                }
                 record(commands);
             } catch (RuntimeException | Error ex) { close(); throw ex; }
         }
@@ -401,8 +408,10 @@ final class VulkanComputeDriver implements ComputeDriver {
         /** (Re-)records the command buffer for {@code commands}, which match the batch's command list in shape. */
         void record(List<Command> commands) {
             try (var stack = MemoryStack.stackPush()) {
-                if (recorded != null) check(vkResetCommandBuffer(cmd, 0), "reset compute commands");
-                check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin compute commands");
+                if (!external) {
+                    if (recorded != null) check(vkResetCommandBuffer(cmd, 0), "reset compute commands");
+                    check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin compute commands");
+                }
                 if (queries != 0) { vkCmdResetQueryPool(cmd, queries, 0, queryCount); vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0); }
                 int dispatchNumber = 0;
                 for (int i = 0; i < commands.size(); i++) {
@@ -432,7 +441,8 @@ final class VulkanComputeDriver implements ComputeDriver {
                     }
                 }
                 if (queries != 0) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
-                barrier(cmd, true, transferStages, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
+                if (external) barrier(cmd, false, transferStages, stack);   // the caller's later commands see the writes
+                else { barrier(cmd, true, transferStages, stack); check(vkEndCommandBuffer(cmd), "end compute commands"); }
                 recorded = List.copyOf(commands);
             }
         }
@@ -504,7 +514,8 @@ final class VulkanComputeDriver implements ComputeDriver {
         @Override public void close() {
             if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
             if (queries != 0) { vkDestroyQueryPool(device, queries, null); queries = 0; }
-            if (cmd != null) { vkFreeCommandBuffers(device, commandPool, cmd); cmd = null; }
+            if (cmd != null && !external) vkFreeCommandBuffers(device, commandPool, cmd);
+            cmd = null;
             if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
             if (stages != null) { for (var st : stages) if (st != null) releaseBuffer(st); stages = null; }
         }
@@ -513,6 +524,17 @@ final class VulkanComputeDriver implements ComputeDriver {
     @Override public Job submit(List<Command> commands) { return submit(commands, false); }
     @Override public int transferQueue() { return transfer != null ? 1 : -1; }
     @Override public boolean indirectDispatch() { return true; }
+    // Interop: native handles, and recording into a caller's command buffer.
+    @Override public GpuInterop.NativeDevice nativeDevice() {
+        return new GpuInterop.NativeDevice(Backend.VULKAN, device.address(), physical.address(), instance.address(), queue.address(), computeFamily);
+    }
+    @Override public GpuInterop.NativeBuffer nativeBuffer(Object allocation, long offset, long bytes) {
+        var a = (Allocation) allocation; return new GpuInterop.NativeBuffer(Backend.VULKAN, a.buffer(), a.base() + offset, bytes);
+    }
+    @Override public long nativeFence(Object fence) { return (Long) fence; }
+    @Override public Prepared recordInto(long commandBuffer, List<Command> commands) {
+        return new Batch(commands, false, 0, new VkCommandBuffer(commandBuffer, device));
+    }
     @Override public Job submit(int q, List<Command> commands, boolean profile, List<FenceOp> waits, List<FenceOp> signals) {
         var batch = new Batch(commands, profile, q);
         try { return batch.submit(commands, true, waits, signals); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
