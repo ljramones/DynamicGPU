@@ -29,5 +29,7 @@ public interface ComputeDriver extends AutoCloseable {
     Object pipeline(PipelineDescriptor descriptor);
     void releasePipeline(Object pipeline);
     Job submit(List<Command> commands);
+    /** The driver's buffer pools (see {@link MemoryPool}); {@link MemoryStats#NONE} if it has none. */
+    default MemoryStats memoryStats() { return MemoryStats.NONE; }
     @Override void close();
 }

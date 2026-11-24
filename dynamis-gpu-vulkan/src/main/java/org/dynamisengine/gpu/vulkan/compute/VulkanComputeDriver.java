@@ -2,6 +2,7 @@ package org.dynamisengine.gpu.vulkan.compute;
 
 import org.dynamisengine.gpu.api.compute.*;
 import org.dynamisengine.gpu.api.compute.spi.ComputeDriver;
+import org.dynamisengine.gpu.api.compute.spi.MemoryPool;
 import org.lwjgl.system.*;
 import org.lwjgl.vulkan.*;
 import java.nio.*;
@@ -11,7 +12,16 @@ import static org.dynamisengine.gpu.vulkan.compute.VulkanProvider.check;
 
 /** Submission-scoped headless compute. A single queue family avoids ownership transfers. */
 final class VulkanComputeDriver implements ComputeDriver {
-    private record Allocation(long buffer, long memory, long bytes, long allocationBytes, boolean coherent) { }
+    /** A pool block: one VkBuffer over its own memory, persistently mapped when host-visible (mapped != 0). */
+    private record Block(long buffer, long memory, long bytes, boolean coherent, long mapped) { }
+    /** A buffer: a range of a block; {@code bytes} is the size asked for. */
+    private record Allocation(MemoryPool.Allocation<Block> range, long bytes) {
+        long buffer() { return range.block().buffer(); }
+        long base() { return range.offset(); }
+    }
+    /** Blocks of 64 MiB; buffers over 16 MiB get their own. */
+    static final long BLOCK_BYTES = 64L << 20, DEDICATED_BYTES = 16L << 20;
+    private final Map<Placement, MemoryPool<Block>> pools = new EnumMap<>(Placement.class);
     private record Pipeline(long pipeline, long layout, long setLayout) { }
     private final VkInstance instance;
     private final VkPhysicalDevice physical;
@@ -19,6 +29,8 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkQueue queue;
     private final long pool;
     private final VulkanFeatures features;
+    /** Every pooled range starts at a multiple of this: at least 256 and the device's buffer offset alignments. */
+    private final long alignment;
     /** Valid bits of the compute queue's timestamps (0: none) and nanoseconds per tick. */
     private final int timestampBits;
     private final double timestampPeriod;
@@ -34,6 +46,8 @@ final class VulkanComputeDriver implements ComputeDriver {
             features = VulkanFeatures.query(physical);
             var limits = VkPhysicalDeviceProperties.calloc(stack); vkGetPhysicalDeviceProperties(physical, limits);
             timestampPeriod = limits.limits().timestampPeriod();
+            long align = Math.max(256, Math.max(limits.limits().minStorageBufferOffsetAlignment(), limits.limits().minUniformBufferOffsetAlignment()));
+            alignment = Long.highestOneBit(align) == align ? align : Long.highestOneBit(align) << 1;
             timestampBits = timestampPeriod > 0 ? VulkanProvider.timestampBits(physical, family) : 0;
             var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
             List<String> extensions = new ArrayList<>(features.extensions());
@@ -53,57 +67,82 @@ final class VulkanComputeDriver implements ComputeDriver {
         }
     }
     @Override public Object allocate(BufferDescriptor d) {
+        if (d.usages().stream().noneMatch(u -> u == BufferUsage.STORAGE || u == BufferUsage.UNIFORM || u == BufferUsage.TRANSFER_SOURCE || u == BufferUsage.TRANSFER_DESTINATION))
+            throw new ComputeException(ComputeException.Code.INVALID_ARGUMENT, "Vulkan buffers require at least one GPU usage");
+        return new Allocation(pool(d.placement()).allocate(d.bytes()), d.bytes());
+    }
+    private MemoryPool<Block> pool(Placement placement) {
+        return pools.computeIfAbsent(placement, p -> new MemoryPool<>(new MemoryPool.Blocks<>() {
+            @Override public Block create(long bytes) { return createBlock(p, bytes); }
+            @Override public void destroy(Block b) { destroyBlock(b); }
+        }, BLOCK_BYTES, alignment, DEDICATED_BYTES));
+    }
+    /** A block buffer with every usage a buffer may ask for, bound to its own memory of the placement's type. */
+    private Block createBlock(Placement placement, long bytes) {
         long buffer = 0, memory = 0;
         try (var stack = MemoryStack.stackPush()) {
-            int usages = 0;
-            if (d.usages().contains(BufferUsage.STORAGE)) usages |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-            if (d.usages().contains(BufferUsage.UNIFORM)) usages |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-            if (d.usages().contains(BufferUsage.TRANSFER_SOURCE)) usages |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-            if (d.usages().contains(BufferUsage.TRANSFER_DESTINATION)) usages |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            if (usages == 0) throw new ComputeException(ComputeException.Code.INVALID_ARGUMENT, "Vulkan buffers require at least one GPU usage");
-            var info = VkBufferCreateInfo.calloc(stack).sType$Default().size(d.bytes()).usage(usages).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+            int usages = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            var info = VkBufferCreateInfo.calloc(stack).sType$Default().size(bytes).usage(usages).sharingMode(VK_SHARING_MODE_EXCLUSIVE);
             var out = stack.mallocLong(1); check(vkCreateBuffer(device, info, null, out), "create buffer"); buffer = out.get(0);
             var requirements = VkMemoryRequirements.calloc(stack); vkGetBufferMemoryRequirements(device, buffer, requirements);
             var properties = VkPhysicalDeviceMemoryProperties.calloc(stack); vkGetPhysicalDeviceMemoryProperties(physical, properties);
-            int required = d.placement() == Placement.SHARED ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            int required = placement == Placement.SHARED ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             int selected = -1;
             for (int i = 0; i < properties.memoryTypeCount(); i++) {
                 int flags = properties.memoryTypes(i).propertyFlags();
                 if ((requirements.memoryTypeBits() & (1 << i)) != 0 && (flags & required) == required) {
-                    selected = i; if (d.placement() == Placement.PRIVATE || (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) break;
+                    selected = i; if (placement == Placement.PRIVATE || (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) break;
                 }
             }
-            if (selected < 0) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "No memory type for Vulkan " + d.placement());
+            if (selected < 0) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "No memory type for Vulkan " + placement);
+            int flags = properties.memoryTypes(selected).propertyFlags();
             var allocation = VkMemoryAllocateInfo.calloc(stack).sType$Default().allocationSize(requirements.size()).memoryTypeIndex(selected);
             check(vkAllocateMemory(device, allocation, null, out), "allocate buffer memory"); memory = out.get(0);
             check(vkBindBufferMemory(device, buffer, memory, 0), "bind buffer memory");
-            return new Allocation(buffer, memory, d.bytes(), requirements.size(), (properties.memoryTypes(selected).propertyFlags() & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0);
+            long mapped = 0;
+            if ((flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                var pointer = stack.mallocPointer(1); check(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, pointer), "map block memory"); mapped = pointer.get(0);
+            }
+            return new Block(buffer, memory, bytes, (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0, mapped);
         } catch (RuntimeException | Error ex) {
             if (buffer != 0) vkDestroyBuffer(device, buffer, null); if (memory != 0) vkFreeMemory(device, memory, null); throw ex;
         }
     }
-    @Override public void releaseBuffer(Object object) { var a = (Allocation) object; vkDestroyBuffer(device, a.buffer(), null); vkFreeMemory(device, a.memory(), null); }
-    @Override public ByteBuffer map(Object object, long offset, long bytes, Access access) {
-        var a = (Allocation) object;
-        try (var stack = MemoryStack.stackPush()) {
-            var pointer = stack.mallocPointer(1); check(vkMapMemory(device, a.memory(), 0, VK_WHOLE_SIZE, 0, pointer), "map buffer memory");
-            try {
-                if (!a.coherent() && access != Access.WRITE) {
-                    var range = VkMappedMemoryRange.calloc(1, stack); range.get(0).sType$Default().memory(a.memory()).offset(0).size(VK_WHOLE_SIZE);
-                    check(vkInvalidateMappedMemoryRanges(device, range), "invalidate noncoherent mapped memory");
-                }
-                return MemoryUtil.memByteBuffer(pointer.get(0) + offset, Math.toIntExact(bytes)).order(ByteOrder.nativeOrder());
-            } catch (RuntimeException ex) { vkUnmapMemory(device, a.memory()); throw ex; }
+    private void destroyBlock(Block b) {
+        if (b.mapped() != 0) vkUnmapMemory(device, b.memory());
+        vkDestroyBuffer(device, b.buffer(), null); vkFreeMemory(device, b.memory(), null);
+    }
+    @Override public org.dynamisengine.gpu.api.compute.MemoryStats memoryStats() {
+        long reserved = 0, used = 0, allocations = 0, made = 0; int blocks = 0;
+        for (var p : pools.values()) {
+            var st = p.stats(); reserved += st.reservedBytes(); used += st.usedBytes(); blocks += st.blocks(); allocations += st.allocations(); made += st.blockAllocations();
         }
+        return new org.dynamisengine.gpu.api.compute.MemoryStats(reserved, used, blocks, allocations, made);
+    }
+    @Override public void releaseBuffer(Object object) {
+        var a = (Allocation) object;
+        for (var p : pools.values()) if (p.owns(a.range())) { p.free(a.range()); return; }
+        throw new IllegalStateException("buffer from no pool of this device");
+    }
+    @Override public ByteBuffer map(Object object, long offset, long bytes, Access access) {
+        var a = (Allocation) object; var block = a.range().block();
+        if (block.mapped() == 0) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Buffer memory is not host-visible");
+        if (!block.coherent() && access != Access.WRITE) {
+            try (var stack = MemoryStack.stackPush()) {
+                var range = VkMappedMemoryRange.calloc(1, stack); range.get(0).sType$Default().memory(block.memory()).offset(0).size(VK_WHOLE_SIZE);
+                check(vkInvalidateMappedMemoryRanges(device, range), "invalidate noncoherent mapped memory");
+            }
+        }
+        return MemoryUtil.memByteBuffer(block.mapped() + a.base() + offset, Math.toIntExact(bytes)).order(ByteOrder.nativeOrder());
     }
     @Override public void unmap(Object object, Access access) {
-        var a = (Allocation) object;
-        try (var stack = MemoryStack.stackPush()) {
-            if (!a.coherent() && access != Access.READ) {
-                var range = VkMappedMemoryRange.calloc(1, stack); range.get(0).sType$Default().memory(a.memory()).offset(0).size(VK_WHOLE_SIZE);
+        var block = ((Allocation) object).range().block();
+        if (!block.coherent() && access != Access.READ) {
+            try (var stack = MemoryStack.stackPush()) {
+                var range = VkMappedMemoryRange.calloc(1, stack); range.get(0).sType$Default().memory(block.memory()).offset(0).size(VK_WHOLE_SIZE);
                 check(vkFlushMappedMemoryRanges(device, range), "flush noncoherent mapped memory");
             }
-        } finally { vkUnmapMemory(device, a.memory()); }
+        }
     }
     @Override public Object pipeline(PipelineDescriptor d) {
         var executable = d.kernel().executable(Backend.VULKAN);
@@ -144,6 +183,8 @@ final class VulkanComputeDriver implements ComputeDriver {
         var p = (Pipeline) object; vkDestroyPipeline(device, p.pipeline(), null); vkDestroyPipelineLayout(device, p.layout(), null); vkDestroyDescriptorSetLayout(device, p.setLayout(), null);
     }
     private static long buffer(Region r) { return ((Allocation) r.allocation()).buffer(); }
+    /** A region's offset in its block's VkBuffer. */
+    private static long offset(Region r) { return ((Allocation) r.allocation()).base() + r.offset(); }
     private static void barrier(VkCommandBuffer cmd, boolean host, MemoryStack stack) {
         var memory = VkMemoryBarrier.calloc(1, stack); memory.get(0).sType$Default().srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT)
                 .dstAccessMask(host ? VK_ACCESS_HOST_READ_BIT : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
@@ -177,16 +218,16 @@ final class VulkanComputeDriver implements ComputeDriver {
                 try (var local = MemoryStack.stackPush()) {
                     barrier(cmd, false, local);
                     switch (command) {
-                        case Fill f -> vkCmdFillBuffer(cmd, buffer(f.destination()), f.destination().offset(), f.destination().bytes(), f.pattern());
-                        case Copy c -> copy(cmd, buffer(c.source()), c.source().offset(), buffer(c.destination()), c.destination().offset(), c.source().bytes(), local);
+                        case Fill f -> vkCmdFillBuffer(cmd, buffer(f.destination()), offset(f.destination()), f.destination().bytes(), f.pattern());
+                        case Copy c -> copy(cmd, buffer(c.source()), offset(c.source()), buffer(c.destination()), offset(c.destination()), c.source().bytes(), local);
                         case Upload u -> {
                             var stage = (Allocation) allocate(new BufferDescriptor(u.data().length, Set.of(BufferUsage.TRANSFER_SOURCE), Placement.SHARED)); stages.add(stage);
                             map(stage, 0, stage.bytes(), Access.WRITE).put(u.data()); unmap(stage, Access.WRITE);
-                            copy(cmd, stage.buffer(), 0, buffer(u.destination()), u.destination().offset(), u.destination().bytes(), local);
+                            copy(cmd, stage.buffer(), stage.base(), buffer(u.destination()), offset(u.destination()), u.destination().bytes(), local);
                         }
                         case Download d -> {
                             var stage = (Allocation) allocate(new BufferDescriptor(d.source().bytes(), Set.of(BufferUsage.TRANSFER_DESTINATION), Placement.SHARED)); stages.add(stage); reads.put(d.result(), stage);
-                            copy(cmd, buffer(d.source()), d.source().offset(), stage.buffer(), 0, stage.bytes(), local);
+                            copy(cmd, buffer(d.source()), offset(d.source()), stage.buffer(), stage.base(), stage.bytes(), local);
                         }
                         case Dispatch d -> {
                             var p = (Pipeline) d.pipeline();
@@ -194,7 +235,7 @@ final class VulkanComputeDriver implements ComputeDriver {
                             var set = local.mallocLong(1); check(vkAllocateDescriptorSets(device, setInfo, set), "allocate compute descriptor set");
                             var writes = VkWriteDescriptorSet.calloc(d.bindings().size(), local);
                             for (int i = 0; i < d.bindings().size(); i++) {
-                                var bound = d.bindings().get(i); var info = VkDescriptorBufferInfo.calloc(1, local); info.get(0).buffer(buffer(bound.region())).offset(bound.region().offset()).range(bound.region().bytes());
+                                var bound = d.bindings().get(i); var info = VkDescriptorBufferInfo.calloc(1, local); info.get(0).buffer(buffer(bound.region())).offset(offset(bound.region())).range(bound.region().bytes());
                                 writes.get(i).sType$Default().dstSet(set.get(0)).dstBinding(bound.slot()).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(info);
                             }
                             vkUpdateDescriptorSets(device, writes, null); vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline());
@@ -239,5 +280,8 @@ final class VulkanComputeDriver implements ComputeDriver {
         if (cmd != null) vkFreeCommandBuffers(device, pool, cmd);
         if (descriptorPool != 0) vkDestroyDescriptorPool(device, descriptorPool, null); stages.forEach(this::releaseBuffer);
     }
-    @Override public void close() { vkDestroyCommandPool(device, pool, null); vkDestroyDevice(device, null); vkDestroyInstance(instance, null); }
+    @Override public void close() {
+        pools.values().forEach(MemoryPool::destroyAll);
+        vkDestroyCommandPool(device, pool, null); vkDestroyDevice(device, null); vkDestroyInstance(instance, null);
+    }
 }

@@ -88,6 +88,70 @@ public abstract class ComputeConformance {
             }
         }
     }
+    /**
+     * Pooled memory: many small buffers share a few driver allocations, keep their own contents, and give their
+     * memory back on close; a large buffer gets a dedicated block that is freed with it. Backends without pools
+     * report {@link MemoryStats#NONE}.
+     */
+    @Test void poolsBufferMemory() {
+        var probe = buffer(4, Placement.PRIVATE);   // a fresh device holds no blocks yet
+        var before = device.memoryStats();
+        if (before.equals(MemoryStats.NONE)) { probe.close(); System.out.println("memory pools: none on " + device.adapter().name()); return; }
+        int count = 1000, words = 64;
+        List<GpuBuffer> buffers = new ArrayList<>();
+        try {
+            for (int i = 0; i < count; i++) buffers.add(buffer(words * 4, Placement.PRIVATE));
+            var during = device.memoryStats();
+            assertTrue(during.blockAllocations() - before.blockAllocations() <= 2,
+                    count + " buffers made " + (during.blockAllocations() - before.blockAllocations()) + " driver allocations");
+            assertTrue(during.allocations() >= before.allocations() + count);
+            List<GpuReadback> reads = new ArrayList<>();
+            try (var e = device.encoder()) {
+                for (int i = 0; i < count; i++) {
+                    var data = ByteBuffer.allocate(words * 4).order(ByteOrder.nativeOrder());
+                    for (int w = 0; w < words; w++) data.putInt(i * 1000 + w);
+                    e.upload(buffers.get(i), data.array());
+                }
+                for (var b : buffers) reads.add(e.download(b));
+                await(device.queue().submit(e));
+            }
+            for (int i = 0; i < count; i++) {
+                var got = ByteBuffer.wrap(reads.get(i).bytes()).order(ByteOrder.nativeOrder());
+                for (int w = 0; w < words; w++) assertEquals(i * 1000 + w, got.getInt(4 * w), "buffer " + i + " word " + w);
+            }
+        } finally { buffers.forEach(GpuBuffer::close); }
+        var after = device.memoryStats();
+        probe.close();
+        assertEquals(before.usedBytes(), after.usedBytes(), "memory returned to the pool");
+        after = device.memoryStats();
+        long blocks = after.blockAllocations();
+        try (var big = buffer(32 << 20, Placement.PRIVATE)) {
+            assertEquals(blocks + 1, device.memoryStats().blockAllocations(), "a large buffer gets its own block");
+        }
+        assertEquals(after.reservedBytes(), device.memoryStats().reservedBytes(), "the dedicated block is freed with its buffer");
+        System.out.println("memory pools: " + count + " buffers in " + (after.blockAllocations() - before.blockAllocations())
+                + " driver allocations; now " + device.memoryStats() + " on " + device.adapter().name());
+    }
+
+    /** -Dcompute.benchmark=true: the host cost of allocating and closing a small buffer, and of a small round trip. */
+    @Test void allocationBenchmark() {
+        Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");
+        for (int round = 0; round < 3; round++) {
+            int n = 5000; long t0 = System.nanoTime();
+            for (int i = 0; i < n; i++) buffer(1024, Placement.PRIVATE).close();
+            long alloc = (System.nanoTime() - t0) / n;
+            int trips = 300; byte[] data = new byte[4096];
+            try (var b = buffer(4096, Placement.PRIVATE)) {
+                long t1 = System.nanoTime();
+                for (int i = 0; i < trips; i++) {
+                    try (var e = device.encoder()) { e.upload(b, data); var r = e.download(b); await(device.queue().submit(e)); r.bytes(); }
+                }
+                System.out.printf("allocation benchmark on %s: allocate+close %d ns, 4 KiB upload+download round trip %d us%n",
+                        device.adapter().name(), alloc, (System.nanoTime() - t1) / trips / 1000);
+            }
+        }
+    }
+
     /** Where the device reports timestamps, a completed submission has a positive GPU time no longer than its wall time. */
     @Test void measuresGpuTimeWhereTimestampsAreReported() {
         int n = 1 << 20;

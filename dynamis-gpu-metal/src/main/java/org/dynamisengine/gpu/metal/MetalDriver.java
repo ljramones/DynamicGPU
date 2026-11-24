@@ -2,6 +2,7 @@ package org.dynamisengine.gpu.metal;
 
 import org.dynamisengine.gpu.api.compute.*;
 import org.dynamisengine.gpu.api.compute.spi.ComputeDriver;
+import org.dynamisengine.gpu.api.compute.spi.MemoryPool;
 import java.lang.foreign.*;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -9,23 +10,54 @@ import static java.lang.foreign.ValueLayout.*;
 
 final class MetalDriver implements ComputeDriver {
     // Typed Java wrappers prevent accidental buffer/pipeline/device handle substitution.
-    private record MetalBuffer(MemorySegment handle, long bytes) { }
+    /** A pool block: one MTLBuffer; {@code contents} is its CPU address for shared storage, NULL for private. */
+    private record Block(MemorySegment handle, long bytes, MemorySegment contents) { }
+    /** A buffer: a range of a block; {@code bytes} is the size asked for. */
+    private record MetalBuffer(MemoryPool.Allocation<Block> range, long bytes) {
+        MemorySegment handle() { return range.block().handle(); }
+        long base() { return range.offset(); }
+    }
+    /** Blocks of 64 MiB, ranges aligned to 256 bytes; buffers over 16 MiB get their own block. */
+    static final long BLOCK_BYTES = 64L << 20, DEDICATED_BYTES = 16L << 20, ALIGNMENT = 256;
+    private final Map<Placement, MemoryPool<Block>> pools = new EnumMap<>(Placement.class);
     private record MetalPipeline(MemorySegment handle) { }
     private final MetalNative n = MetalNative.instance();
     private final MemorySegment device;
     MetalDriver(int index) { device = n.pointer("dg_device_open", index); }
-    @Override public Object allocate(BufferDescriptor d) {
-        var buffer = n.address("dg_buffer_create", device, d.bytes(), d.placement() == Placement.PRIVATE ? 1 : 0);
-        if (buffer.equals(MemorySegment.NULL)) {
-            var error = n.error("buffer allocation bytes=" + d.bytes() + " placement=" + d.placement());
-            throw new ComputeException(ComputeException.Code.RESOURCE_EXHAUSTED, error.getMessage(), error);
+    @Override public Object allocate(BufferDescriptor d) { return new MetalBuffer(pool(d.placement()).allocate(d.bytes()), d.bytes()); }
+    private MemoryPool<Block> pool(Placement placement) {
+        return pools.computeIfAbsent(placement, p -> new MemoryPool<>(new MemoryPool.Blocks<>() {
+            @Override public Block create(long bytes) {
+                var buffer = n.address("dg_buffer_create", device, bytes, p == Placement.PRIVATE ? 1 : 0);
+                if (buffer.equals(MemorySegment.NULL)) {
+                    var error = n.error("buffer allocation bytes=" + bytes + " placement=" + p);
+                    throw new ComputeException(ComputeException.Code.RESOURCE_EXHAUSTED, error.getMessage(), error);
+                }
+                var contents = p == Placement.SHARED ? n.pointer("dg_buffer_contents", buffer).reinterpret(bytes) : MemorySegment.NULL;
+                return new Block(buffer, bytes, contents);
+            }
+            @Override public void destroy(Block b) { n.release("dg_buffer_release", b.handle()); }
+        }, BLOCK_BYTES, ALIGNMENT, DEDICATED_BYTES));
+    }
+    @Override public void releaseBuffer(Object b) {
+        var buffer = (MetalBuffer) b;
+        for (var p : pools.values()) if (p.owns(buffer.range())) { p.free(buffer.range()); return; }
+        throw new IllegalStateException("buffer from no pool of this device");
+    }
+    @Override public org.dynamisengine.gpu.api.compute.MemoryStats memoryStats() {
+        long reserved = 0, used = 0, allocations = 0, made = 0; int blocks = 0;
+        for (var p : pools.values()) {
+            var st = p.stats(); reserved += st.reservedBytes(); used += st.usedBytes(); blocks += st.blocks(); allocations += st.allocations(); made += st.blockAllocations();
         }
-        return new MetalBuffer(buffer, d.bytes());
+        return new org.dynamisengine.gpu.api.compute.MemoryStats(reserved, used, blocks, allocations, made);
     }
-    @Override public void releaseBuffer(Object b) { n.release("dg_buffer_release", ((MetalBuffer) b).handle()); }
-    @Override public ByteBuffer map(Object b, long offset, long bytes, Access access) {
-        var buffer = (MetalBuffer) b; return n.pointer("dg_buffer_contents", buffer.handle()).reinterpret(buffer.bytes()).asSlice(offset, bytes).asByteBuffer();
+    /** The CPU view of {@code bytes} at {@code offset} of a shared buffer. */
+    private MemorySegment contents(MetalBuffer buffer, long offset, long bytes) {
+        var block = buffer.range().block();
+        if (block.contents().equals(MemorySegment.NULL)) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Private Metal buffers cannot be mapped");
+        return block.contents().asSlice(buffer.base() + offset, bytes);
     }
+    @Override public ByteBuffer map(Object b, long offset, long bytes, Access access) { return contents((MetalBuffer) b, offset, bytes).asByteBuffer(); }
     @Override public void unmap(Object b, Access access) { /* Shared memory: completion + exclusive host mapping is enforced above. */ }
     @Override public Object pipeline(PipelineDescriptor d) {
         if (!d.specialization().isEmpty()) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "Metal ABI 1 has no function constants; supply a specialized executable");
@@ -43,23 +75,40 @@ final class MetalDriver implements ComputeDriver {
     }
     @Override public void releasePipeline(Object p) { n.release("dg_pipeline_release", ((MetalPipeline) p).handle()); }
     private MemorySegment buffer(Region r) { return ((MetalBuffer) r.allocation()).handle(); }
+    /** A region's offset in its block's MTLBuffer. */
+    private static long offset(Region r) { return ((MetalBuffer) r.allocation()).base() + r.offset(); }
+    /** A pooled shared staging range holding {@code data}. */
+    private MetalBuffer stage(List<MetalBuffer> stages, byte[] data) {
+        var stage = (MetalBuffer) allocate(new BufferDescriptor(data.length, Set.of(BufferUsage.TRANSFER_SOURCE), Placement.SHARED)); stages.add(stage);
+        MemorySegment.copy(data, 0, contents(stage, 0, data.length), JAVA_BYTE, 0, data.length);
+        return stage;
+    }
     @Override public Job submit(List<Command> commands) {
         var batch = n.pointer("dg_batch_create", device);
         List<MetalBuffer> stages = new ArrayList<>(); Map<GpuReadback, MetalBuffer> reads = new LinkedHashMap<>();
         try (var arena = Arena.ofConfined()) {
             for (var command : commands) {
                 switch (command) {
-                    case Upload u -> n.check("dg_upload", batch, buffer(u.destination()), u.destination().offset(), arena.allocateFrom(JAVA_BYTE, u.data()), (long) u.data().length);
-                    case Copy c -> n.check("dg_copy", batch, buffer(c.source()), c.source().offset(), buffer(c.destination()), c.destination().offset(), c.source().bytes());
-                    case Fill f -> n.check("dg_fill", batch, buffer(f.destination()), f.destination().offset(), f.destination().bytes(), f.pattern());
+                    case Upload u -> {
+                        var stage = stage(stages, u.data());
+                        n.check("dg_copy", batch, stage.handle(), stage.base(), buffer(u.destination()), offset(u.destination()), (long) u.data().length);
+                    }
+                    case Copy c -> n.check("dg_copy", batch, buffer(c.source()), offset(c.source()), buffer(c.destination()), offset(c.destination()), c.source().bytes());
+                    case Fill f -> {
+                        int words = Math.toIntExact(f.destination().bytes() / 4);
+                        var stage = (MetalBuffer) allocate(new BufferDescriptor(4L * words, Set.of(BufferUsage.TRANSFER_SOURCE), Placement.SHARED)); stages.add(stage);
+                        var view = contents(stage, 0, 4L * words);
+                        for (int i = 0; i < words; i++) view.setAtIndex(JAVA_INT_UNALIGNED, i, f.pattern());
+                        n.check("dg_copy", batch, stage.handle(), stage.base(), buffer(f.destination()), offset(f.destination()), 4L * words);
+                    }
                     case Download d -> {
                         var stage = (MetalBuffer) allocate(new BufferDescriptor(d.source().bytes(), Set.of(BufferUsage.TRANSFER_DESTINATION), Placement.SHARED));
                         stages.add(stage); reads.put(d.result(), stage);
-                        n.check("dg_copy", batch, buffer(d.source()), d.source().offset(), stage.handle(), 0L, d.source().bytes());
+                        n.check("dg_copy", batch, buffer(d.source()), offset(d.source()), stage.handle(), stage.base(), d.source().bytes());
                     }
                     case Dispatch d -> {
                         n.check("dg_compute_begin", batch, ((MetalPipeline) d.pipeline()).handle());
-                        for (var binding : d.bindings()) n.check("dg_compute_buffer", batch, buffer(binding.region()), binding.region().offset(), binding.slot());
+                        for (var binding : d.bindings()) n.check("dg_compute_buffer", batch, buffer(binding.region()), offset(binding.region()), binding.slot());
                         if (d.parameters().length > 0) n.check("dg_compute_parameters", batch, arena.allocateFrom(JAVA_BYTE, d.parameters()), (long) d.parameters().length, d.descriptor().layout().parameterSlot());
                         var g = d.groups(); var l = d.descriptor().localSize(); n.check("dg_compute_dispatch", batch, g.x(), g.y(), g.z(), l.x(), l.y(), l.z());
                     }
@@ -85,5 +134,5 @@ final class MetalDriver implements ComputeDriver {
             @Override public void close() { n.release("dg_batch_release", batch); stages.forEach(MetalDriver.this::releaseBuffer); }
         };
     }
-    @Override public void close() { n.release("dg_device_release", device); }
+    @Override public void close() { pools.values().forEach(MemoryPool::destroyAll); n.release("dg_device_release", device); }
 }

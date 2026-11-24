@@ -47,6 +47,7 @@ public final class ComputeDevice implements GpuDevice {
     }
     /** Limits for validation; reading them never runs the feature probe. */
     private GpuCapabilities limits() { return adapter.capabilities(); }
+    @Override public MemoryStats memoryStats() { check(); return driver.memoryStats(); }
     @Override public GpuBuffer allocate(BufferDescriptor descriptor) {
         check(); require(descriptor.bytes() <= limits().maxBufferBytes(), "Buffer exceeds device allocation limit");
         return new Buffer(new Resource(driver.allocate(descriptor), false), descriptor, 0, descriptor.bytes());

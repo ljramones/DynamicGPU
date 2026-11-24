@@ -235,6 +235,23 @@ adapter-owned padded allocation if a storage handle is needed. Host arrays and
 mapped ByteBuffer views are limited by Java's integer indexing; larger allocations
 can be transferred/mapped in slices.
 
+**Memory pools (1.5.0).** Buffers are ranges of pooled blocks, so most allocations never reach the driver.
+- **Blocks:** each block is one large backend buffer, a 64 MiB `VkBuffer` with its memory or an `MTLBuffer`, kept per
+  placement. Buffers start at a multiple of 256 bytes (or the device's larger offset alignment).
+- **Large buffers:** buffers over 16 MiB get a dedicated block, freed with them.
+- **Reuse:** freed ranges merge with their neighbours, and one empty block is kept to absorb churn.
+- **Staging:** uploads, downloads and fills use pooled shared staging, and the Metal bridge no longer creates a
+  buffer per transfer.
+- **Contents:** a new buffer's contents are undefined, because memory is reused. Fill or upload before reading.
+- **Stats:** `GpuDevice.memoryStats()` reports the blocks held, the bytes used, the live allocations and the driver
+  allocations made so far.
+- **Measured on an M4 Max:**
+  - 1,000 small buffers cost one driver allocation.
+  - Allocating and closing a buffer went from 1,781 to 336 ns on native Metal, and from 9,908 to 782 ns on MoltenVK.
+  - A small upload-and-download round trip is unchanged: its time is in submission and waiting, not allocation.
+- **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
+  only creates and destroys its blocks.
+
 Devices and children are confined to the creating thread. Each encoder snapshots
 upload/parameter bytes at recording time and retains allocations/pipelines.
 Slices retain storage independently. Closing a handle is idempotent and invalidates
