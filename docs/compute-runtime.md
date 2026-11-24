@@ -275,6 +275,44 @@ state:
 - **Host cost:** on native Metal it is now about 67 µs of a 390 µs submission. On MoltenVK, submitting (descriptor
   pools, command buffers, fences per submission) is the largest host cost, which recorded replay addresses.
 
+**Recordings (1.5.0).** `encoder.record()` ends an encoder as a `GpuRecording`, and `queue.submit(recording)` runs
+it as often as needed. Between runs, `parameters(i, bytes)`, `bind(i, slot, buffer)` and `groups(i, dims)` change
+dispatch `i`, each validated like the original dispatch.
+
+```java
+GpuRecording step;
+try (var e = device.encoder()) {
+    e.dispatch(attention, ...).dispatch(mlp, ...);   // a decode step
+    step = e.record();
+}
+for (int token = 0; token < n; token++) {
+    try (var m = input.map(Access.WRITE)) { m.bytes().put(nextToken()); }   // allowed between runs
+    step.parameters(0, positionParameters(token));
+    queue.submit(step).await(timeout);
+}
+step.close();
+```
+
+- **No readbacks:** a recording cannot contain downloads or error checks, because readbacks are single-use. Uploads
+  replay the bytes they recorded.
+- **One run at a time:** submitting, changing or closing a recording waits for its run in flight.
+- **Lifetime:** a recording holds its buffers and pipelines until it is closed, even if their handles are closed.
+  They count as in use, blocking host mapping, only while a run is in flight, and submitting while one of them is
+  mapped is rejected.
+- **Backends:**
+  - **Vulkan:** each recording keeps its command buffer, descriptor sets, staging, fence and query pool, and
+    re-records only after a change. A descriptor update invalidates command buffers, so rebinding re-records too.
+  - **Metal:** command buffers are single-use, so Metal re-encodes the already-validated list.
+- **Measured** (50 small dispatches):
+
+  | Driver | Submit, re-encoding | Submit, replay | Encode, submit and wait | Replay and wait |
+  |---|---|---|---|---|
+  | lavapipe | ~200 µs | 30–35 µs | | |
+  | MoltenVK | 177 µs | 119 µs | 762 µs | 665 µs |
+  | native Metal | | | 419 µs | 375 µs |
+
+  MoltenVK translates the command buffer to Metal on every submit, which limits it.
+
 Devices and children are confined to the creating thread. Each encoder snapshots
 upload/parameter bytes at recording time and retains allocations/pipelines.
 Slices retain storage independently. Closing a handle is idempotent and invalidates

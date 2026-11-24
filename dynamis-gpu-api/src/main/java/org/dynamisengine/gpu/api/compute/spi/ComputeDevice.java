@@ -65,7 +65,13 @@ public final class ComputeDevice implements GpuDevice {
         return new Pipeline(new Resource(driver.pipeline(descriptor), true), descriptor);
     }
     @Override public GpuCommandEncoder encoder() { check(); return new Encoder(); }
-    @Override public GpuQueue queue() { check(); return this::submit; }
+    @Override public GpuQueue queue() {
+        check();
+        return new GpuQueue() {
+            @Override public GpuSubmission submit(GpuCommandEncoder encoder) { return ComputeDevice.this.submit(encoder); }
+            @Override public GpuSubmission submit(GpuRecording recording) { return ComputeDevice.this.submit(recording); }
+        };
+    }
 
     private final class Resource {
         final Object nativeObject;
@@ -144,6 +150,8 @@ public final class ComputeDevice implements GpuDevice {
     }
     private final class Encoder implements GpuCommandEncoder {
         final List<Command> commands = new ArrayList<>();
+        /** The resources each command uses, parallel to {@code commands} (for recordings, which rebind). */
+        final List<List<Resource>> commandResources = new ArrayList<>();
         final Set<Resource> used = Collections.newSetFromMap(new IdentityHashMap<>());
         final List<GpuReadback> errorChecks = new ArrayList<>();
         boolean consumed;
@@ -159,23 +167,23 @@ public final class ComputeDevice implements GpuDevice {
         @Override public GpuCommandEncoder upload(GpuBuffer destination, byte[] data) {
             valid(); Buffer b = buffer(destination); b.usage(BufferUsage.TRANSFER_DESTINATION); aligned(b);
             require(data.length == b.bytes, "Upload byte count must equal destination range");
-            Region region = b.region(); byte[] snapshot = data.clone(); retain(b.resource); commands.add(new Upload(region, snapshot)); return this;
+            Region region = b.region(); byte[] snapshot = data.clone(); retain(b.resource); add(new Upload(region, snapshot), b.resource); return this;
         }
         @Override public GpuReadback download(GpuBuffer source) {
             valid(); Buffer b = buffer(source); b.usage(BufferUsage.TRANSFER_SOURCE); aligned(b);
             require(b.bytes <= Integer.MAX_VALUE, "Host readback exceeds Java array size");
-            Region region = b.region(); retain(b.resource); var readback = new GpuReadback(); commands.add(new Download(region, readback)); return readback;
+            Region region = b.region(); retain(b.resource); var readback = new GpuReadback(); add(new Download(region, readback), b.resource); return readback;
         }
         @Override public GpuCommandEncoder copy(GpuBuffer source, GpuBuffer destination) {
             valid(); Buffer a = buffer(source), b = buffer(destination);
             a.usage(BufferUsage.TRANSFER_SOURCE); b.usage(BufferUsage.TRANSFER_DESTINATION); aligned(a); aligned(b);
             require(a.bytes == b.bytes, "Copy ranges must have equal byte sizes");
             require(!overlap(a, b), "Overlapping device copy is unsupported");
-            Region ar = a.region(), br = b.region(); retain(a.resource); retain(b.resource); commands.add(new Copy(ar, br)); return this;
+            Region ar = a.region(), br = b.region(); retain(a.resource); retain(b.resource); add(new Copy(ar, br), a.resource, b.resource); return this;
         }
         @Override public GpuCommandEncoder fill(GpuBuffer destination, int pattern) {
             valid(); Buffer b = buffer(destination); b.usage(BufferUsage.TRANSFER_DESTINATION); aligned(b);
-            Region region = b.region(); retain(b.resource); commands.add(new Fill(region, pattern)); return this;
+            Region region = b.region(); retain(b.resource); add(new Fill(region, pattern), b.resource); return this;
         }
         @Override public GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, Dimensions groups) {
             valid(); require(pipeline instanceof ComputeDevice.Pipeline && pipeline.device() == ComputeDevice.this, "Cross-device or foreign pipeline");
@@ -195,9 +203,19 @@ public final class ComputeDevice implements GpuDevice {
             for (int i = 0; i < buffers.size(); i++) for (int j = i + 1; j < buffers.size(); j++)
                 require(!overlap(buffers.get(i), buffers.get(j)) || (!bound.get(i).access().writes() && !bound.get(j).access().writes()), "Writable dispatch bindings overlap");
             byte[] snapshot = parameters.clone(); retain(p.resource); buffers.forEach(b -> retain(b.resource));
-            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); return this;
+            List<Resource> rs = new ArrayList<>(); rs.add(p.resource); buffers.forEach(b -> rs.add(b.resource));
+            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); commandResources.add(rs); return this;
         }
+        void add(Command c, Resource... rs) { commands.add(c); commandResources.add(List.of(rs)); }
         void release() { for (var r : used) { r.recorded--; r.release(); } used.clear(); }
+        @Override public GpuRecording record() {
+            valid();
+            require(errorChecks.isEmpty(), "A recording cannot check kernel errors (readbacks are single-use)");
+            require(commands.stream().noneMatch(c -> c instanceof Download), "A recording cannot contain downloads (readbacks are single-use)");
+            consumed = true; handles.remove(this);
+            for (var r : used) r.recorded--; // held, not in use, until a run is submitted
+            return new Recording(this);
+        }
         @Override public void close() {
             thread(); if (!consumed) {
                 consumed = true; handles.remove(this); release();
@@ -224,15 +242,20 @@ public final class ComputeDevice implements GpuDevice {
             throw ex;
         }
         e.consumed = true; handles.remove(e);
-        Submission submission = new Submission(e, job); pending.add(submission); return submission;
+        Submission submission = new Submission(e.errorChecks, e.commands, () -> { e.release(); e.commands.clear(); }, job);
+        pending.add(submission); return submission;
     }
     private final class Submission implements GpuSubmission {
-        final Encoder encoder;
+        final List<GpuReadback> errorChecks;
+        final List<Command> commands;
+        final Runnable done;
         final Job job;
         Status state = Status.PENDING;
         ComputeException error;
         java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
-        Submission(Encoder encoder, Job job) { this.encoder = encoder; this.job = job; }
+        Submission(List<GpuReadback> errorChecks, List<Command> commands, Runnable done, Job job) {
+            this.errorChecks = errorChecks; this.commands = commands; this.done = done; this.job = job;
+        }
         void poll() {
             try {
                 var result = job.poll();
@@ -243,7 +266,7 @@ public final class ComputeDevice implements GpuDevice {
                 gpuNanos = job.gpuNanos();
                 // Data-dependent kernel errors fail this submission only: the queue stays usable and the other
                 // readbacks keep their results for inspection.
-                for (var check : encoder.errorChecks) {
+                for (var check : errorChecks) {
                     var report = KernelErrors.parse(check.bytes());
                     if (report.any()) {
                         state = Status.FAILED;
@@ -253,9 +276,9 @@ public final class ComputeDevice implements GpuDevice {
                 }
             } catch (ComputeException ex) {
                 state = Status.FAILED; error = ex; queueFailure = ex;
-                for (var c : encoder.commands) if (c instanceof Download d) d.result().fail(ex);
+                for (var c : commands) if (c instanceof Download d) d.result().fail(ex);
             }
-            try { job.close(); } finally { encoder.release(); encoder.commands.clear(); }
+            try { job.close(); } finally { done.run(); }
         }
         @Override public Status status() { thread(); if (state == Status.PENDING) progress(); return state; }
         @Override public Optional<ComputeException> failure() { status(); return Optional.ofNullable(error); }
@@ -277,6 +300,95 @@ public final class ComputeDevice implements GpuDevice {
             if (error != null) throw error; return true;
         }
         @Override public void close() { if (!await(Duration.ofSeconds(30))) throw new ComputeException(TIMEOUT, "Submission still pending after 30 seconds; device retains its resources"); }
+    }
+    private final class Recording implements GpuRecording {
+        final List<Command> commands;
+        final List<List<Resource>> commandResources;
+        /** How many commands use each resource; each resource is retained once while counted. */
+        final Map<Resource, Integer> counts = new IdentityHashMap<>();
+        final int[] dispatchIndex;
+        final Prepared prepared;
+        Submission running;
+        boolean closed;
+        Recording(Encoder e) {
+            commands = new ArrayList<>(e.commands); commandResources = new ArrayList<>(e.commandResources);
+            for (var rs : commandResources) for (var r : rs) counts.merge(r, 1, Integer::sum);
+            for (var r : e.used) if (!counts.containsKey(r)) r.release(); // never the case; keeps the books exact
+            dispatchIndex = java.util.stream.IntStream.range(0, commands.size()).filter(i -> commands.get(i) instanceof Dispatch).toArray();
+            Prepared p;
+            try { p = driver.prepare(List.copyOf(commands)); }
+            catch (RuntimeException ex) { counts.keySet().forEach(Resource::release); throw ex; }
+            prepared = p; handles.add(this);
+        }
+        void valid() { check(); if (closed) throw new ComputeException(CLOSED, "Recording is closed"); }
+        /** Waits for the run in flight, so the recording can change. */
+        void idle() {
+            if (running != null && running.state == GpuSubmission.Status.PENDING && !running.await(Duration.ofSeconds(30)))
+                throw new ComputeException(TIMEOUT, "Recording still running after 30 seconds");
+        }
+        int index(int dispatch) {
+            require(dispatch >= 0 && dispatch < dispatchIndex.length, "No dispatch " + dispatch + " in a recording of " + dispatchIndex.length);
+            return dispatchIndex[dispatch];
+        }
+        @Override public int dispatches() { return dispatchIndex.length; }
+        @Override public GpuRecording parameters(int dispatch, byte[] parameters) {
+            valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
+            require(parameters.length == d.descriptor().layout().parameterBytes(), "Scalar parameter byte count differs from layout");
+            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), parameters.clone(), d.groups())); return this;
+        }
+        @Override public GpuRecording groups(int dispatch, Dimensions groups) {
+            valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
+            limits().validateGroups(d.descriptor().localSize(), groups);
+            idle(); commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), d.bindings(), d.parameters(), groups)); return this;
+        }
+        @Override public GpuRecording bind(int dispatch, int slot, GpuBuffer buffer) {
+            valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
+            int position = -1;
+            for (int k = 0; k < d.bindings().size(); k++) if (d.bindings().get(k).slot() == slot) position = k;
+            require(position >= 0, "Dispatch " + dispatch + " has no buffer slot " + slot);
+            var spec = d.descriptor().layout().buffers().stream().filter(x -> x.slot() == slot).findFirst().orElseThrow();
+            Buffer b = buffer(buffer); b.usage(BufferUsage.STORAGE);
+            require(b.offset % limits().storageOffsetAlignment() == 0, "Misaligned storage binding at slot " + slot);
+            require(b.bytes >= spec.minimumBytes() && b.bytes <= limits().maxStorageRange(), "Invalid storage range at slot " + slot);
+            Region region = b.region();
+            // the dispatch's other bindings: writable overlaps are rejected as when recording
+            List<Resource> rs = commandResources.get(i);
+            for (int k = 0; k < d.bindings().size(); k++) {
+                if (k == position) continue;
+                var other = d.bindings().get(k).region();
+                boolean overlaps = rs.get(k + 1) == b.resource && b.offset < other.offset() + other.bytes() && other.offset() < b.offset + b.bytes;
+                require(!overlaps || (!spec.access().writes() && !d.bindings().get(k).access().writes()), "Writable dispatch bindings overlap");
+            }
+            idle();
+            var bound = new ArrayList<>(d.bindings()); bound.set(position, new Bound(slot, region, spec.access()));
+            commands.set(i, new Dispatch(d.pipeline(), d.descriptor(), List.copyOf(bound), d.parameters(), d.groups()));
+            var newRs = new ArrayList<>(rs); Resource old = newRs.set(position + 1, b.resource); commandResources.set(i, newRs);
+            if (counts.merge(b.resource, 1, Integer::sum) == 1) b.resource.retain();
+            if (counts.merge(old, -1, Integer::sum) == 0) { counts.remove(old); old.release(); }
+            return this;
+        }
+        @Override public void close() {
+            thread(); if (closed) return;
+            idle(); closed = true; handles.remove(this);
+            try { prepared.close(); } finally { counts.keySet().forEach(Resource::release); counts.clear(); }
+        }
+    }
+    private GpuSubmission submit(GpuRecording recording) {
+        check(); progress(); if (queueFailure != null) throw queueFailure;
+        require(recording instanceof ComputeDevice.Recording r0 && handles.contains(recording), "Foreign or closed recording");
+        Recording r = (Recording) recording; r.valid(); r.idle();
+        var inUse = List.copyOf(r.counts.keySet());
+        for (var res : inUse) require(!res.mapped, "A buffer of the recording is mapped; close the mapping before submitting");
+        for (var res : inUse) res.recorded++;
+        Job job;
+        try { job = driver.submit(r.prepared, List.copyOf(r.commands)); }
+        catch (RuntimeException ex) {
+            for (var res : inUse) res.recorded--;
+            if (ex instanceof ComputeException error && error.code() == DEVICE_LOST) queueFailure = error;
+            throw ex;
+        }
+        Submission submission = new Submission(List.of(), List.of(), () -> { for (var res : inUse) res.recorded--; }, job);
+        r.running = submission; pending.add(submission); return submission;
     }
     private void progress() {
         while (!pending.isEmpty()) {

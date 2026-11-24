@@ -46,8 +46,11 @@ The two biggest costs outside the kernels today are allocation and re-recording.
   time per dependent dispatch.
 - **Done so far:** blocking waits, Metal encoder sharing, and narrower Vulkan barriers. The results are in
   `docs/compute-runtime.md`, under submission costs.
-- **Next:** replay, aimed at the per-submission setup (descriptor pools and sets, command buffers, fences), then
-  per-dispatch timing and the pipeline cache.
+- **Replay:** done (`GpuRecording`).
+  - **lavapipe:** submitting fell from about 200 to 30–35 µs.
+  - **MoltenVK:** about a third, because it translates to Metal on every submit.
+  - **Native Metal:** only the validation is saved.
+- **Next:** the memory budget, per-dispatch timing and the pipeline cache.
 - **Memory pools:**
   - Sub-allocate buffers from large device allocations (a per-placement pool with size classes and a free list).
   - Recycle the staging memory that uploads and downloads use today, one fresh buffer per transfer, through a ring.

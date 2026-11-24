@@ -59,7 +59,7 @@ final class VulkanComputeDriver implements ComputeDriver {
             var out = stack.mallocPointer(1); check(vkCreateDevice(physical, info, null, out), "create compute device");
             device = created = new VkDevice(out.get(0), physical, info);
             vkGetDeviceQueue(device, family, 0, out); queue = new VkQueue(out.get(0), device);
-            var poolInfo = VkCommandPoolCreateInfo.calloc(stack).sType$Default().flags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT).queueFamilyIndex(family);
+            var poolInfo = VkCommandPoolCreateInfo.calloc(stack).sType$Default().flags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT).queueFamilyIndex(family);
             var handle = stack.mallocLong(1); check(vkCreateCommandPool(device, poolInfo, null, handle), "create compute command pool"); pool = createdPool = handle.get(0);
         } catch (RuntimeException | Error ex) {
             if (createdPool != 0) vkDestroyCommandPool(created, createdPool, null);
@@ -201,96 +201,162 @@ final class VulkanComputeDriver implements ComputeDriver {
     private static void copy(VkCommandBuffer cmd, long src, long srcOffset, long dst, long dstOffset, long bytes, MemoryStack stack) {
         var region = VkBufferCopy.calloc(1, stack); region.get(0).srcOffset(srcOffset).dstOffset(dstOffset).size(bytes); vkCmdCopyBuffer(cmd, src, dst, region);
     }
-    @Override public Job submit(List<Command> commands) {
-        VkCommandBuffer cmd = null; long descriptorPool = 0, fence = 0, queries = 0;
-        List<Allocation> stages = new ArrayList<>(); Map<GpuReadback, Allocation> reads = new LinkedHashMap<>();
-        try (var stack = MemoryStack.stackPush()) {
-            int dispatches = 0, descriptors = 0;
-            for (var command : commands) if (command instanceof Dispatch d) { dispatches++; descriptors += d.bindings().size(); }
-            if (dispatches > 0) {
-                var sizes = VkDescriptorPoolSize.calloc(1, stack); sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(Math.max(1, descriptors));
-                var info = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(dispatches).pPoolSizes(sizes);
-                var out = stack.mallocLong(1); check(vkCreateDescriptorPool(device, info, null, out), "create submission descriptor pool"); descriptorPool = out.get(0);
-            }
-            var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(pool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
-            var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer"); cmd = new VkCommandBuffer(pointer.get(0), device);
-            check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default().flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "begin compute commands");
-            if (timestampBits > 0) {
-                var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(2);
-                var out = stack.mallocLong(1); check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
-                vkCmdResetQueryPool(cmd, queries, 0, 2);
-                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0);
-            }
-            for (var command : commands) {
-                try (var local = MemoryStack.stackPush()) {
-                    barrier(cmd, false, local);
-                    switch (command) {
-                        case Fill f -> vkCmdFillBuffer(cmd, buffer(f.destination()), offset(f.destination()), f.destination().bytes(), f.pattern());
-                        case Copy c -> copy(cmd, buffer(c.source()), offset(c.source()), buffer(c.destination()), offset(c.destination()), c.source().bytes(), local);
+    /**
+     * The GPU objects of one command list: a descriptor set per dispatch, staging for uploads and downloads, a
+     * timestamp query pool, a fence and a command buffer. A one-shot submission builds one and frees it on
+     * completion; a recording keeps it and resubmits, re-recording only when parameters or bindings change.
+     */
+    private final class Batch implements Prepared {
+        long descriptorPool, fence, queries;
+        long[] sets;                       // per command index; 0 for non-dispatches
+        Allocation[] stages;               // per command index: upload source or download destination
+        final Map<GpuReadback, Allocation> reads = new LinkedHashMap<>();
+        VkCommandBuffer cmd;
+        List<Command> recorded;            // the commands the command buffer holds
+
+        Batch(List<Command> commands) {
+            try (var stack = MemoryStack.stackPush()) {
+                int n = commands.size(), dispatches = 0, descriptors = 0;
+                sets = new long[n]; stages = new Allocation[n];
+                for (var command : commands) if (command instanceof Dispatch d) { dispatches++; descriptors += d.bindings().size(); }
+                var out = stack.mallocLong(1);
+                if (dispatches > 0) {
+                    var sizes = VkDescriptorPoolSize.calloc(1, stack); sizes.get(0).type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(Math.max(1, descriptors));
+                    var info = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(dispatches).pPoolSizes(sizes);
+                    check(vkCreateDescriptorPool(device, info, null, out), "create submission descriptor pool"); descriptorPool = out.get(0);
+                }
+                for (int i = 0; i < n; i++) {
+                    switch (commands.get(i)) {
+                        case Dispatch d -> {
+                            var setInfo = VkDescriptorSetAllocateInfo.calloc(stack).sType$Default().descriptorPool(descriptorPool).pSetLayouts(stack.longs(((Pipeline) d.pipeline()).setLayout()));
+                            check(vkAllocateDescriptorSets(device, setInfo, out), "allocate compute descriptor set"); sets[i] = out.get(0);
+                            write(sets[i], d);
+                        }
                         case Upload u -> {
-                            var stage = (Allocation) allocate(new BufferDescriptor(u.data().length, Set.of(BufferUsage.TRANSFER_SOURCE), Placement.SHARED)); stages.add(stage);
+                            var stage = (Allocation) allocate(new BufferDescriptor(u.data().length, Set.of(BufferUsage.TRANSFER_SOURCE), Placement.SHARED)); stages[i] = stage;
                             map(stage, 0, stage.bytes(), Access.WRITE).put(u.data()); unmap(stage, Access.WRITE);
-                            copy(cmd, stage.buffer(), stage.base(), buffer(u.destination()), offset(u.destination()), u.destination().bytes(), local);
                         }
                         case Download d -> {
-                            var stage = (Allocation) allocate(new BufferDescriptor(d.source().bytes(), Set.of(BufferUsage.TRANSFER_DESTINATION), Placement.SHARED)); stages.add(stage); reads.put(d.result(), stage);
-                            copy(cmd, buffer(d.source()), offset(d.source()), stage.buffer(), stage.base(), stage.bytes(), local);
+                            var stage = (Allocation) allocate(new BufferDescriptor(d.source().bytes(), Set.of(BufferUsage.TRANSFER_DESTINATION), Placement.SHARED));
+                            stages[i] = stage; reads.put(d.result(), stage);
                         }
-                        case Dispatch d -> {
-                            var p = (Pipeline) d.pipeline();
-                            var setInfo = VkDescriptorSetAllocateInfo.calloc(local).sType$Default().descriptorPool(descriptorPool).pSetLayouts(local.longs(p.setLayout()));
-                            var set = local.mallocLong(1); check(vkAllocateDescriptorSets(device, setInfo, set), "allocate compute descriptor set");
-                            var writes = VkWriteDescriptorSet.calloc(d.bindings().size(), local);
-                            for (int i = 0; i < d.bindings().size(); i++) {
-                                var bound = d.bindings().get(i); var info = VkDescriptorBufferInfo.calloc(1, local); info.get(0).buffer(buffer(bound.region())).offset(offset(bound.region())).range(bound.region().bytes());
-                                writes.get(i).sType$Default().dstSet(set.get(0)).dstBinding(bound.slot()).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(info);
+                        default -> { }
+                    }
+                }
+                if (timestampBits > 0) {
+                    var info = VkQueryPoolCreateInfo.calloc(stack).sType$Default().queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(2);
+                    check(vkCreateQueryPool(device, info, null, out), "create timestamp query pool"); queries = out.get(0);
+                }
+                check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
+                var allocation = VkCommandBufferAllocateInfo.calloc(stack).sType$Default().commandPool(pool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
+                var pointer = stack.mallocPointer(1); check(vkAllocateCommandBuffers(device, allocation, pointer), "allocate submission command buffer");
+                cmd = new VkCommandBuffer(pointer.get(0), device);
+                record(commands);
+            } catch (RuntimeException | Error ex) { close(); throw ex; }
+        }
+
+        private void write(long set, Dispatch d) {
+            try (var stack = MemoryStack.stackPush()) {
+                var writes = VkWriteDescriptorSet.calloc(d.bindings().size(), stack);
+                for (int i = 0; i < d.bindings().size(); i++) {
+                    var bound = d.bindings().get(i); var info = VkDescriptorBufferInfo.calloc(1, stack); info.get(0).buffer(buffer(bound.region())).offset(offset(bound.region())).range(bound.region().bytes());
+                    writes.get(i).sType$Default().dstSet(set).dstBinding(bound.slot()).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).descriptorCount(1).pBufferInfo(info);
+                }
+                vkUpdateDescriptorSets(device, writes, null);
+            }
+        }
+
+        /** (Re-)records the command buffer for {@code commands}, which match the batch's command list in shape. */
+        void record(List<Command> commands) {
+            try (var stack = MemoryStack.stackPush()) {
+                if (recorded != null) check(vkResetCommandBuffer(cmd, 0), "reset compute commands");
+                check(vkBeginCommandBuffer(cmd, VkCommandBufferBeginInfo.calloc(stack).sType$Default()), "begin compute commands");
+                if (queries != 0) { vkCmdResetQueryPool(cmd, queries, 0, 2); vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0); }
+                for (int i = 0; i < commands.size(); i++) {
+                    try (var local = MemoryStack.stackPush()) {
+                        barrier(cmd, false, local);
+                        switch (commands.get(i)) {
+                            case Fill f -> vkCmdFillBuffer(cmd, buffer(f.destination()), offset(f.destination()), f.destination().bytes(), f.pattern());
+                            case Copy c -> copy(cmd, buffer(c.source()), offset(c.source()), buffer(c.destination()), offset(c.destination()), c.source().bytes(), local);
+                            case Upload u -> copy(cmd, stages[i].buffer(), stages[i].base(), buffer(u.destination()), offset(u.destination()), u.destination().bytes(), local);
+                            case Download d -> copy(cmd, buffer(d.source()), offset(d.source()), stages[i].buffer(), stages[i].base(), stages[i].bytes(), local);
+                            case Dispatch d -> {
+                                var p = (Pipeline) d.pipeline();
+                                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline());
+                                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout(), 0, local.longs(sets[i]), null);
+                                if (d.parameters().length > 0) vkCmdPushConstants(cmd, p.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, local.bytes(d.parameters()));
+                                vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
                             }
-                            vkUpdateDescriptorSets(device, writes, null); vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline());
-                            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout(), 0, set, null);
-                            if (d.parameters().length > 0) vkCmdPushConstants(cmd, p.layout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, local.bytes(d.parameters()));
-                            vkCmdDispatch(cmd, d.groups().x(), d.groups().y(), d.groups().z());
                         }
                     }
                 }
+                if (queries != 0) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
+                barrier(cmd, true, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
+                recorded = List.copyOf(commands);
             }
-            if (queries != 0) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
-            barrier(cmd, true, stack); check(vkEndCommandBuffer(cmd), "end compute commands");
-            var out = stack.mallocLong(1); check(vkCreateFence(device, VkFenceCreateInfo.calloc(stack).sType$Default(), null, out), "create submission fence"); fence = out.get(0);
-            var submit = VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd.address())); check(vkQueueSubmit(queue, submit, fence), "submit compute commands");
-        } catch (RuntimeException | Error ex) { cleanup(cmd, descriptorPool, fence, queries, stages); throw ex; }
-        final VkCommandBuffer submitted = cmd; final long submittedPool = descriptorPool, submittedFence = fence, submittedQueries = queries;
-        return new Job() {
-            private OptionalLong gpuNanos = OptionalLong.empty();
-            @Override public OptionalLong gpuNanos() { return gpuNanos; }
-            @Override public boolean await(long nanos) {
-                int r = vkWaitForFences(device, new long[] {submittedFence}, true, Math.max(0, nanos));
-                if (r == VK_TIMEOUT) return false; check(r, "wait for submission fence"); return true;
+        }
+
+        /** Brings the batch up to date with {@code commands} (new parameters or bindings) and submits it. */
+        Job submit(List<Command> commands, boolean oneShot) {
+            if (recorded != null && !commands.equals(recorded)) {
+                boolean rerecord = false;
+                for (int i = 0; i < commands.size(); i++) {
+                    if (commands.get(i) instanceof Dispatch now && recorded.get(i) instanceof Dispatch before) {
+                        // updating a descriptor set invalidates command buffers that bound it, so rebinding re-records too
+                        if (!now.bindings().equals(before.bindings())) { write(sets[i], now); rerecord = true; }
+                        if (!java.util.Arrays.equals(now.parameters(), before.parameters()) || now.pipeline() != before.pipeline()
+                                || !now.groups().equals(before.groups())) rerecord = true;
+                    } else if (!commands.get(i).equals(recorded.get(i))) rerecord = true;
+                }
+                if (rerecord) record(commands); else recorded = List.copyOf(commands);
             }
-            @Override public GpuSubmission.Status poll() {
-                int status = vkGetFenceStatus(device, submittedFence); if (status == VK_NOT_READY) return GpuSubmission.Status.PENDING; check(status, "submission fence status");
-                if (submittedQueries != 0) {
-                    try (var stack = MemoryStack.stackPush()) {
-                        var ticks = stack.mallocLong(2);
-                        if (vkGetQueryPoolResults(device, submittedQueries, 0, 2, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-                            long mask = timestampBits >= 64 ? -1L : (1L << timestampBits) - 1;
-                            gpuNanos = OptionalLong.of(Math.round(((ticks.get(1) - ticks.get(0)) & mask) * timestampPeriod));
+            try (var stack = MemoryStack.stackPush()) {
+                check(vkResetFences(device, fence), "reset submission fence");
+                var submit = VkSubmitInfo.calloc(stack).sType$Default().pCommandBuffers(stack.pointers(cmd.address()));
+                check(vkQueueSubmit(queue, submit, fence), "submit compute commands");
+            }
+            return new Job() {
+                private OptionalLong gpuNanos = OptionalLong.empty();
+                @Override public OptionalLong gpuNanos() { return gpuNanos; }
+                @Override public boolean await(long nanos) {
+                    int r = vkWaitForFences(device, new long[] {fence}, true, Math.max(0, nanos));
+                    if (r == VK_TIMEOUT) return false; check(r, "wait for submission fence"); return true;
+                }
+                @Override public GpuSubmission.Status poll() {
+                    int status = vkGetFenceStatus(device, fence); if (status == VK_NOT_READY) return GpuSubmission.Status.PENDING; check(status, "submission fence status");
+                    if (queries != 0) {
+                        try (var stack = MemoryStack.stackPush()) {
+                            var ticks = stack.mallocLong(2);
+                            if (vkGetQueryPoolResults(device, queries, 0, 2, ticks, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                                long mask = timestampBits >= 64 ? -1L : (1L << timestampBits) - 1;
+                                gpuNanos = OptionalLong.of(Math.round(((ticks.get(1) - ticks.get(0)) & mask) * timestampPeriod));
+                            }
                         }
                     }
+                    reads.forEach((read, stage) -> {
+                        byte[] result = new byte[Math.toIntExact(stage.bytes())]; map(stage, 0, stage.bytes(), Access.READ).get(result); unmap(stage, Access.READ); read.complete(result);
+                    });
+                    return GpuSubmission.Status.COMPLETE;
                 }
-                reads.forEach((read, stage) -> {
-                    byte[] result = new byte[Math.toIntExact(stage.bytes())]; map(stage, 0, stage.bytes(), Access.READ).get(result); unmap(stage, Access.READ); read.complete(result);
-                });
-                return GpuSubmission.Status.COMPLETE;
-            }
-            @Override public void close() { cleanup(submitted, submittedPool, submittedFence, submittedQueries, stages); }
-        };
+                @Override public void close() { if (oneShot) Batch.this.close(); }
+            };
+        }
+
+        @Override public void close() {
+            if (fence != 0) { vkDestroyFence(device, fence, null); fence = 0; }
+            if (queries != 0) { vkDestroyQueryPool(device, queries, null); queries = 0; }
+            if (cmd != null) { vkFreeCommandBuffers(device, pool, cmd); cmd = null; }
+            if (descriptorPool != 0) { vkDestroyDescriptorPool(device, descriptorPool, null); descriptorPool = 0; }
+            if (stages != null) { for (var st : stages) if (st != null) releaseBuffer(st); stages = null; }
+        }
     }
-    private void cleanup(VkCommandBuffer cmd, long descriptorPool, long fence, long queries, List<Allocation> stages) {
-        if (fence != 0) vkDestroyFence(device, fence, null);
-        if (queries != 0) vkDestroyQueryPool(device, queries, null);
-        if (cmd != null) vkFreeCommandBuffers(device, pool, cmd);
-        if (descriptorPool != 0) vkDestroyDescriptorPool(device, descriptorPool, null); stages.forEach(this::releaseBuffer);
+
+    @Override public Job submit(List<Command> commands) {
+        var batch = new Batch(commands);
+        try { return batch.submit(commands, true); } catch (RuntimeException | Error ex) { batch.close(); throw ex; }
     }
+    @Override public Prepared prepare(List<Command> commands) { return new Batch(commands); }
+    @Override public Job submit(Prepared prepared, List<Command> commands) { return ((Batch) prepared).submit(commands, false); }
     @Override public void close() {
         pools.values().forEach(MemoryPool::destroyAll);
         vkDestroyCommandPool(device, pool, null); vkDestroyDevice(device, null); vkDestroyInstance(instance, null);

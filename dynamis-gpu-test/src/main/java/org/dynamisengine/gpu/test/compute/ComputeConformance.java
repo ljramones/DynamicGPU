@@ -176,6 +176,111 @@ public abstract class ComputeConformance {
         }
     }
 
+    private GpuBuffer mappable(int bytes) {
+        return device.allocate(new BufferDescriptor(bytes, EnumSet.of(BufferUsage.STORAGE, BufferUsage.MAP_WRITE, BufferUsage.TRANSFER_SOURCE,
+                BufferUsage.TRANSFER_DESTINATION), Placement.SHARED));
+    }
+    private float[] read(GpuBuffer b, int n) {
+        try (var e = device.encoder()) {
+            var r = e.download(b); await(device.queue().submit(e));
+            var bb = ByteBuffer.wrap(r.bytes()).order(ByteOrder.nativeOrder()); float[] f = new float[n];
+            for (int i = 0; i < n; i++) f[i] = bb.getFloat(4 * i);
+            return f;
+        }
+    }
+    private static byte[] floats(int n, java.util.function.IntToDoubleFunction v) {
+        var b = ByteBuffer.allocate(4 * n).order(ByteOrder.nativeOrder()); for (int i = 0; i < n; i++) b.putFloat((float) v.applyAsDouble(i)); return b.array();
+    }
+
+    /**
+     * A recording replays: the host rewrites an input between runs; parameters, bindings and group counts change; a
+     * closed input handle stays alive while the recording holds it.
+     */
+    @Test void recordingsReplayWithChanges() {
+        int n = 256;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = mappable(n * 4); var c = buffer(n * 4, Placement.PRIVATE);
+             var d = buffer(n * 4, Placement.PRIVATE); var d2 = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n)) {
+            GpuRecording rec;
+            try (var e = device.encoder()) {
+                e.upload(a, floats(n, i -> i));                                                    // replays the same bytes
+                e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(n / 64, 1, 1)); // c = a + b
+                e.dispatch(p, Map.of(0, c, 1, b, 2, d), scalar(n), new Dimensions(n / 64, 1, 1)); // d = c + b = a + 2b
+                rec = e.record();
+            }
+            try (rec) {
+                assertEquals(2, rec.dispatches());
+                for (int run = 0; run < 5; run++) {
+                    final int k = run;
+                    try (var m = b.map(Access.WRITE)) { m.bytes().put(floats(n, i -> 10 * k + 0.5 * i)); }
+                    await(device.queue().submit(rec));
+                    float[] got = read(d, n);
+                    for (int i = 0; i < n; i++) assertEquals(i + 2 * (10 * k + 0.5f * i), got[i], "run " + run + " element " + i);
+                }
+                // parameters: only the first 64 elements of d are recomputed
+                try (var e = device.encoder()) { e.fill(d, Float.floatToRawIntBits(-1f)); await(device.queue().submit(e)); }
+                rec.parameters(1, scalar(64));
+                await(device.queue().submit(rec));
+                float[] got = read(d, n);
+                for (int i = 0; i < n; i++) assertEquals(i < 64 ? i + 2 * (40 + 0.5f * i) : -1f, got[i], "parameters, element " + i);
+                // bindings and group counts: write the second dispatch to d2, over the first 128 elements
+                rec.parameters(1, scalar(n)).bind(1, 2, d2).groups(1, new Dimensions(2, 1, 1));
+                try (var e = device.encoder()) { e.fill(d2, Float.floatToRawIntBits(-2f)); await(device.queue().submit(e)); }
+                await(device.queue().submit(rec));
+                got = read(d2, n);
+                for (int i = 0; i < n; i++) assertEquals(i < 128 ? i + 2 * (40 + 0.5f * i) : -2f, got[i], "rebind, element " + i);
+                // lifetime: closing a handle the recording uses does not free its storage
+                a.close();
+                await(device.queue().submit(rec));
+                assertEquals(0 + 2 * 40f, read(d2, 1)[0]);
+                // rejections
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> rec.parameters(1, new byte[8])).code());
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> rec.bind(1, 7, d)).code());
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> rec.parameters(5, scalar(n))).code());
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> rec.bind(0, 2, b)).code(), "writable overlap with input b");
+                try (var m = b.map(Access.WRITE)) {
+                    assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> device.queue().submit(rec)).code(), "input mapped");
+                }
+            }
+            assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, () -> device.queue().submit(rec)).code(), "closed");
+            try (var e = device.encoder()) {
+                e.download(c);
+                assertEquals(ComputeException.Code.INVALID_ARGUMENT, assertThrows(ComputeException.class, e::record).code(), "downloads cannot be recorded");
+            }
+        }
+    }
+
+    /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
+    @Test void replayBenchmark() {
+        Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");
+        int n = 64, dispatches = 50, iterations = 200;
+        try (var a = buffer(n * 4, Placement.PRIVATE); var b = buffer(n * 4, Placement.PRIVATE); var c = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n)) {
+            GpuRecording rec;
+            try (var e = device.encoder()) {
+                for (int d = 0; d < dispatches; d++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                rec = e.record();
+            }
+            try (rec) {
+                for (int round = 0; round < 3; round++) {
+                    long t0 = System.nanoTime();
+                    for (int it = 0; it < iterations; it++) {
+                        try (var e = device.encoder()) {
+                            for (int d = 0; d < dispatches; d++) e.dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                            await(device.queue().submit(e));
+                        }
+                    }
+                    long encoded = (System.nanoTime() - t0) / iterations;
+                    long t1 = System.nanoTime(), submitTime = 0;
+                    for (int it = 0; it < iterations; it++) {
+                        long s0 = System.nanoTime(); var s = device.queue().submit(rec); submitTime += System.nanoTime() - s0; await(s);
+                    }
+                    long replayed = (System.nanoTime() - t1) / iterations;
+                    System.out.printf("replay benchmark on %s, %d dispatches: encode+submit+wait %d us, replay+wait %d us (replay submit %d us)%n",
+                            device.adapter().name(), dispatches, encoded / 1000, replayed / 1000, submitTime / iterations / 1000);
+                }
+            }
+        }
+    }
+
     /** Where the device reports timestamps, a completed submission has a positive GPU time no longer than its wall time. */
     @Test void measuresGpuTimeWhereTimestampsAreReported() {
         int n = 1 << 20;

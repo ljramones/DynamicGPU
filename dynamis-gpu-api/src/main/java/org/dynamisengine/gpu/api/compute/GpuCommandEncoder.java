@@ -23,5 +23,12 @@ public interface GpuCommandEncoder extends AutoCloseable {
     default GpuCommandEncoder checkErrors(GpuBuffer errors) {
         throw new ComputeException(ComputeException.Code.UNSUPPORTED, "kernel error buffers are not supported here");
     }
+    /**
+     * Ends the encoder as a {@link GpuRecording} to submit many times, instead of submitting it once. The encoder must
+     * hold no downloads or error checks. @since 1.5.0
+     */
+    default GpuRecording record() {
+        throw new ComputeException(ComputeException.Code.UNSUPPORTED, "recordings are not supported here");
+    }
     @Override void close();
 }
