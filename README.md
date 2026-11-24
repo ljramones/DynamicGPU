@@ -10,8 +10,12 @@ local Maven installation; it is not published to Maven Central.
 See [release notes and NeuralNetworks dependency setup](docs/releases/1.1.0.md)
 for the downloadable Maven bundle, exact coordinates, and supported platforms.
 
-CI (`.github/workflows/ci.yml`) runs the portable build and the Vulkan compute conformance suite on Mesa's
-lavapipe for every push. Metal and MoltenVK run locally before each release.
+CI (`.github/workflows/ci.yml`) runs on every push:
+- **Portable build.**
+- **Vulkan on lavapipe:** the Vulkan compute conformance suite on Mesa's lavapipe.
+- **Apple GPU:** the native Metal and MoltenVK hardware suites, on a self-hosted macOS arm64 runner (labels `metal`,
+  `moltenvk`). This job runs only on pushes, never for pull requests, so code from forks cannot reach that machine.
+  It waits in the queue while the runner is offline.
 
 ## Modules
 - `dynamis-gpu-api`: public GPU contracts (`org.dynamisengine.gpu.api`)
