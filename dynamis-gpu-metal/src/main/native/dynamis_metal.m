@@ -36,6 +36,9 @@ int dg_device_features(DGDevice *d, uint64_t *out) { START
     if ([m supportsFamily:MTLGPUFamilyMetal3]) f |= 16;
     out[0] = f; return 0;
 END(-1) }
+int dg_device_memory(DGDevice *d, uint64_t *out) { START
+    out[0] = d->device.recommendedMaxWorkingSetSize; out[1] = d->device.currentAllocatedSize; return 0;
+END(-1) }
 void dg_device_release(DGDevice *d) { START if (d) { [d->queue release]; [d->device release]; free(d); } END() }
 DGBuffer *dg_buffer_create(DGDevice *d, uint64_t bytes, int privateStorage) { START
     id<MTLBuffer> b = [d->device newBufferWithLength:bytes options:privateStorage ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared];

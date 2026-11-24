@@ -21,6 +21,8 @@ int dg_device_features(DGDevice *device, uint64_t *out);
 double dg_gpu_seconds(DGBatch *batch);
 /* ABI 4: block until a committed batch completes or nanos pass: 1 completed, 0 timed out, -1 error. */
 int dg_wait(DGBatch *batch, int64_t nanos);
+/* ABI 4: recommendedMaxWorkingSetSize and currentAllocatedSize. */
+int dg_device_memory(DGDevice *device, uint64_t *out);
 void dg_device_release(DGDevice *device);
 DGBuffer *dg_buffer_create(DGDevice *device, uint64_t bytes, int privateStorage);
 void *dg_buffer_contents(DGBuffer *buffer);

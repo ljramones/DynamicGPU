@@ -129,6 +129,9 @@ public abstract class ComputeConformance {
             assertEquals(blocks + 1, device.memoryStats().blockAllocations(), "a large buffer gets its own block");
         }
         assertEquals(after.reservedBytes(), device.memoryStats().reservedBytes(), "the dedicated block is freed with its buffer");
+        var stats = device.memoryStats();
+        assertTrue(stats.budgetBytes() > 0, "a pooled device reports its budget");
+        if (stats.deviceUsageBytes() >= 0) assertTrue(stats.deviceUsageBytes() >= stats.reservedBytes() / 2, "usage counts the pools: " + stats);
         System.out.println("memory pools: " + count + " buffers in " + (after.blockAllocations() - before.blockAllocations())
                 + " driver allocations; now " + device.memoryStats() + " on " + device.adapter().name());
     }

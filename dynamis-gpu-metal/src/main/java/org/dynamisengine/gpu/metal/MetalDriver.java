@@ -45,11 +45,17 @@ final class MetalDriver implements ComputeDriver {
         throw new IllegalStateException("buffer from no pool of this device");
     }
     @Override public org.dynamisengine.gpu.api.compute.MemoryStats memoryStats() {
-        long reserved = 0, used = 0, allocations = 0, made = 0; int blocks = 0;
-        for (var p : pools.values()) {
-            var st = p.stats(); reserved += st.reservedBytes(); used += st.usedBytes(); blocks += st.blocks(); allocations += st.allocations(); made += st.blockAllocations();
+        var total = new org.dynamisengine.gpu.api.compute.MemoryStats(0, 0, 0, 0, 0);
+        for (var p : pools.values()) total = total.plus(p.stats());
+        long[] budget = budget();
+        return total.withBudget(budget[0], budget[1]);
+    }
+    /** The recommended working-set size and the bytes allocated now. */
+    private long[] budget() {
+        try (var arena = Arena.ofConfined()) {
+            var values = arena.allocate(JAVA_LONG, 2); n.check("dg_device_memory", device, values);
+            return new long[] {values.getAtIndex(JAVA_LONG, 0), values.getAtIndex(JAVA_LONG, 1)};
         }
-        return new org.dynamisengine.gpu.api.compute.MemoryStats(reserved, used, blocks, allocations, made);
     }
     /** The CPU view of {@code bytes} at {@code offset} of a shared buffer. */
     private MemorySegment contents(MetalBuffer buffer, long offset, long bytes) {

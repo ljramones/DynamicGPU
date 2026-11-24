@@ -245,6 +245,13 @@ can be transferred/mapped in slices.
 - **Contents:** a new buffer's contents are undefined, because memory is reused. Fill or upload before reading.
 - **Stats:** `GpuDevice.memoryStats()` reports the blocks held, the bytes used, the live allocations and the driver
   allocations made so far.
+- **Budget:** it also reports the device's memory budget and the process's current usage (`headroomBytes()` is the
+  difference).
+  - **Vulkan:** `VK_EXT_memory_budget`, enabled where present, over the device-local heaps. Without it, the heap sizes
+    and unknown usage.
+  - **Metal:** `recommendedMaxWorkingSetSize` and `currentAllocatedSize`.
+  - **Measured:** about 115 GB on an M4 Max, natively and through MoltenVK, and 14.9 GB on lavapipe in the
+    container.
 - **Measured on an M4 Max:**
   - 1,000 small buffers cost one driver allocation.
   - Allocating and closing a buffer went from 1,781 to 336 ns on native Metal, and from 9,908 to 782 ns on MoltenVK.

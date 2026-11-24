@@ -29,6 +29,8 @@ final class VulkanComputeDriver implements ComputeDriver {
     private final VkQueue queue;
     private final long pool;
     private final VulkanFeatures features;
+    /** Whether VK_EXT_memory_budget is enabled (budget and usage per heap). */
+    private final boolean memoryBudget;
     /** Every pooled range starts at a multiple of this: at least 256 and the device's buffer offset alignments. */
     private final long alignment;
     /** Valid bits of the compute queue's timestamps (0: none) and nanoseconds per tick. */
@@ -51,6 +53,8 @@ final class VulkanComputeDriver implements ComputeDriver {
             timestampBits = timestampPeriod > 0 ? VulkanProvider.timestampBits(physical, family) : 0;
             var info = VkDeviceCreateInfo.calloc(stack).sType$Default().pQueueCreateInfos(qi).pNext(features.enableChain(stack));
             List<String> extensions = new ArrayList<>(features.extensions());
+            memoryBudget = VulkanProvider.extension(physical, "VK_EXT_memory_budget");
+            if (memoryBudget) extensions.add("VK_EXT_memory_budget");
             if (VulkanProvider.extension(physical, "VK_KHR_portability_subset")) extensions.add("VK_KHR_portability_subset");
             if (!extensions.isEmpty()) {
                 var names = stack.mallocPointer(extensions.size()); for (var name : extensions) names.put(stack.UTF8(name)); names.flip();
@@ -108,16 +112,32 @@ final class VulkanComputeDriver implements ComputeDriver {
             if (buffer != 0) vkDestroyBuffer(device, buffer, null); if (memory != 0) vkFreeMemory(device, memory, null); throw ex;
         }
     }
+    /** The device-local heaps' budget and usage (VK_EXT_memory_budget), or their size and unknown usage. */
+    private long[] budget() {
+        try (var stack = MemoryStack.stackPush()) {
+            var properties = VkPhysicalDeviceMemoryProperties2.calloc(stack).sType$Default();
+            var budgets = VkPhysicalDeviceMemoryBudgetPropertiesEXT.calloc(stack).sType$Default();
+            if (memoryBudget) properties.pNext(budgets.address());
+            VK11.vkGetPhysicalDeviceMemoryProperties2(physical, properties);
+            var memory = properties.memoryProperties();
+            long budget = 0, usage = 0;
+            for (int h = 0; h < memory.memoryHeapCount(); h++) {
+                if ((memory.memoryHeaps(h).flags() & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) continue;
+                budget += memoryBudget ? budgets.heapBudget(h) : memory.memoryHeaps(h).size();
+                usage += memoryBudget ? budgets.heapUsage(h) : 0;
+            }
+            return new long[] {budget, memoryBudget ? usage : -1};
+        }
+    }
     private void destroyBlock(Block b) {
         if (b.mapped() != 0) vkUnmapMemory(device, b.memory());
         vkDestroyBuffer(device, b.buffer(), null); vkFreeMemory(device, b.memory(), null);
     }
     @Override public org.dynamisengine.gpu.api.compute.MemoryStats memoryStats() {
-        long reserved = 0, used = 0, allocations = 0, made = 0; int blocks = 0;
-        for (var p : pools.values()) {
-            var st = p.stats(); reserved += st.reservedBytes(); used += st.usedBytes(); blocks += st.blocks(); allocations += st.allocations(); made += st.blockAllocations();
-        }
-        return new org.dynamisengine.gpu.api.compute.MemoryStats(reserved, used, blocks, allocations, made);
+        var total = new org.dynamisengine.gpu.api.compute.MemoryStats(0, 0, 0, 0, 0);
+        for (var p : pools.values()) total = total.plus(p.stats());
+        long[] budget = budget();
+        return total.withBudget(budget[0], budget[1]);
     }
     @Override public void releaseBuffer(Object object) {
         var a = (Allocation) object;
