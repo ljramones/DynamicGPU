@@ -116,8 +116,23 @@ GPU timestamps are not advertised in contract 1. Metal additionally checks each
 pipeline's maximum threads. Vulkan verifies the SPIR-V entry point and fixed
 `LocalSize`; `LocalSizeId` is explicitly unsupported. Vulkan supports 32-bit
 specialization constants; Metal ABI 1 rejects specialization requests and accepts
-pre-specialized executables. Fast math is disabled for runtime-compiled MSL.
-Applications own numerical tolerances; no cross-backend bitwise guarantee is made.
+pre-specialized executables.
+
+Floating point follows IEEE 754 by default, so a kernel computes what its source says: no reassociation, NaN and
+infinities preserved, and a product rounded before it is added unless the source asks for a fused multiply-add.
+- **Metal runtime compilation (macOS 15+):** MSL source is compiled with `MTLMathModeSafe` and precise math
+  functions, and with fp contraction off. `MTLMathModeSafe` alone still fuses `a*b + c`, so the bridge places
+  `#pragma METAL fp contract(off)` before the source (with `#line 1`, so diagnostics keep their line numbers). A
+  kernel can opt back in with its own `#pragma METAL fp contract(fast)`.
+- **Metal before macOS 15:** only fast math is disabled.
+- **Offline `metallib`s:** these keep whatever their compiler was told. Put the pragma in the source.
+- **Vulkan:** contraction is controlled by the SPIR-V (`NoContraction`, from `precise` in GLSL).
+- **MoltenVK:** it would otherwise compile every shader with Metal fast math, so the provider switches that off with
+  `VK_EXT_layer_settings` (`MVK_CONFIG_FAST_MATH_ENABLED = 0`). Other drivers ignore the setting.
+
+`ComputeConformance.floatingPointFollowsIeeeByDefault` checks all three properties on each hardware backend. Results
+can still differ between backends in built-in transcendental functions, in division on drivers that don't round it
+correctly, and in subnormals, which Apple GPUs flush to zero. Applications own their numerical tolerances.
 
 `PipelineDescriptor.cacheIdentity(backend, deviceId)` combines backend/device,
 kernel name/version, executable SHA-256, entry point, layout, local size,

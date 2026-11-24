@@ -13,6 +13,13 @@ class MetalComputeTest extends ComputeConformance {
         org.junit.jupiter.api.Assertions.assertEquals(ComputeException.Code.NATIVE_ERROR, error.code());
         org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("Metal"));
     }
+    /** Runtime MSL is strict from macOS 15 (MTLMathModeSafe and the contract pragma); earlier systems may fuse. */
+    @Override protected KernelBundle strictKernel() {
+        if (Integer.parseInt(System.getProperty("os.version").split("\\.")[0]) < 15) return null;
+        try (var stream = ComputeConformance.class.getResourceAsStream("/compute/fp_strict.metal")) {
+            return new KernelBundle("fp-strict", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, stream.readAllBytes())));
+        } catch (java.io.IOException e) { throw new AssertionError(e); }
+    }
     @Override protected GpuProvider provider() { return new MetalProvider(); }
     @Override protected KernelBundle kernel() {
         try {

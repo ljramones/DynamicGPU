@@ -35,13 +35,35 @@ public final class VulkanProvider implements GpuProvider {
             return false;
         }
     }
+    /** MoltenVK's fast-math setting and its value MVK_CONFIG_FAST_MATH_NEVER. */
+    static final String MOLTENVK_FAST_MATH = "MVK_CONFIG_FAST_MATH_ENABLED";
+    static final int MOLTENVK_FAST_MATH_NEVER = 0;
+
+    /**
+     * A headless instance. Floating point follows IEEE 754 on every driver: MoltenVK otherwise compiles shaders with
+     * Metal fast math, which reassociates arithmetic and assumes no NaN, so its fast math is switched off through
+     * VK_EXT_layer_settings (other drivers ignore the MoltenVK setting).
+     */
     static VkInstance instance() {
         loader();
         try (var stack = MemoryStack.stackPush()) {
             var app = VkApplicationInfo.calloc(stack).sType$Default().pApplicationName(stack.UTF8("DynamisGPU headless compute")).apiVersion(VK11.VK_API_VERSION_1_1);
             var info = VkInstanceCreateInfo.calloc(stack).sType$Default().pApplicationInfo(app);
+            List<String> extensions = new ArrayList<>();
             if (extension(null, "VK_KHR_portability_enumeration")) {
-                info.flags(1).ppEnabledExtensionNames(stack.pointers(stack.UTF8("VK_KHR_portability_enumeration")));
+                info.flags(1); extensions.add("VK_KHR_portability_enumeration");
+            }
+            if (extension(null, EXTLayerSettings.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME)) {
+                extensions.add(EXTLayerSettings.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+                var value = stack.malloc(4).order(ByteOrder.nativeOrder()).putInt(0, MOLTENVK_FAST_MATH_NEVER);
+                var setting = VkLayerSettingEXT.calloc(1, stack);
+                setting.get(0).pLayerName(stack.UTF8("MoltenVK")).pSettingName(stack.UTF8(MOLTENVK_FAST_MATH))
+                        .type(EXTLayerSettings.VK_LAYER_SETTING_TYPE_INT32_EXT).valueCount(1).pValues(value);
+                info.pNext(VkLayerSettingsCreateInfoEXT.calloc(stack).sType$Default().pSettings(setting));
+            }
+            if (!extensions.isEmpty()) {
+                var names = stack.mallocPointer(extensions.size()); for (var name : extensions) names.put(stack.UTF8(name)); names.flip();
+                info.ppEnabledExtensionNames(names);
             }
             var out = stack.mallocPointer(1); check(vkCreateInstance(info, null, out), "create instance"); return new VkInstance(out.get(0), info);
         } catch (LinkageError | RuntimeException ex) {

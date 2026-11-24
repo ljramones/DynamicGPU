@@ -12,6 +12,11 @@ class VulkanComputeTest extends ComputeConformance {
         org.junit.jupiter.api.Assertions.assertEquals(ComputeException.Code.INVALID_ARGUMENT,
             org.junit.jupiter.api.Assertions.assertThrows(ComputeException.class, () -> device.pipeline(descriptor)).code());
     }
+    @Override protected KernelBundle strictKernel() {
+        try (var stream = ComputeConformance.class.getResourceAsStream("/compute/fp_strict.spv")) {
+            return new KernelBundle("fp-strict", "1", Map.of(Backend.VULKAN, new KernelBundle.Executable(KernelBundle.Format.SPIRV, stream.readAllBytes())));
+        } catch (java.io.IOException e) { throw new AssertionError(e); }
+    }
     @Override protected GpuProvider provider() { return new VulkanProvider(); }
     @Override protected KernelBundle kernel() {
         try (var stream = ComputeConformance.class.getResourceAsStream("/compute/vector_add.spv")) {

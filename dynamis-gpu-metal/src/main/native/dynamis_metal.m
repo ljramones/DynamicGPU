@@ -40,8 +40,21 @@ DGPipeline *dg_pipeline_create(DGDevice *d, const void *bytes, uint64_t size, in
     if (source) {
         NSString *text = [[NSString alloc] initWithBytes:bytes length:size encoding:NSUTF8StringEncoding];
         if (!text) { error(@"Invalid UTF-8 MSL source"); return NULL; }
-        MTLCompileOptions *options = [MTLCompileOptions new]; options.fastMathEnabled = NO;
-        library = [d->device newLibraryWithSource:text options:options error:&e]; [options release]; [text release];
+        // IEEE 754 by default. MTLMathModeSafe alone still fuses a*b + c into one rounding (measured on macOS 27),
+        // so the source is compiled with fp contraction off; a kernel may opt back in with its own
+        // `#pragma METAL fp contract(fast)`. #line 1 keeps compiler diagnostics on the caller's line numbers.
+        MTLCompileOptions *options = [MTLCompileOptions new]; NSString *compiled = text;
+        if (@available(macOS 15.0, *)) {
+            options.mathMode = MTLMathModeSafe;
+            options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+            compiled = [@"#pragma METAL fp contract(off)\n#line 1\n" stringByAppendingString:text];
+        } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+        }
+        library = [d->device newLibraryWithSource:compiled options:options error:&e]; [options release]; [text release];
     } else {
         dispatch_data_t data = dispatch_data_create(bytes, size, dispatch_get_global_queue(0, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
         library = [d->device newLibraryWithData:data error:&e]; dispatch_release(data);
