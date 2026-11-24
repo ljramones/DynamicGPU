@@ -190,8 +190,13 @@ hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers abov
 - `AccuracyContract`;
 - `Elementwise`, `Reduce`, `Scan` and `NanCheck` with tripwires.
 
-Next come the debug kernel builds, the reproducible mode and the cross-backend harness, then the shape registry,
-then contracts for `GemmF16`, `Softmax` and `AttentionF16`.
+Also done:
+- debug kernel builds (`DG_DEBUG`, `dg_in_range`);
+- reproducible mode (`KitOptions`);
+- the cross-backend harness (`CrossBackend`, in CI on Metal against MoltenVK);
+- contracts for `GemmF16`, `Softmax` and `AttentionF16`.
+
+Next comes the shape registry, then the 1.7.0 release.
 
 - **Shared plumbing:**
   - **Parameter-block builder:** fields named and checked against the manifest.

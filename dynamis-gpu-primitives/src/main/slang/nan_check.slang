@@ -6,6 +6,7 @@ struct Params
 {
     uint count;
     uint gridX;
+    uint xLength;   // the buffer length in elements, for debug builds
     DG_VIEW_FIELDS4(x)
 };
 
@@ -19,5 +20,7 @@ void nan_check(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
     uint i = dg_linear_thread(group, local, p.gridX, 256);
     if (i >= p.count) return;
-    if (!dg_is_finite(x[dg_at_linear(DG_VIEW4(p, x), i)])) dg_report_error(errors, DG_ERROR_NONFINITE, i);
+    uint xi = dg_at_linear(DG_VIEW4(p, x), i);
+    if (!dg_in_range(errors, xi, p.xLength, i)) return;
+    if (!dg_is_finite(x[xi])) dg_report_error(errors, DG_ERROR_NONFINITE, i);
 }

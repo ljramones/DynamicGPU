@@ -10,6 +10,8 @@ struct UnaryParams
 {
     uint count;
     uint gridX;
+    uint xLength;   // buffer lengths in elements, for debug builds
+    uint yLength;
     DG_VIEW_FIELDS4(x)
     DG_VIEW_FIELDS4(y)
 };
@@ -18,6 +20,9 @@ struct BinaryParams
 {
     uint count;
     uint gridX;
+    uint aLength;   // buffer lengths in elements, for debug builds
+    uint bLength;
+    uint yLength;
     DG_VIEW_FIELDS4(a)
     DG_VIEW_FIELDS4(b)
     DG_VIEW_FIELDS4(y)

@@ -240,3 +240,24 @@ try (var ew = Elementwise.create(device); var reduce = Reduce.create(device)) {
 
   Any kernel built with ShaderBuild gets them through `#include "dynamis/kit.slang"`.
 
+## Debug builds and reproducible mode (1.7.0)
+
+- **Debug builds:** `-Ddynamisgpu.kernels.debug=true`, or `new KitOptions(false, true).call(() -> Reduce.create(device))`
+  for one primitive. The kit primitives then compile with their bounds checks.
+  - **Checks:** every buffer access is checked against the buffer's length.
+  - **Out-of-range accesses:** they are skipped and reported with code 1 (`DG_ERROR_INDEX`) and the thread or row
+    index. The submission fails with `KERNEL_ERROR`.
+  - **Why:** buffers share pooled blocks, so an out-of-range write would otherwise corrupt a neighbouring buffer.
+  - **Normal builds:** the checks are compiled out through a specialization constant.
+  - **Kernel authors:** guard accesses with `dg_in_range(errors, index, length, at)` from `dynamis/kit.slang`.
+- **Reproducible mode:** `-Ddynamisgpu.reproducible=true`, or `new KitOptions(true, false)`. Primitives that have a
+  fixed-order algorithm choose it: `GemmF16` and `AttentionF16` use `TILED`. Results are then the same bits on every
+  device, as their contracts state (`contract().reproducible()`).
+- **The cross-backend harness:** `org.dynamisengine.gpu.test.compute.CrossBackend` runs an operation on two devices
+  and compares the results under its contract.
+  - **EXACT:** the same bits.
+  - **ULPS:** within twice the bound.
+  - **FORMULA:** a per-element tolerance.
+
+  It reports the first element beyond the contract.
+

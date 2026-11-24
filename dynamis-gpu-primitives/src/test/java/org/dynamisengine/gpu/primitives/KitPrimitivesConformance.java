@@ -322,4 +322,49 @@ abstract class KitPrimitivesConformance {
             }
         }
     }
+
+    /** Debug builds check every access yet give the same bits and report nothing for valid views. */
+    @Test void debugBuildsMatchNormalBuilds() {
+        var debugOptions = new org.dynamisengine.gpu.api.compute.kit.KitOptions(false, true);
+        int rows = 33, cols = 300;
+        float[] a = random(rows * cols, 21, 10, false), b = random(cols, 22, 10, false);
+        var mv = StridedView.matrix(rows, cols);
+        float[][] results = new float[2][];
+        for (int pass = 0; pass < 2; pass++) {
+            boolean debug = pass == 1;
+            try (var ew = debug ? debugOptions.call(() -> Elementwise.create(device)) : Elementwise.create(device);
+                 var reduce = debug ? debugOptions.call(() -> Reduce.create(device)) : Reduce.create(device);
+                 var scan = debug ? debugOptions.call(() -> Scan.create(device)) : Scan.create(device);
+                 var ga = buffer(4L * a.length); var gb = buffer(4L * b.length); var gy = buffer(4L * a.length);
+                 var gs = buffer(4L * a.length); var gr = buffer(4L * rows); var e = device.encoder()) {
+                e.upload(ga, bytes(a)).upload(gb, bytes(b));
+                ew.binary(e, Elementwise.Binary.MUL, ga, mv, gb, StridedView.contiguous(cols), gy, mv);
+                scan.rows(e, Reduce.Op.SUM, gy, mv, gs, mv);
+                reduce.rows(e, Reduce.Op.SUM, gs, mv, gr, StridedView.contiguous(rows));
+                var r1 = e.download(gs); var r2 = e.download(gr);
+                try (var s = device.queue().submit(e)) { assertTrue(s.await(WAIT), "debug " + debug); }
+                float[] all = new float[a.length + rows];
+                System.arraycopy(floats(r1), 0, all, 0, a.length);
+                System.arraycopy(floats(r2), 0, all, a.length, rows);
+                results[pass] = all;
+            }
+        }
+        for (int i = 0; i < results[0].length; i++) assertSameBits(results[0][i], results[1][i], "debug build, element " + i);
+    }
+
+    /** Reproducible mode makes the GEMM-based primitives choose the fixed-order algorithm. */
+    @Test void reproducibleModeChoosesFixedOrderAlgorithms() {
+        if (!device.capabilities().dataTypes().contains(org.dynamisengine.gpu.api.compute.GpuCapabilities.FP16)) return;
+        var reproducible = new org.dynamisengine.gpu.api.compute.kit.KitOptions(true, false);
+        try (var gemm = reproducible.call(() -> GemmF16.create(device));
+             var attention = reproducible.call(() -> AttentionF16.create(device, Precision.FP16))) {
+            assertEquals(GemmF16.Algorithm.TILED, gemm.algorithm());
+            assertTrue(gemm.contract().reproducible());
+            assertEquals("GemmF16.reference", gemm.contract().reference());
+            assertEquals(GemmF16.Algorithm.TILED, attention.algorithm());
+        }
+        try (var gemm = GemmF16.create(device)) {
+            assertEquals(gemm.algorithm() == GemmF16.Algorithm.TILED, gemm.contract().reproducible());
+        }
+    }
 }

@@ -1,6 +1,7 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
+import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.Checks;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import java.util.List;
@@ -83,6 +84,18 @@ public final class Softmax implements AutoCloseable {
     }
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "softmax_f32" : "softmax_f16"; }
+
+    /** The accuracy contract for {@code output}: bounded, because {@code exp} is the device's. @since 1.7.0 */
+    public static AccuracyContract contract(Precision output) {
+        return new AccuracyContract("Softmax, " + output + " output", List.of("FP32"), "FP32, fixed tree over 256 threads",
+                output == Precision.FP32 ? "FP32" : "FP32 rounded once to half", AccuracyContract.Order.DEVICE,
+                AccuracyContract.Bound.formula("for an unmasked element, with x = s - max and xbar the softmax-weighted mean of |x|: "
+                        + "|y - exact| <= (n + 10 + 2|x| + 2 xbar) 2^-24 exact + 2^-126"
+                        + (output == Precision.FP16 ? ", plus one rounding to half" : "") + "; masked elements are exactly 0"), "");
+    }
+
+    /** This instance's accuracy contract. @since 1.7.0 */
+    public AccuracyContract contract() { return contract(output); }
 
     /** The element type of the output. */
     public Precision output() { return output; }

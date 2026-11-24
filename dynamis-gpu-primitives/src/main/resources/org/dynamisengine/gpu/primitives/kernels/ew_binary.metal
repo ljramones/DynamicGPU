@@ -4,6 +4,8 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant bool fc_DG_DEBUG_0 [[function_constant(100)]];
+constant bool DG_DEBUG_0 = is_function_constant_defined(fc_DG_DEBUG_0) ? fc_DG_DEBUG_0 : false;
 uint dg_linear_group_0(uint3 group_0, uint gridX_0)
 {
     return group_0.y * gridX_0 + group_0.x;
@@ -61,21 +63,48 @@ uint dg_at_broadcast_0(const DgView_0 thread* v_3, uint4 i_2)
     return _S11;
 }
 
+void dg_report_error_0(uint device* errors_0, uint code_0, uint index_0)
+{
+    uint _S12 = atomic_fetch_or_explicit(((atomic_uint device*)(errors_0+int(0))), code_0, memory_order_relaxed);
+    uint _S13 = atomic_fetch_max_explicit(((atomic_uint device*)(errors_0+int(1))), ~index_0, memory_order_relaxed);
+    uint _S14 = atomic_fetch_add_explicit(((atomic_uint device*)(errors_0+int(2))), 1U, memory_order_relaxed);
+    return;
+}
+
+bool dg_in_range_0(uint device* errors_1, uint index_1, uint length_0, uint at_0)
+{
+    bool _S15;
+    if(!DG_DEBUG_0)
+    {
+        _S15 = true;
+    }
+    else
+    {
+        _S15 = index_1 < length_0;
+    }
+    if(_S15)
+    {
+        return true;
+    }
+    dg_report_error_0(errors_1, 1U, at_0);
+    return false;
+}
+
 constant uint fc_OP_0 [[function_constant(0)]];
 constant uint OP_0 = is_function_constant_defined(fc_OP_0) ? fc_OP_0 : 0U;
 bool dg_is_nan_0(float x_0)
 {
-    uint _S12 = (as_type<uint>((x_0)));
-    bool _S13;
-    if((_S12 & 2139095040U) == 2139095040U)
+    uint _S16 = (as_type<uint>((x_0)));
+    bool _S17;
+    if((_S16 & 2139095040U) == 2139095040U)
     {
-        _S13 = (_S12 & 8388607U) != 0U;
+        _S17 = (_S16 & 8388607U) != 0U;
     }
     else
     {
-        _S13 = false;
+        _S17 = false;
     }
-    return _S13;
+    return _S17;
 }
 
 float dg_max_0(float a_0, float b_0)
@@ -88,29 +117,29 @@ float dg_max_0(float a_0, float b_0)
     {
         return b_0;
     }
-    bool _S14;
+    bool _S18;
     if(a_0 == 0.0)
     {
-        _S14 = b_0 == 0.0;
+        _S18 = b_0 == 0.0;
     }
     else
     {
-        _S14 = false;
+        _S18 = false;
     }
-    if(_S14)
+    if(_S18)
     {
         return (as_type<float>(((as_type<uint>((a_0))) & (as_type<uint>((b_0))))));
     }
-    float _S15;
+    float _S19;
     if(a_0 > b_0)
     {
-        _S15 = a_0;
+        _S19 = a_0;
     }
     else
     {
-        _S15 = b_0;
+        _S19 = b_0;
     }
-    return _S15;
+    return _S19;
 }
 
 float dg_min_0(float a_1, float b_1)
@@ -123,29 +152,29 @@ float dg_min_0(float a_1, float b_1)
     {
         return b_1;
     }
-    bool _S16;
+    bool _S20;
     if(a_1 == 0.0)
     {
-        _S16 = b_1 == 0.0;
+        _S20 = b_1 == 0.0;
     }
     else
     {
-        _S16 = false;
+        _S20 = false;
     }
-    if(_S16)
+    if(_S20)
     {
         return (as_type<float>(((as_type<uint>((a_1))) | (as_type<uint>((b_1))))));
     }
-    float _S17;
+    float _S21;
     if(a_1 < b_1)
     {
-        _S17 = a_1;
+        _S21 = a_1;
     }
     else
     {
-        _S17 = b_1;
+        _S21 = b_1;
     }
-    return _S17;
+    return _S21;
 }
 
 float binary_0(float a_2, float b_2)
@@ -183,6 +212,9 @@ struct BinaryParams_0
 {
     uint count_0;
     uint gridX_2;
+    uint aLength_0;
+    uint bLength_0;
+    uint yLength_0;
     uint aOffset_0;
     uint aExtent0_0;
     uint aStride0_0;
@@ -215,15 +247,17 @@ struct BinaryParams_0
 struct KernelContext_0
 {
     BinaryParams_0 constant* p_0;
+    uint device* errors_2;
     float device* y_0;
     float device* a_3;
     float device* b_3;
 };
 
-[[kernel]] void ew_binary(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], BinaryParams_0 constant* p_1 [[buffer(3)]], float device* y_1 [[buffer(2)]], float device* a_4 [[buffer(0)]], float device* b_4 [[buffer(1)]])
+[[kernel]] void ew_binary(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], BinaryParams_0 constant* p_1 [[buffer(4)]], uint device* errors_3 [[buffer(3)]], float device* y_1 [[buffer(2)]], float device* a_4 [[buffer(0)]], float device* b_4 [[buffer(1)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
+    (&kernelContext_0)->errors_2 = errors_3;
     (&kernelContext_0)->y_0 = y_1;
     (&kernelContext_0)->a_3 = a_4;
     (&kernelContext_0)->b_3 = b_4;
@@ -233,17 +267,39 @@ struct KernelContext_0
         return;
     }
     DgView_0 yv_0 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
-    thread DgView_0 _S18 = yv_0;
-    uint4 _S19 = dg_coords_0(&_S18, i_3);
-    thread DgView_0 _S20 = yv_0;
-    uint _S21 = dg_at_0(&_S20, _S19);
-    float device* _S22 = (&kernelContext_0)->y_0+_S21;
-    thread DgView_0 _S23 = dg_view_0((&kernelContext_0)->p_0->aOffset_0, uint4((&kernelContext_0)->p_0->aExtent0_0, (&kernelContext_0)->p_0->aExtent1_0, (&kernelContext_0)->p_0->aExtent2_0, (&kernelContext_0)->p_0->aExtent3_0), uint4((&kernelContext_0)->p_0->aStride0_0, (&kernelContext_0)->p_0->aStride1_0, (&kernelContext_0)->p_0->aStride2_0, (&kernelContext_0)->p_0->aStride3_0));
-    uint _S24 = dg_at_broadcast_0(&_S23, _S19);
-    float device* _S25 = (&kernelContext_0)->a_3+_S24;
+    thread DgView_0 _S22 = yv_0;
+    uint4 _S23 = dg_coords_0(&_S22, i_3);
+    thread DgView_0 _S24 = dg_view_0((&kernelContext_0)->p_0->aOffset_0, uint4((&kernelContext_0)->p_0->aExtent0_0, (&kernelContext_0)->p_0->aExtent1_0, (&kernelContext_0)->p_0->aExtent2_0, (&kernelContext_0)->p_0->aExtent3_0), uint4((&kernelContext_0)->p_0->aStride0_0, (&kernelContext_0)->p_0->aStride1_0, (&kernelContext_0)->p_0->aStride2_0, (&kernelContext_0)->p_0->aStride3_0));
+    uint _S25 = dg_at_broadcast_0(&_S24, _S23);
     thread DgView_0 _S26 = dg_view_0((&kernelContext_0)->p_0->bOffset_0, uint4((&kernelContext_0)->p_0->bExtent0_0, (&kernelContext_0)->p_0->bExtent1_0, (&kernelContext_0)->p_0->bExtent2_0, (&kernelContext_0)->p_0->bExtent3_0), uint4((&kernelContext_0)->p_0->bStride0_0, (&kernelContext_0)->p_0->bStride1_0, (&kernelContext_0)->p_0->bStride2_0, (&kernelContext_0)->p_0->bStride3_0));
-    uint _S27 = dg_at_broadcast_0(&_S26, _S19);
-    *_S22 = binary_0(*_S25, *((&kernelContext_0)->b_3+_S27));
+    uint _S27 = dg_at_broadcast_0(&_S26, _S23);
+    thread DgView_0 _S28 = yv_0;
+    uint _S29 = dg_at_0(&_S28, _S23);
+    bool _S30 = dg_in_range_0((&kernelContext_0)->errors_2, _S25, (&kernelContext_0)->p_0->aLength_0, i_3);
+    bool _S31;
+    if(!_S30)
+    {
+        _S31 = true;
+    }
+    else
+    {
+        bool _S32 = dg_in_range_0((&kernelContext_0)->errors_2, _S27, (&kernelContext_0)->p_0->bLength_0, i_3);
+        _S31 = !_S32;
+    }
+    if(_S31)
+    {
+        _S31 = true;
+    }
+    else
+    {
+        bool _S33 = dg_in_range_0((&kernelContext_0)->errors_2, _S29, (&kernelContext_0)->p_0->yLength_0, i_3);
+        _S31 = !_S33;
+    }
+    if(_S31)
+    {
+        return;
+    }
+    *((&kernelContext_0)->y_0+_S29) = binary_0(*((&kernelContext_0)->a_3+_S25), *((&kernelContext_0)->b_3+_S27));
     return;
 }
 

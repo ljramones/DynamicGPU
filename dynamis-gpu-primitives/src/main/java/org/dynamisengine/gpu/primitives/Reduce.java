@@ -41,9 +41,10 @@ public final class Reduce implements AutoCloseable {
     private PipelineSet argmax;
     private final ParameterLayout layout = ParameterLayout.of(GemmF16.KERNELS, "reduce_rows");
     private final ParameterLayout argmaxLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_argmax");
+    private final DebugChecks debug;
     private boolean closed;
 
-    private Reduce(GpuDevice device) { this.device = device; }
+    private Reduce(GpuDevice device) { this.device = device; this.debug = new DebugChecks(device); }
 
     /** Reductions on {@code device}; pipelines compile on first use. */
     public static Reduce create(GpuDevice device) { return new Reduce(Checks.notNull(device, "device")); }
@@ -51,7 +52,8 @@ public final class Reduce implements AutoCloseable {
     private GpuComputePipeline pipeline(Op op) {
         if (closed) throw new IllegalStateException("closed");
         return rows.computeIfAbsent(op, o -> PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("reduce_rows",
-                List.of(Access.READ, Access.WRITE), Set.of(GpuCapabilities.FP32), Set.of(), Map.of("OP", o.ordinal()))))).get(0);
+                List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(),
+                debug.constants(Map.of("OP", o.ordinal())))))).get(0);
     }
 
     /** Records {@code y[..] = op over the last dimension of x[..]}. */
@@ -64,8 +66,13 @@ public final class Reduce implements AutoCloseable {
         long rowCount = Views.rowCount(x4);
         if (rowCount == 0) return encoder;
         var grid = Grid.linear(device.capabilities(), rowCount);
-        byte[] params = layout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).view("x", x4).view("y", y4).bytes();
-        return encoder.dispatch(pipeline(op), Map.of(0, x, 1, y), params, grid.groups(), "reduce." + op.name().toLowerCase());
+        byte[] params = layout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .u32("yLength", DebugChecks.length(y)).view("x", x4).view("y", y4).bytes();
+        var pipeline = pipeline(op);
+        debug.before(encoder);
+        encoder.dispatch(pipeline, Map.of(0, x, 1, y, 2, debug.buffer()), params, grid.groups(), "reduce." + op.name().toLowerCase());
+        debug.after(encoder);
+        return encoder;
     }
 
     /**
@@ -82,12 +89,16 @@ public final class Reduce implements AutoCloseable {
         long rowCount = Views.rowCount(x4);
         if (rowCount == 0) return encoder;
         if (argmax == null) {
-            argmax = PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("reduce_argmax", List.of(Access.READ, Access.WRITE),
-                    Set.of(GpuCapabilities.FP32), Set.of())));
+            argmax = PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("reduce_argmax",
+                    List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(), debug.constants(Map.of()))));
         }
         var grid = Grid.linear(device.capabilities(), rowCount);
-        byte[] params = argmaxLayout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).view("x", x4).view("y", i4).bytes();
-        return encoder.dispatch(argmax.get(0), Map.of(0, x, 1, indices), params, grid.groups(), "reduce.argmax");
+        byte[] params = argmaxLayout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .u32("yLength", DebugChecks.length(indices)).view("x", x4).view("y", i4).bytes();
+        debug.before(encoder);
+        encoder.dispatch(argmax.get(0), Map.of(0, x, 1, indices, 2, debug.buffer()), params, grid.groups(), "reduce.argmax");
+        debug.after(encoder);
+        return encoder;
     }
 
     static float identity(Op op) {
@@ -161,6 +172,7 @@ public final class Reduce implements AutoCloseable {
         closed = true;
         List<AutoCloseable> all = new java.util.ArrayList<>(rows.values());
         all.add(argmax);
+        all.add(debug);
         PipelineSet.closeAll(all.toArray(new AutoCloseable[0]));
     }
 }

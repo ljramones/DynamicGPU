@@ -1,7 +1,9 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
+import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.Checks;
+import org.dynamisengine.gpu.api.compute.kit.KitOptions;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import java.util.List;
 import java.util.Map;
@@ -153,9 +155,34 @@ public final class GemmF16 implements AutoCloseable {
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "gemm_f16" : "gemm_f16_h"; }
 
+    /** The fastest algorithm, or TILED in reproducible mode ({@link KitOptions#reproducible()}). */
     private static Algorithm fastest(GpuDevice device) {
+        if (KitOptions.current().reproducible()) return Algorithm.TILED;
         return supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED;
     }
+
+    /**
+     * The accuracy contract of {@code algorithm} writing {@code output}. TILED is fixed-order: bit for bit
+     * {@link #reference} (FP32 C) or {@link #referenceF16} (FP16 C) on every device. SIMDGROUP_MATRIX sums in the
+     * hardware's order within the same bound. @since 1.7.0
+     */
+    public static AccuracyContract contract(Algorithm algorithm, Precision output) {
+        String bound = "before alpha and beta, |C - exact| <= k 2^-24 sum |a b|"
+                + (output == Precision.FP16 ? "; then one rounding to half" : "");
+        String name = "GemmF16 " + algorithm + ", " + output + " C";
+        var inputs = List.of("FP16", "FP16");
+        String out = output + ", fl(fl(alpha acc) + fl(beta c))" + (output == Precision.FP16 ? " rounded once to half" : "");
+        if (algorithm == Algorithm.TILED) {
+            return new AccuracyContract(name, inputs, "FP32, in order of k", out, AccuracyContract.Order.FIXED,
+                    new AccuracyContract.Bound(AccuracyContract.Bound.Kind.EXACT, 0, "bit for bit the reference; " + bound),
+                    output == Precision.FP32 ? "GemmF16.reference" : "GemmF16.referenceF16");
+        }
+        return new AccuracyContract(name, inputs, "FP32, the hardware's order", out, AccuracyContract.Order.DEVICE,
+                AccuracyContract.Bound.formula(bound), "");
+    }
+
+    /** This instance's accuracy contract. @since 1.7.0 */
+    public AccuracyContract contract() { return contract(algorithm, output); }
 
     /** Whether {@code device} can run {@code algorithm}. */
     public static boolean supports(GpuDevice device, Algorithm algorithm) {

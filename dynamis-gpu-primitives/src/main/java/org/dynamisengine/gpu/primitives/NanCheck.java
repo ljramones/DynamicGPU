@@ -33,7 +33,8 @@ public final class NanCheck implements AutoCloseable {
     private NanCheck(GpuDevice device) {
         this.device = device;
         this.pipelines = PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("nan_check",
-                List.of(Access.READ, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of())));
+                List.of(Access.READ, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(),
+                Map.of("DG_DEBUG", org.dynamisengine.gpu.api.compute.kit.KitOptions.current().debug()))));
     }
 
     /** The check, compiled for {@code device}. */
@@ -47,7 +48,8 @@ public final class NanCheck implements AutoCloseable {
         long count = Checks.u32(x4.elements(), "element count");
         if (count == 0) return encoder;
         var grid = Grid.forThreads(device.capabilities(), count, 256);
-        byte[] params = layout.block().u32("count", count).u32("gridX", grid.gridX()).view("x", x4).bytes();
+        byte[] params = layout.block().u32("count", count).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .view("x", x4).bytes();
         return encoder.dispatch(pipelines.get(0), Map.of(0, x, 1, errors), params, grid.groups(), "nan_check");
     }
 

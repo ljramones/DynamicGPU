@@ -7,12 +7,15 @@ struct Params
 {
     uint rows;
     uint gridX;
+    uint xLength;   // buffer lengths in elements, for debug builds
+    uint yLength;
     DG_VIEW_FIELDS4(x)
     DG_VIEW_FIELDS4(y)
 };
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> x;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> y;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> errors;   // debug builds only
 [[vk::push_constant]] ConstantBuffer<Params> p;
 
 static const uint THREADS = 256;
@@ -42,7 +45,9 @@ void reduce_argmax(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint at = 0xFFFFFFFFu;
     for (uint j = t; j < n; j += THREADS)
     {
-        float v = x[dg_at(xv, uint4(c, j))];
+        uint xi = dg_at(xv, uint4(c, j));
+        if (!dg_in_range(errors, xi, p.xLength, row)) continue;
+        float v = x[xi];
         if (at == 0xFFFFFFFFu || beats(v, j, best, at)) { best = v; at = j; }
     }
     values[t] = best;
@@ -59,5 +64,6 @@ void reduce_argmax(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (t == 0) y[dg_at(DG_VIEW4(p, y), uint4(c, 0))] = indices[0];
+    uint yi = dg_at(DG_VIEW4(p, y), uint4(c, 0));
+    if (t == 0 && dg_in_range(errors, yi, p.yLength, row)) y[yi] = indices[0];
 }

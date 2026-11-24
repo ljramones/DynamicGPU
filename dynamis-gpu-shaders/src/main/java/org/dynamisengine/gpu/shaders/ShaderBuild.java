@@ -62,7 +62,7 @@ public final class ShaderBuild {
      * {@code --include} directories, before the source directory): {@code #include "dynamis/kit.slang"}.
      */
     public static final List<String> INCLUDES = List.of("dynamis/kit.slang", "dynamis/grid.slang", "dynamis/view.slang",
-            "dynamis/reduce.slang", "dynamis/numeric.slang", "dynamis/errors.slang");
+            "dynamis/reduce.slang", "dynamis/numeric.slang", "dynamis/errors.slang", "dynamis/debug.slang");
 
     private ShaderBuild() { }
 

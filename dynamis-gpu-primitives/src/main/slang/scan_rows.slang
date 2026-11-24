@@ -10,12 +10,15 @@ struct Params
 {
     uint rows;
     uint gridX;
+    uint xLength;   // buffer lengths in elements, for debug builds
+    uint yLength;
     DG_VIEW_FIELDS4(x)
     DG_VIEW_FIELDS4(y)
 };
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> x;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> y;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> errors;   // debug builds only
 [[vk::push_constant]] ConstantBuffer<Params> p;
 
 static const uint THREADS = 256;
@@ -48,11 +51,13 @@ void scan_rows(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     for (uint base = 0; base < n; base += THREADS)
     {
         uint j = base + t;
-        float v = j < n ? x[dg_at(xv, uint4(c, j))] : identity();
+        uint xi = dg_at(xv, uint4(c, j));
+        float v = j < n && dg_in_range(errors, xi, p.xLength, row) ? x[xi] : identity();
         buf[t] = v;
         DG_GROUP_SCAN_EXCLUSIVE(buf, t, THREADS, combine, identity())
         float out = combine(carry, combine(buf[t], v));
-        if (j < n) y[dg_at(yv, uint4(c, j))] = out;
+        uint yi = dg_at(yv, uint4(c, j));
+        if (j < n && dg_in_range(errors, yi, p.yLength, row)) y[yi] = out;
         if (t == THREADS - 1) carries[slot] = out;
         GroupMemoryBarrierWithGroupSync();
         carry = carries[slot];

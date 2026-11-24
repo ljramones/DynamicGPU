@@ -4,6 +4,8 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant bool fc_DG_DEBUG_0 [[function_constant(100)]];
+constant bool DG_DEBUG_0 = is_function_constant_defined(fc_DG_DEBUG_0) ? fc_DG_DEBUG_0 : false;
 uint dg_linear_group_0(uint3 group_0, uint gridX_0)
 {
     return group_0.y * gridX_0 + group_0.x;
@@ -51,19 +53,46 @@ uint dg_at_0(const DgView_0 thread* v_2, uint4 i_1)
     return v_2->offset_0 + i_1.x * v_2->stride_0.x + i_1.y * v_2->stride_0.y + i_1.z * v_2->stride_0.z + i_1.w * v_2->stride_0.w;
 }
 
-bool dg_is_nan_0(float x_0)
+void dg_report_error_0(uint device* errors_0, uint code_0, uint index_0)
 {
-    uint _S8 = (as_type<uint>((x_0)));
-    bool _S9;
-    if((_S8 & 2139095040U) == 2139095040U)
+    uint _S8 = atomic_fetch_or_explicit(((atomic_uint device*)(errors_0+int(0))), code_0, memory_order_relaxed);
+    uint _S9 = atomic_fetch_max_explicit(((atomic_uint device*)(errors_0+int(1))), ~index_0, memory_order_relaxed);
+    uint _S10 = atomic_fetch_add_explicit(((atomic_uint device*)(errors_0+int(2))), 1U, memory_order_relaxed);
+    return;
+}
+
+bool dg_in_range_0(uint device* errors_1, uint index_1, uint length_0, uint at_0)
+{
+    bool _S11;
+    if(!DG_DEBUG_0)
     {
-        _S9 = (_S8 & 8388607U) != 0U;
+        _S11 = true;
     }
     else
     {
-        _S9 = false;
+        _S11 = index_1 < length_0;
     }
-    return _S9;
+    if(_S11)
+    {
+        return true;
+    }
+    dg_report_error_0(errors_1, 1U, at_0);
+    return false;
+}
+
+bool dg_is_nan_0(float x_0)
+{
+    uint _S12 = (as_type<uint>((x_0)));
+    bool _S13;
+    if((_S12 & 2139095040U) == 2139095040U)
+    {
+        _S13 = (_S12 & 8388607U) != 0U;
+    }
+    else
+    {
+        _S13 = false;
+    }
+    return _S13;
 }
 
 bool beats_0(float vb_0, uint ib_0, float va_0, uint ia_0)
@@ -73,16 +102,16 @@ bool beats_0(float vb_0, uint ib_0, float va_0, uint ia_0)
     {
         return nb_0;
     }
-    bool _S10;
+    bool _S14;
     if(!nb_0)
     {
-        _S10 = vb_0 != va_0;
+        _S14 = vb_0 != va_0;
     }
     else
     {
-        _S10 = false;
+        _S14 = false;
     }
-    if(_S10)
+    if(_S14)
     {
         return vb_0 > va_0;
     }
@@ -93,6 +122,8 @@ struct Params_0
 {
     uint rows_0;
     uint gridX_1;
+    uint xLength_0;
+    uint yLength_0;
     uint xOffset_0;
     uint xExtent0_0;
     uint xStride0_0;
@@ -116,16 +147,18 @@ struct Params_0
 struct KernelContext_0
 {
     Params_0 constant* p_0;
+    uint device* errors_2;
     float device* x_1;
     uint device* y_0;
     array<float, int(256)> threadgroup* values_0;
     array<uint, int(256)> threadgroup* indices_0;
 };
 
-[[kernel]] void reduce_argmax(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(2)]], float device* x_2 [[buffer(0)]], uint device* y_1 [[buffer(1)]])
+[[kernel]] void reduce_argmax(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(3)]], uint device* errors_3 [[buffer(2)]], float device* x_2 [[buffer(0)]], uint device* y_1 [[buffer(1)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
+    (&kernelContext_0)->errors_2 = errors_3;
     (&kernelContext_0)->x_1 = x_2;
     (&kernelContext_0)->y_0 = y_1;
     threadgroup array<float, int(256)> values_1;
@@ -137,301 +170,325 @@ struct KernelContext_0
     {
         return;
     }
-    bool _S11;
+    bool _S15;
     uint t_0 = local_0.x;
     DgView_0 xv_0 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
-    uint _S12 = xv_0.extent_0.w;
-    thread DgView_0 _S13 = xv_0;
-    uint3 _S14 = dg_row_0(&_S13, row_1);
-    float _S15 = dg_negative_infinity_0();
+    uint _S16 = xv_0.extent_0.w;
+    thread DgView_0 _S17 = xv_0;
+    uint3 _S18 = dg_row_0(&_S17, row_1);
+    float _S19 = dg_negative_infinity_0();
     uint j_0 = t_0;
-    uint at_0 = 4294967295U;
-    float best_0 = _S15;
+    uint at_1 = 4294967295U;
+    float best_0 = _S19;
     for(;;)
     {
-        if(j_0 < _S12)
+        if(j_0 < _S16)
         {
         }
         else
         {
             break;
         }
-        uint4 _S16 = uint4(_S14, j_0);
-        thread DgView_0 _S17 = xv_0;
-        uint _S18 = dg_at_0(&_S17, _S16);
-        float v_3 = *((&kernelContext_0)->x_1+_S18);
-        if(at_0 == 4294967295U)
+        uint4 _S20 = uint4(_S18, j_0);
+        thread DgView_0 _S21 = xv_0;
+        uint _S22 = dg_at_0(&_S21, _S20);
+        bool _S23 = dg_in_range_0((&kernelContext_0)->errors_2, _S22, (&kernelContext_0)->p_0->xLength_0, row_1);
+        if(!_S23)
         {
-            _S11 = true;
+            j_0 = j_0 + 256U;
+            continue;
+        }
+        float v_3 = *((&kernelContext_0)->x_1+_S22);
+        if(at_1 == 4294967295U)
+        {
+            _S15 = true;
         }
         else
         {
-            _S11 = beats_0(v_3, j_0, best_0, at_0);
+            _S15 = beats_0(v_3, j_0, best_0, at_1);
         }
-        if(_S11)
+        uint at_2;
+        float best_1;
+        if(_S15)
         {
-            at_0 = j_0;
-            best_0 = v_3;
+            at_2 = j_0;
+            best_1 = v_3;
         }
+        else
+        {
+            at_2 = at_1;
+            best_1 = best_0;
+        }
+        at_1 = at_2;
+        best_0 = best_1;
         j_0 = j_0 + 256U;
     }
     (*(&kernelContext_0)->values_0)[t_0] = best_0;
-    (*(&kernelContext_0)->indices_0)[t_0] = at_0;
+    (*(&kernelContext_0)->indices_0)[t_0] = at_1;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 128U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 128U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 128U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S19 = t_0 + 128U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S19], (*(&kernelContext_0)->indices_0)[_S19], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S24 = t_0 + 128U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S24], (*(&kernelContext_0)->indices_0)[_S24], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S20 = t_0 + 128U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S20];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S20];
+        uint _S25 = t_0 + 128U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S25];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S25];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 64U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 64U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 64U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S21 = t_0 + 64U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S21], (*(&kernelContext_0)->indices_0)[_S21], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S26 = t_0 + 64U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S26], (*(&kernelContext_0)->indices_0)[_S26], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S22 = t_0 + 64U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S22];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S22];
+        uint _S27 = t_0 + 64U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S27];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S27];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 32U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 32U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 32U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S23 = t_0 + 32U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S23], (*(&kernelContext_0)->indices_0)[_S23], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S28 = t_0 + 32U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S28], (*(&kernelContext_0)->indices_0)[_S28], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S24 = t_0 + 32U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S24];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S24];
+        uint _S29 = t_0 + 32U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S29];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S29];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 16U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 16U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 16U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S25 = t_0 + 16U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S25], (*(&kernelContext_0)->indices_0)[_S25], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S30 = t_0 + 16U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S30], (*(&kernelContext_0)->indices_0)[_S30], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S26 = t_0 + 16U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S26];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S26];
+        uint _S31 = t_0 + 16U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S31];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S31];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 8U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 8U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 8U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S27 = t_0 + 8U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S27], (*(&kernelContext_0)->indices_0)[_S27], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S32 = t_0 + 8U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S32], (*(&kernelContext_0)->indices_0)[_S32], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S28 = t_0 + 8U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S28];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S28];
+        uint _S33 = t_0 + 8U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S33];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S33];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 4U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 4U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 4U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S29 = t_0 + 4U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S29], (*(&kernelContext_0)->indices_0)[_S29], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S34 = t_0 + 4U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S34], (*(&kernelContext_0)->indices_0)[_S34], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S30 = t_0 + 4U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S30];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S30];
+        uint _S35 = t_0 + 4U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S35];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S35];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 2U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 2U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 2U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S31 = t_0 + 2U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S31], (*(&kernelContext_0)->indices_0)[_S31], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S36 = t_0 + 2U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S36], (*(&kernelContext_0)->indices_0)[_S36], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S32 = t_0 + 2U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S32];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S32];
+        uint _S37 = t_0 + 2U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S37];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S37];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if(t_0 < 1U)
     {
-        _S11 = ((*(&kernelContext_0)->indices_0)[t_0 + 1U]) != 4294967295U;
+        _S15 = ((*(&kernelContext_0)->indices_0)[t_0 + 1U]) != 4294967295U;
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
         if(((*(&kernelContext_0)->indices_0)[t_0]) == 4294967295U)
         {
-            _S11 = true;
+            _S15 = true;
         }
         else
         {
-            uint _S33 = t_0 + 1U;
-            _S11 = beats_0((*(&kernelContext_0)->values_0)[_S33], (*(&kernelContext_0)->indices_0)[_S33], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
+            uint _S38 = t_0 + 1U;
+            _S15 = beats_0((*(&kernelContext_0)->values_0)[_S38], (*(&kernelContext_0)->indices_0)[_S38], (*(&kernelContext_0)->values_0)[t_0], (*(&kernelContext_0)->indices_0)[t_0]);
         }
     }
     else
     {
-        _S11 = false;
+        _S15 = false;
     }
-    if(_S11)
+    if(_S15)
     {
-        uint _S34 = t_0 + 1U;
-        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S34];
-        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S34];
+        uint _S39 = t_0 + 1U;
+        (*(&kernelContext_0)->values_0)[t_0] = (*(&kernelContext_0)->values_0)[_S39];
+        (*(&kernelContext_0)->indices_0)[t_0] = (*(&kernelContext_0)->indices_0)[_S39];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint4 _S40 = uint4(_S18, 0U);
+    thread DgView_0 _S41 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
+    uint _S42 = dg_at_0(&_S41, _S40);
     if(t_0 == 0U)
     {
-        uint4 _S35 = uint4(_S14, 0U);
-        thread DgView_0 _S36 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
-        uint _S37 = dg_at_0(&_S36, _S35);
-        *((&kernelContext_0)->y_0+_S37) = (*(&kernelContext_0)->indices_0)[int(0)];
+        bool _S43 = dg_in_range_0((&kernelContext_0)->errors_2, _S42, (&kernelContext_0)->p_0->yLength_0, row_1);
+        _S15 = _S43;
+    }
+    else
+    {
+        _S15 = false;
+    }
+    if(_S15)
+    {
+        *((&kernelContext_0)->y_0+_S42) = (*(&kernelContext_0)->indices_0)[int(0)];
     }
     return;
 }

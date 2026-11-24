@@ -4,6 +4,8 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant bool fc_DG_DEBUG_0 [[function_constant(100)]];
+constant bool DG_DEBUG_0 = is_function_constant_defined(fc_DG_DEBUG_0) ? fc_DG_DEBUG_0 : false;
 uint dg_linear_group_0(uint3 group_0, uint gridX_0)
 {
     return group_0.y * gridX_0 + group_0.x;
@@ -62,11 +64,6 @@ uint dg_at_linear_0(const DgView_0 thread* v_3, uint linear_1)
     return _S12;
 }
 
-bool dg_is_finite_0(float x_0)
-{
-    return ((as_type<uint>((x_0))) & 2139095040U) != 2139095040U;
-}
-
 void dg_report_error_0(uint device* errors_0, uint code_0, uint index_0)
 {
     uint _S13 = atomic_fetch_or_explicit(((atomic_uint device*)(errors_0+int(0))), code_0, memory_order_relaxed);
@@ -75,10 +72,35 @@ void dg_report_error_0(uint device* errors_0, uint code_0, uint index_0)
     return;
 }
 
+bool dg_in_range_0(uint device* errors_1, uint index_1, uint length_0, uint at_0)
+{
+    bool _S16;
+    if(!DG_DEBUG_0)
+    {
+        _S16 = true;
+    }
+    else
+    {
+        _S16 = index_1 < length_0;
+    }
+    if(_S16)
+    {
+        return true;
+    }
+    dg_report_error_0(errors_1, 1U, at_0);
+    return false;
+}
+
+bool dg_is_finite_0(float x_0)
+{
+    return ((as_type<uint>((x_0))) & 2139095040U) != 2139095040U;
+}
+
 struct Params_0
 {
     uint count_0;
     uint gridX_2;
+    uint xLength_0;
     uint xOffset_0;
     uint xExtent0_0;
     uint xStride0_0;
@@ -93,26 +115,31 @@ struct Params_0
 struct KernelContext_0
 {
     Params_0 constant* p_0;
+    uint device* errors_2;
     float device* x_1;
-    uint device* errors_1;
 };
 
-[[kernel]] void nan_check(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(2)]], float device* x_2 [[buffer(0)]], uint device* errors_2 [[buffer(1)]])
+[[kernel]] void nan_check(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(2)]], uint device* errors_3 [[buffer(1)]], float device* x_2 [[buffer(0)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
+    (&kernelContext_0)->errors_2 = errors_3;
     (&kernelContext_0)->x_1 = x_2;
-    (&kernelContext_0)->errors_1 = errors_2;
     uint i_2 = dg_linear_thread_0(group_2, local_1, p_1->gridX_2, 256U);
     if(i_2 >= (p_1->count_0))
     {
         return;
     }
-    thread DgView_0 _S16 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
-    uint _S17 = dg_at_linear_0(&_S16, i_2);
-    if(!dg_is_finite_0(*((&kernelContext_0)->x_1+_S17)))
+    thread DgView_0 _S17 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
+    uint _S18 = dg_at_linear_0(&_S17, i_2);
+    bool _S19 = dg_in_range_0((&kernelContext_0)->errors_2, _S18, (&kernelContext_0)->p_0->xLength_0, i_2);
+    if(!_S19)
     {
-        dg_report_error_0((&kernelContext_0)->errors_1, 2U, i_2);
+        return;
+    }
+    if(!dg_is_finite_0(*((&kernelContext_0)->x_1+_S18)))
+    {
+        dg_report_error_0((&kernelContext_0)->errors_2, 2U, i_2);
     }
     return;
 }

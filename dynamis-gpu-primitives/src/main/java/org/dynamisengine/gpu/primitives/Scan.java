@@ -35,9 +35,10 @@ public final class Scan implements AutoCloseable {
     private final GpuDevice device;
     private final Map<Reduce.Op, PipelineSet> rows = new EnumMap<>(Reduce.Op.class);
     private final ParameterLayout layout = ParameterLayout.of(GemmF16.KERNELS, "scan_rows");
+    private final DebugChecks debug;
     private boolean closed;
 
-    private Scan(GpuDevice device) { this.device = device; }
+    private Scan(GpuDevice device) { this.device = device; this.debug = new DebugChecks(device); }
 
     /** Scans on {@code device}; pipelines compile on first use. */
     public static Scan create(GpuDevice device) { return new Scan(Checks.notNull(device, "device")); }
@@ -45,7 +46,8 @@ public final class Scan implements AutoCloseable {
     private GpuComputePipeline pipeline(Reduce.Op op) {
         if (closed) throw new IllegalStateException("closed");
         return rows.computeIfAbsent(op, o -> PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("scan_rows",
-                List.of(Access.READ, Access.WRITE), Set.of(GpuCapabilities.FP32), Set.of(), Map.of("OP", o.ordinal()))))).get(0);
+                List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(),
+                debug.constants(Map.of("OP", o.ordinal())))))).get(0);
     }
 
     /** Records the inclusive scan of each row of {@code x} into {@code y} (same shape). */
@@ -61,8 +63,13 @@ public final class Scan implements AutoCloseable {
         long rowCount = Views.rowCount(x4);
         if (rowCount == 0 || x4.extent(3) == 0) return encoder;
         var grid = Grid.linear(device.capabilities(), rowCount);
-        byte[] params = layout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).view("x", x4).view("y", y4).bytes();
-        return encoder.dispatch(pipeline(op), Map.of(0, x, 1, y), params, grid.groups(), "scan." + op.name().toLowerCase());
+        byte[] params = layout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .u32("yLength", DebugChecks.length(y)).view("x", x4).view("y", y4).bytes();
+        var pipeline = pipeline(op);
+        debug.before(encoder);
+        encoder.dispatch(pipeline, Map.of(0, x, 1, y, 2, debug.buffer()), params, grid.groups(), "scan." + op.name().toLowerCase());
+        debug.after(encoder);
+        return encoder;
     }
 
     /** The GPU's result on the CPU, bit for bit. */
@@ -124,6 +131,8 @@ public final class Scan implements AutoCloseable {
     @Override public void close() {
         if (closed) return;
         closed = true;
-        PipelineSet.closeAll(rows.values().toArray(new AutoCloseable[0]));
+        List<AutoCloseable> all = new java.util.ArrayList<>(rows.values());
+        all.add(debug);
+        PipelineSet.closeAll(all.toArray(new AutoCloseable[0]));
     }
 }

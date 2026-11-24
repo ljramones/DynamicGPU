@@ -97,6 +97,12 @@ jobs:
           export VK_DRIVER_FILES="$SDK/share/vulkan/icd.d/MoltenVK_icd.json" MVK_CONFIG_SPECIALIZED_QUEUE_FAMILIES=1
           mvn -B -pl dynamis-gpu-vulkan -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$SDK/lib/libvulkan.1.dylib" \
             -Dtest=VulkanComputeTest -Dsurefire.failIfNoSpecifiedTests=false test
+      - name: Cross-backend harness, native Metal against MoltenVK
+        run: |
+          SDK="$HOME/VulkanSDK/$VULKAN_SDK_VERSION/macOS"
+          export VK_DRIVER_FILES="$SDK/share/vulkan/icd.d/MoltenVK_icd.json"
+          mvn -B -pl dynamis-gpu-metal,dynamis-gpu-vulkan,dynamis-gpu-primitives -am -Pmetal-native,metal-hardware,vulkan-hardware \
+            -Ddynamisgpu.vk.loader="$SDK/lib/libvulkan.1.dylib" -Dtest='CrossBackend*Test' -Dsurefire.failIfNoSpecifiedTests=false test
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4

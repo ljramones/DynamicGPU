@@ -61,9 +61,10 @@ public final class Elementwise implements AutoCloseable {
     private final Map<Binary, PipelineSet> binary = new EnumMap<>(Binary.class);
     private final ParameterLayout unaryLayout = ParameterLayout.of(GemmF16.KERNELS, "ew_unary");
     private final ParameterLayout binaryLayout = ParameterLayout.of(GemmF16.KERNELS, "ew_binary");
+    private final DebugChecks debug;
     private boolean closed;
 
-    private Elementwise(GpuDevice device) { this.device = device; }
+    private Elementwise(GpuDevice device) { this.device = device; this.debug = new DebugChecks(device); }
 
     /** Elementwise maps on {@code device}; pipelines compile on first use. */
     public static Elementwise create(GpuDevice device) { return new Elementwise(Checks.notNull(device, "device")); }
@@ -71,13 +72,15 @@ public final class Elementwise implements AutoCloseable {
     private GpuComputePipeline pipeline(Unary op) {
         if (closed) throw new IllegalStateException("closed");
         return unary.computeIfAbsent(op, o -> PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("ew_unary",
-                List.of(Access.READ, Access.WRITE), Set.of(GpuCapabilities.FP32), Set.of(), Map.of("OP", o.ordinal()))))).get(0);
+                List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(),
+                debug.constants(Map.of("OP", o.ordinal())))))).get(0);
     }
 
     private GpuComputePipeline pipeline(Binary op) {
         if (closed) throw new IllegalStateException("closed");
         return binary.computeIfAbsent(op, o -> PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("ew_binary",
-                List.of(Access.READ, Access.READ, Access.WRITE), Set.of(GpuCapabilities.FP32), Set.of(), Map.of("OP", o.ordinal()))))).get(0);
+                List.of(Access.READ, Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(),
+                debug.constants(Map.of("OP", o.ordinal())))))).get(0);
     }
 
     /** Records {@code y = op(x)}, x broadcasting to y's shape. */
@@ -90,8 +93,13 @@ public final class Elementwise implements AutoCloseable {
         long count = Checks.u32(y4.elements(), "element count");
         if (count == 0) return encoder;
         var grid = Grid.forThreads(device.capabilities(), count, THREADS);
-        byte[] params = unaryLayout.block().u32("count", count).u32("gridX", grid.gridX()).view("x", x4).view("y", y4).bytes();
-        return encoder.dispatch(pipeline(op), Map.of(0, x, 1, y), params, grid.groups(), "elementwise." + op.name().toLowerCase());
+        byte[] params = unaryLayout.block().u32("count", count).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .u32("yLength", DebugChecks.length(y)).view("x", x4).view("y", y4).bytes();
+        var pipeline = pipeline(op);
+        debug.before(encoder);
+        encoder.dispatch(pipeline, Map.of(0, x, 1, y, 2, debug.buffer()), params, grid.groups(), "elementwise." + op.name().toLowerCase());
+        debug.after(encoder);
+        return encoder;
     }
 
     /** Records {@code y = op(a, b)}, a and b broadcasting to y's shape. */
@@ -107,9 +115,14 @@ public final class Elementwise implements AutoCloseable {
         long count = Checks.u32(y4.elements(), "element count");
         if (count == 0) return encoder;
         var grid = Grid.forThreads(device.capabilities(), count, THREADS);
-        byte[] params = binaryLayout.block().u32("count", count).u32("gridX", grid.gridX()).view("a", a4).view("b", b4)
+        byte[] params = binaryLayout.block().u32("count", count).u32("gridX", grid.gridX()).u32("aLength", DebugChecks.length(a))
+                .u32("bLength", DebugChecks.length(b)).u32("yLength", DebugChecks.length(y)).view("a", a4).view("b", b4)
                 .view("y", y4).bytes();
-        return encoder.dispatch(pipeline(op), Map.of(0, a, 1, b, 2, y), params, grid.groups(), "elementwise." + op.name().toLowerCase());
+        var pipeline = pipeline(op);
+        debug.before(encoder);
+        encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, y, 3, debug.buffer()), params, grid.groups(), "elementwise." + op.name().toLowerCase());
+        debug.after(encoder);
+        return encoder;
     }
 
     /** The CPU result: bit for bit the GPU's for {@link Unary#exact()} operations; Java's {@code Math} otherwise. */
@@ -170,6 +183,7 @@ public final class Elementwise implements AutoCloseable {
         closed = true;
         List<AutoCloseable> all = new java.util.ArrayList<>(unary.values());
         all.addAll(binary.values());
+        all.add(debug);
         PipelineSet.closeAll(all.toArray(new AutoCloseable[0]));
     }
 }

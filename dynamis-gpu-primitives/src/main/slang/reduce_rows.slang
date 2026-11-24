@@ -10,12 +10,15 @@ struct Params
 {
     uint rows;
     uint gridX;
+    uint xLength;   // buffer lengths in elements, for debug builds
+    uint yLength;
     DG_VIEW_FIELDS4(x)
     DG_VIEW_FIELDS4(y)
 };
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> x;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> y;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> errors;   // debug builds only
 [[vk::push_constant]] ConstantBuffer<Params> p;
 
 static const uint THREADS = 256;
@@ -42,8 +45,13 @@ void reduce_rows(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint n = xv.extent.w;
     uint3 c = dg_row(xv, row);
     float acc = identity();
-    for (uint j = t; j < n; j += THREADS) acc = combine(acc, x[dg_at(xv, uint4(c, j))]);
+    for (uint j = t; j < n; j += THREADS)
+    {
+        uint xi = dg_at(xv, uint4(c, j));
+        if (dg_in_range(errors, xi, p.xLength, row)) acc = combine(acc, x[xi]);
+    }
     red[t] = acc;
     DG_GROUP_REDUCE(red, t, THREADS, combine)
-    if (t == 0) y[dg_at(DG_VIEW4(p, y), uint4(c, 0))] = red[0];
+    uint yi = dg_at(DG_VIEW4(p, y), uint4(c, 0));
+    if (t == 0 && dg_in_range(errors, yi, p.yLength, row)) y[yi] = red[0];
 }

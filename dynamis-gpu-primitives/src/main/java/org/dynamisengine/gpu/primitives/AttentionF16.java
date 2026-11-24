@@ -1,6 +1,8 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
+import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
+import java.util.List;
 
 /**
  * Scaled dot-product attention for every head at once: {@code O = softmax(scale Q K^T + mask) V}. Q is
@@ -88,6 +90,17 @@ public final class AttentionF16 implements AutoCloseable {
             if (s != null) s.close();
             throw e;
         }
+    }
+
+    /**
+     * The accuracy contract: bounded, the composition of the steps' contracts (the scores' GemmF16, Softmax, the
+     * rounding of P to half, the value GemmF16, then the rounding of O). @since 1.7.0
+     */
+    public AccuracyContract contract() {
+        return new AccuracyContract("AttentionF16 " + algorithm() + ", " + output() + " O", List.of("FP16", "FP16", "FP16"),
+                "FP32", output() == Precision.FP32 ? "FP32" : "FP32 rounded once to half", AccuracyContract.Order.DEVICE,
+                AccuracyContract.Bound.formula("|O - exact| <= 2 P max|dS| |V| + (Softmax bound + half rounding of P) |V| "
+                        + "+ (keys + 2) 2^-24 sum P |V|, plus the rounding of O; dS is the scores' GemmF16 bound"), "");
     }
 
     /** The GEMM algorithm both products use. */

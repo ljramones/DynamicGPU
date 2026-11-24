@@ -643,6 +643,43 @@ public abstract class ComputeConformance {
         }
     }
 
+    /**
+     * Debug builds: the kit's DG_DEBUG specialization constant turns on dg_in_range, which reports an out-of-range
+     * access through the error buffer and skips it. A normal build of the same kernel compiles the check out.
+     */
+    @Test void debugBuildsReportOutOfRangeAccesses() {
+        var lib = CapabilityTierConformance.TIERS; int n = 256;
+        var accesses = List.of(Access.READ, Access.WRITE, Access.READ_WRITE);
+        assertEquals(Set.of("DG_DEBUG"), lib.constants("debug_overrun").keySet());
+        var debug = lib.pipeline("debug_overrun", accesses, Set.of("FP32"), Set.of(), Map.of("DG_DEBUG", true));
+        if (device.adapter().backend() == Backend.MOCK) { assertThrows(ComputeException.class, () -> device.pipeline(debug)); return; }
+        var layout = org.dynamisengine.gpu.api.compute.kit.ParameterLayout.of(lib, "debug_overrun");
+        try (var a = buffer(n * 4, Placement.PRIVATE); var o = buffer(n * 4, Placement.PRIVATE); var errors = device.allocate(KernelErrors.descriptor());
+             var checked = device.pipeline(debug); var plain = device.pipeline(lib.pipeline("debug_overrun", accesses, Set.of("FP32"), Set.of()))) {
+            try (var e = device.encoder()) { e.upload(a, floats(n, i -> i)); await(device.queue().submit(e)); }
+            for (var p : List.of(checked, plain)) {   // in range: both builds copy, nothing is reported
+                try (var e = device.encoder()) {
+                    e.fill(o, 0).resetErrors(errors)
+                            .dispatch(p, Map.of(0, a, 1, o, 2, errors), layout.block().u32("n", n).u32("shift", 0).u32("oLength", n).bytes(), new Dimensions(n / 64, 1, 1))
+                            .checkErrors(errors);
+                    await(device.queue().submit(e));
+                }
+                float[] f = read(o, n);
+                for (int i = 0; i < n; i++) assertEquals((float) i, f[i], "in-range copy, element " + i);
+            }
+            try (var e = device.encoder()) {   // shifted by 100: the last 100 writes are out of range
+                e.fill(o, 0).resetErrors(errors)
+                        .dispatch(checked, Map.of(0, a, 1, o, 2, errors), layout.block().u32("n", n).u32("shift", 100).u32("oLength", n).bytes(), new Dimensions(n / 64, 1, 1));
+                var report = e.download(errors); var out = e.download(o); e.checkErrors(errors);
+                var s = device.queue().submit(e);
+                assertEquals(ComputeException.Code.KERNEL_ERROR, assertThrows(ComputeException.class, () -> s.await(WAIT)).code());
+                assertEquals(new KernelErrors.Report(1, n - 100, 100), KernelErrors.parse(report.bytes()), "DG_ERROR_INDEX, the first overrunning thread, the count");
+                var got = ByteBuffer.wrap(out.bytes()).order(ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) assertEquals(i < 100 ? 0f : i - 100f, got.getFloat(4 * i), "the in-range writes happened, element " + i);
+            }
+        }
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

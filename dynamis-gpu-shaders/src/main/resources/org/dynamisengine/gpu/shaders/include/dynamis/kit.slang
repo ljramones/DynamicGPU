@@ -6,3 +6,4 @@
 #include "dynamis/reduce.slang"
 #include "dynamis/numeric.slang"
 #include "dynamis/errors.slang"
+#include "dynamis/debug.slang"
