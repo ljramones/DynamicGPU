@@ -54,7 +54,7 @@ jobs:
       - name: Show the Vulkan device
         run: vulkaninfo --summary | grep -E 'deviceName|apiVersion|driverName'
       - name: Run the Vulkan hardware profile
-        run: mvn -B -pl dynamis-gpu-vulkan -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$VK_LOADER" test
+        run: mvn -B -pl dynamis-gpu-vulkan,dynamis-gpu-primitives -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$VK_LOADER" test
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4
@@ -85,12 +85,12 @@ jobs:
           java -version
           mvn -v | head -1
       - name: Native Metal hardware suite, and rebuilding the Slang kernels (the runner has slangc)
-        run: mvn -B -pl dynamis-gpu-shaders,dynamis-gpu-metal -am -Pmetal-native,metal-hardware test
+        run: mvn -B -pl dynamis-gpu-shaders,dynamis-gpu-metal,dynamis-gpu-primitives -am -Pmetal-native,metal-hardware test
       - name: MoltenVK hardware suite
         run: |
           SDK="$HOME/VulkanSDK/$VULKAN_SDK_VERSION/macOS"
           export VK_DRIVER_FILES="$SDK/share/vulkan/icd.d/MoltenVK_icd.json"
-          mvn -B -pl dynamis-gpu-vulkan -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$SDK/lib/libvulkan.1.dylib" test
+          mvn -B -pl dynamis-gpu-vulkan,dynamis-gpu-primitives -am -Pvulkan-hardware -Ddynamisgpu.vk.loader="$SDK/lib/libvulkan.1.dylib" test
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4
