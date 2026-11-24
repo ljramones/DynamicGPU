@@ -17,6 +17,9 @@ public final class ComputeDevice implements GpuDevice {
     private final Set<AutoCloseable> handles = Collections.newSetFromMap(new IdentityHashMap<>());
     private final List<Submission> pending = new ArrayList<>();
     private ComputeException queueFailure;
+    /** Live buffers and requested bytes per memory class (BufferDescriptor.label). */
+    private final Map<String, long[]> memoryClasses = new TreeMap<>();
+    private long submittedCount, completedCount, failedCount;
     private boolean closed;
     private Set<String> measuredFeatures; // null until FeatureProbe has run on this device
 
@@ -48,9 +51,16 @@ public final class ComputeDevice implements GpuDevice {
     /** Limits for validation; reading them never runs the feature probe. */
     private GpuCapabilities limits() { return adapter.capabilities(); }
     @Override public MemoryStats memoryStats() { check(); return driver.memoryStats(); }
+    @Override public Map<String, MemoryUse> memoryByLabel() {
+        check(); Map<String, MemoryUse> m = new TreeMap<>();
+        memoryClasses.forEach((k, v) -> m.put(k, new MemoryUse(v[0], v[1]))); return Collections.unmodifiableMap(m);
+    }
     @Override public GpuBuffer allocate(BufferDescriptor descriptor) {
         check(); require(descriptor.bytes() <= limits().maxBufferBytes(), "Buffer exceeds device allocation limit");
-        return new Buffer(new Resource(driver.allocate(descriptor), false), descriptor, 0, descriptor.bytes());
+        var resource = new Resource(driver.allocate(descriptor), false);
+        resource.memoryClass = descriptor.label(); resource.bytes = descriptor.bytes();
+        var use = memoryClasses.computeIfAbsent(descriptor.label(), k -> new long[2]); use[0]++; use[1] += descriptor.bytes();
+        return new Buffer(resource, descriptor, 0, descriptor.bytes());
     }
     @Override public GpuComputePipeline pipeline(PipelineDescriptor descriptor) {
         check(); var caps = descriptor.requiredFeatures().isEmpty() ? limits() : capabilities(); var layout = descriptor.layout();
@@ -70,6 +80,11 @@ public final class ComputeDevice implements GpuDevice {
         return new GpuQueue() {
             @Override public GpuSubmission submit(GpuCommandEncoder encoder) { return ComputeDevice.this.submit(encoder); }
             @Override public GpuSubmission submit(GpuRecording recording) { return ComputeDevice.this.submit(recording); }
+            @Override public QueueStats stats() {
+                check(); progress();   // non-blocking: polls fences and command buffers, never waits
+                long bytes = 0; for (var s : pending) bytes += s.transferBytes;
+                return new QueueStats(pending.size(), submittedCount, completedCount, failedCount, bytes);
+            }
         };
     }
 
@@ -79,6 +94,7 @@ public final class ComputeDevice implements GpuDevice {
         int references;
         int recorded;
         boolean mapped;
+        String memoryClass; long bytes;   // buffers only
         Resource(Object nativeObject, boolean pipeline) {
             this.nativeObject = nativeObject; this.pipeline = pipeline; resources.add(this);
         }
@@ -87,6 +103,10 @@ public final class ComputeDevice implements GpuDevice {
             if (--references == 0) {
                 if (pipeline) driver.releasePipeline(nativeObject); else driver.releaseBuffer(nativeObject);
                 resources.remove(this);
+                if (memoryClass != null) {
+                    var use = memoryClasses.get(memoryClass); use[0]--; use[1] -= bytes;
+                    if (use[0] == 0) memoryClasses.remove(memoryClass);
+                }
             }
         }
     }
@@ -155,6 +175,9 @@ public final class ComputeDevice implements GpuDevice {
         final Set<Resource> used = Collections.newSetFromMap(new IdentityHashMap<>());
         final List<GpuReadback> errorChecks = new ArrayList<>();
         boolean consumed, profile;
+        String label = "", name = "";
+        /** The effective label of each dispatch, in order. */
+        final List<String> dispatchLabels = new ArrayList<>();
         Encoder() { handles.add(this); }
         private void errorBuffer(GpuBuffer errors) {
             require(errors != null && errors.bytes() >= KernelErrors.BYTES, "A kernel error buffer needs at least " + KernelErrors.BYTES + " bytes");
@@ -186,6 +209,9 @@ public final class ComputeDevice implements GpuDevice {
             Region region = b.region(); retain(b.resource); add(new Fill(region, pattern), b.resource); return this;
         }
         @Override public GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, Dimensions groups) {
+            return dispatch(pipeline, bindings, parameters, groups, "");
+        }
+        @Override public GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings, byte[] parameters, Dimensions groups, String dispatchLabel) {
             valid(); require(pipeline instanceof ComputeDevice.Pipeline && pipeline.device() == ComputeDevice.this, "Cross-device or foreign pipeline");
             Pipeline p = (Pipeline) pipeline;
             if (p.released) throw new ComputeException(CLOSED, "Pipeline handle is closed");
@@ -204,10 +230,15 @@ public final class ComputeDevice implements GpuDevice {
                 require(!overlap(buffers.get(i), buffers.get(j)) || (!bound.get(i).access().writes() && !bound.get(j).access().writes()), "Writable dispatch bindings overlap");
             byte[] snapshot = parameters.clone(); retain(p.resource); buffers.forEach(b -> retain(b.resource));
             List<Resource> rs = new ArrayList<>(); rs.add(p.resource); buffers.forEach(b -> rs.add(b.resource));
-            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); commandResources.add(rs); return this;
+            commands.add(new Dispatch(p.resource.nativeObject, d, List.copyOf(bound), snapshot, groups)); commandResources.add(rs);
+            String inner = dispatchLabel == null ? "" : dispatchLabel;
+            dispatchLabels.add(label.isEmpty() ? inner : inner.isEmpty() ? label : label + "/" + inner);
+            return this;
         }
         void add(Command c, Resource... rs) { commands.add(c); commandResources.add(List.of(rs)); }
         @Override public GpuCommandEncoder profile() { valid(); profile = true; return this; }
+        @Override public GpuCommandEncoder label(String label) { valid(); this.label = label == null ? "" : label; return this; }
+        @Override public GpuCommandEncoder name(String name) { valid(); this.name = name == null ? "" : name; return this; }
         void release() { for (var r : used) { r.recorded--; r.release(); } used.clear(); }
         @Override public GpuRecording record() {
             valid();
@@ -244,13 +275,17 @@ public final class ComputeDevice implements GpuDevice {
         }
         e.consumed = true; handles.remove(e);
         Submission submission = new Submission(e.errorChecks, e.commands, () -> { e.release(); e.commands.clear(); }, job);
-        pending.add(submission); return submission;
+        submission.name = e.name; submission.labels = List.copyOf(e.dispatchLabels); submission.transferBytes = transferBytes(e.commands);
+        submittedCount++; pending.add(submission); return submission;
     }
     private final class Submission implements GpuSubmission {
         final List<GpuReadback> errorChecks;
         final List<Command> commands;
         final Runnable done;
         final Job job;
+        String name = "";
+        List<String> labels = List.of();
+        long transferBytes;
         Status state = Status.PENDING;
         ComputeException error;
         java.util.OptionalLong gpuNanos = java.util.OptionalLong.empty();
@@ -282,11 +317,18 @@ public final class ComputeDevice implements GpuDevice {
                 state = Status.FAILED; error = ex; queueFailure = ex;
                 for (var c : commands) if (c instanceof Download d) d.result().fail(ex);
             }
+            if (state == Status.COMPLETE) completedCount++; else failedCount++;
             try { job.close(); } finally { done.run(); }
         }
         @Override public Status status() { thread(); if (state == Status.PENDING) progress(); return state; }
         @Override public Optional<ComputeException> failure() { status(); return Optional.ofNullable(error); }
         @Override public List<Duration> dispatchTimes() { status(); return dispatchTimes; }
+        @Override public List<DispatchTiming> dispatchTimings() {
+            status(); List<DispatchTiming> out = new ArrayList<>();
+            for (int i = 0; i < dispatchTimes.size(); i++) out.add(new DispatchTiming(i, i < labels.size() ? labels.get(i) : "", dispatchTimes.get(i)));
+            return out;
+        }
+        @Override public String name() { return name; }
         @Override public Optional<Duration> gpuTime() {
             status(); return gpuNanos.isPresent() ? Optional.of(Duration.ofNanos(gpuNanos.getAsLong())) : Optional.empty();
         }
@@ -315,7 +357,11 @@ public final class ComputeDevice implements GpuDevice {
         final Prepared prepared;
         Submission running;
         boolean closed;
+        final String name;
+        final List<String> labels;
+        Object tag;
         Recording(Encoder e) {
+            name = e.name; labels = List.copyOf(e.dispatchLabels);
             commands = new ArrayList<>(e.commands); commandResources = new ArrayList<>(e.commandResources);
             for (var rs : commandResources) for (var r : rs) counts.merge(r, 1, Integer::sum);
             for (var r : e.used) if (!counts.containsKey(r)) r.release(); // never the case; keeps the books exact
@@ -336,6 +382,9 @@ public final class ComputeDevice implements GpuDevice {
             return dispatchIndex[dispatch];
         }
         @Override public int dispatches() { return dispatchIndex.length; }
+        @Override public String name() { return name; }
+        @Override public Object tag() { return tag; }
+        @Override public GpuRecording tag(Object tag) { valid(); this.tag = tag; return this; }
         @Override public GpuRecording parameters(int dispatch, byte[] parameters) {
             valid(); int i = index(dispatch); var d = (Dispatch) commands.get(i);
             require(parameters.length == d.descriptor().layout().parameterBytes(), "Scalar parameter byte count differs from layout");
@@ -393,7 +442,16 @@ public final class ComputeDevice implements GpuDevice {
             throw ex;
         }
         Submission submission = new Submission(List.of(), List.of(), () -> { for (var res : inUse) res.recorded--; }, job);
-        r.running = submission; pending.add(submission); return submission;
+        submission.name = r.name; submission.labels = r.labels; submission.transferBytes = transferBytes(r.commands);
+        submittedCount++; r.running = submission; pending.add(submission); return submission;
+    }
+    private static long transferBytes(List<Command> commands) {
+        long bytes = 0;
+        for (var c : commands) {
+            if (c instanceof Upload u) bytes += u.data().length;
+            else if (c instanceof Download d) bytes += d.source().bytes();
+        }
+        return bytes;
     }
     private void progress() {
         while (!pending.isEmpty()) {

@@ -295,6 +295,53 @@ public abstract class ComputeConformance {
         }
     }
 
+    /**
+     * Observability hooks, all host-side: dispatch labels joined as outer/inner, submission and recording names,
+     * recording tags, memory classes, and queue counters.
+     */
+    @Test void labelsNamesMemoryClassesAndQueueCounters() {
+        int n = 64;
+        var before = device.queue().stats();
+        try (var a = device.allocate(new BufferDescriptor(n * 4, EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE, BufferUsage.TRANSFER_DESTINATION), Placement.PRIVATE, "kv"));
+             var b = device.allocate(new BufferDescriptor(n * 4, EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE, BufferUsage.TRANSFER_DESTINATION), Placement.PRIVATE).withLabel("kv"));
+             var c = buffer(n * 4, Placement.PRIVATE); var p = pipeline(n)) {
+            var classes = device.memoryByLabel();
+            assertEquals(new MemoryUse(2, 2L * n * 4), classes.get("kv"), "memory class kv: " + classes);
+            GpuSubmission s;
+            try (var e = device.encoder()) {
+                e.name("step").profile().upload(a, new byte[n * 4]).upload(b, new byte[n * 4]);
+                e.label("prefill").dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1), "add");
+                e.label("decode").dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                e.label(null).dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1), "add");
+                var r = e.download(c);
+                s = device.queue().submit(e);
+                var during = device.queue().stats();
+                assertEquals(before.submitted() + 1, during.submitted());
+                if (during.pending() > 0) assertTrue(during.transferBytesInFlight() >= 3L * n * 4, "uploads and the download in flight: " + during);
+                await(s); r.bytes();
+            }
+            assertEquals("step", s.name());
+            var after = device.queue().stats();
+            assertEquals(before.completed() + 1, after.completed()); assertEquals(0, after.pending()); assertEquals(0, after.transferBytesInFlight());
+            var timings = s.dispatchTimings();
+            if (device.capabilities().timestamps()) {
+                assertEquals(List.of("prefill/add", "decode", "add"), timings.stream().map(DispatchTiming::label).toList());
+                assertEquals(List.of(0, 1, 2), timings.stream().map(DispatchTiming::dispatch).toList());
+            } else assertTrue(timings.isEmpty());
+            GpuRecording rec;
+            try (var e = device.encoder()) {
+                e.name("decode-step").label("decode").dispatch(p, Map.of(0, a, 1, b, 2, c), scalar(n), new Dimensions(1, 1, 1));
+                rec = e.record();
+            }
+            try (rec) {
+                assertEquals("decode-step", rec.name()); assertNull(rec.tag());
+                rec.tag("prefix-42"); assertEquals("prefix-42", rec.tag());
+                var run = device.queue().submit(rec); await(run); assertEquals("decode-step", run.name());
+            }
+        }
+        assertNull(device.memoryByLabel().get("kv"), "the memory class empties when its buffers close");
+    }
+
     /** -Dcompute.benchmark=true: a 50-dispatch submission encoded every time against the same work replayed. */
     @Test void replayBenchmark() {
         Assumptions.assumeTrue(Boolean.getBoolean("compute.benchmark"), "set -Dcompute.benchmark=true");

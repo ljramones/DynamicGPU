@@ -25,5 +25,9 @@ public interface GpuSubmission extends AutoCloseable {
      * @since 1.5.0
      */
     default java.util.List<Duration> dispatchTimes() { return java.util.List.of(); }
+    /** {@link #dispatchTimes()} with each dispatch's number and label. @since 1.6.0 */
+    default java.util.List<DispatchTiming> dispatchTimings() { return java.util.List.of(); }
+    /** The name its encoder was given ({@link GpuCommandEncoder#name(String)}), or empty. @since 1.6.0 */
+    default String name() { return ""; }
     @Override void close();
 }

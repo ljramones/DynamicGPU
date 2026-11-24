@@ -32,5 +32,11 @@ public interface GpuRecording extends AutoCloseable {
     GpuRecording bind(int dispatch, int slot, GpuBuffer buffer);
     /** Replaces dispatch {@code dispatch}'s group counts for later runs. */
     GpuRecording groups(int dispatch, Dimensions groups);
+    /** The name its encoder was given, or empty. @since 1.6.0 */
+    default String name() { return ""; }
+    /** The caller's tag (for example a prefix-cache domain), or null. @since 1.6.0 */
+    default Object tag() { return null; }
+    /** Sets the caller's tag. @since 1.6.0 */
+    default GpuRecording tag(Object tag) { return this; }
     @Override void close();
 }

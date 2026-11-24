@@ -154,6 +154,21 @@ abstract class GemmF16Conformance {
         });
     }
 
+    /** GemmF16 labels its dispatches with its algorithm, joined to the caller's label. */
+    @Test void labelsItsDispatches() throws Exception {
+        Assumptions.assumeTrue(device.capabilities().timestamps(), "needs timestamps");
+        eachKernel(() -> {
+            var s = Shape.of(64, 64, 64, 1, 0);
+            try (var ga = buffer(s.aBytes()); var gb = buffer(s.bBytes()); var gc = buffer(s.cBytes(gemm.output())); var e = device.encoder()) {
+                e.profile().fill(ga, 0).fill(gb, 0).label("decode");
+                gemm.encode(e, ga, gb, gc, s);
+                var sub = device.queue().submit(e); assertTrue(sub.await(WAIT));
+                String expected = "decode/" + (gemm.algorithm() == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
+                assertEquals(expected, sub.dispatchTimings().getFirst().label());
+            }
+        }, Precision.FP32);
+    }
+
     @Test void rejectsUndersizedBuffersAndBadShapes() {
         var s = Shape.of(8, 8, 8, 1, 0);
         try (var gemm = GemmF16.create(device); var gemm16 = GemmF16.create(device, Precision.FP16);

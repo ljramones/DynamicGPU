@@ -188,7 +188,7 @@ public final class GemmF16 implements AutoCloseable {
                 .putFloat(s.alpha()).putFloat(s.beta()).putInt(s.transposeB() ? 1 : 0)
                 .putInt((int) s.strideA()).putInt((int) s.strideB()).putInt((int) s.strideC()).array();
         var groups = new Dimensions(Math.ceilDiv(s.n(), TILE), Math.ceilDiv(s.m(), TILE), s.batch());
-        return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), params, groups);
+        return encoder.dispatch(pipeline, Map.of(0, a, 1, b, 2, c), params, groups, algorithm == Algorithm.TILED ? "gemm.tiled" : "gemm.simdgroup");
     }
 
     private static void check(GpuBuffer buffer, long elements, int elementBytes, String name) {

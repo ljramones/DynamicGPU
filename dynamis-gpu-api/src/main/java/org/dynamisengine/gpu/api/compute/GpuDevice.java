@@ -15,5 +15,10 @@ public interface GpuDevice extends AutoCloseable {
      * @since 1.5.0
      */
     default MemoryStats memoryStats() { return MemoryStats.NONE; }
+    /**
+     * The live buffers and their requested bytes per memory class (the {@link BufferDescriptor#label()}; unlabelled
+     * buffers under {@code ""}), kept on the host. @since 1.6.0
+     */
+    default java.util.Map<String, MemoryUse> memoryByLabel() { return java.util.Map.of(); }
     @Override void close();
 }

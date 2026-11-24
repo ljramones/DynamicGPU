@@ -9,6 +9,22 @@ public interface GpuCommandEncoder extends AutoCloseable {
     GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings,
             byte[] parameters, Dimensions groups);
     /**
+     * As {@link #dispatch(GpuComputePipeline, Map, byte[], Dimensions)}, with this dispatch's own label. It is joined
+     * to the encoder's current label as {@code outer/inner}; primitives label their dispatches this way
+     * ({@code gemm.tiled}, {@code softmax}). @since 1.6.0
+     */
+    default GpuCommandEncoder dispatch(GpuComputePipeline pipeline, Map<Integer, ? extends GpuBuffer> bindings,
+            byte[] parameters, Dimensions groups, String label) {
+        return dispatch(pipeline, bindings, parameters, groups);
+    }
+    /**
+     * Labels the dispatches recorded after this call (until the next call; null or empty clears it), for attribution
+     * in {@link GpuSubmission#dispatchTimings()}, for example {@code "prefill"} or {@code "decode"}. @since 1.6.0
+     */
+    default GpuCommandEncoder label(String label) { return this; }
+    /** Names the submission or recording this encoder becomes ({@link GpuSubmission#name()}). @since 1.6.0 */
+    default GpuCommandEncoder name(String name) { return this; }
+    /**
      * Records clearing a {@link KernelErrors} buffer to "no error". Record it before the dispatches that report into
      * it.
      */

@@ -259,6 +259,23 @@ can be transferred/mapped in slices.
 - **The allocator:** `MemoryPool` (spi) is backend-neutral. Every backend allocates through it, and each backend
   only creates and destroys its blocks.
 
+**Observability for cost models (1.6.0).** These are host-side hooks, so reading them never waits for the device.
+- **Labels:**
+  - `encoder.label("decode")` labels the dispatches that follow.
+  - `dispatch(..., "gemm.tiled")` gives one dispatch its own label.
+  - The two join as `decode/gemm.tiled`.
+  - Primitives label their dispatches (`gemm.tiled`, `gemm.simdgroup`, `softmax`).
+  - `GpuSubmission.dispatchTimings()` returns (index, label, time) for profiled work.
+- **Names and tags:**
+  - `encoder.name("step")` names the submission or recording (`GpuSubmission.name()`, `GpuRecording.name()`).
+  - `GpuRecording.tag(Object)` holds a caller's tag, such as a prefix-cache domain.
+- **Memory classes:** `BufferDescriptor.withLabel("kv")` puts a buffer in a memory class, and
+  `GpuDevice.memoryByLabel()` gives the live buffers and requested bytes per class.
+- **Queue counters:** `GpuQueue.stats()` gives pending, submitted, completed and failed submissions, and the transfer
+  bytes in flight. Reading them polls completions without blocking.
+- **Use for cost accounting:** time labelled submissions or recordings with `gpuTime()`. Per-dispatch timing perturbs
+  execution (see below), so it is a diagnostic.
+
 **Per-dispatch timing (1.5.0).** `encoder.profile()` asks for one GPU time per dispatch, returned by
 `GpuSubmission.dispatchTimes()` in recording order. A recording made from a profiled encoder times every run.
 - **Vulkan:** a timestamp pair around each dispatch, in the submission's query pool.

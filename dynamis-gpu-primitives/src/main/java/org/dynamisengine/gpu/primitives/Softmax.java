@@ -92,7 +92,7 @@ public final class Softmax implements AutoCloseable {
         byte[] params = ByteBuffer.allocate(KERNELS.parameterBytes(kernel(output))).order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(s.m()).putInt(s.n()).putInt(s.lds()).putInt(s.ldy()).putInt(s.causal() ? 1 : 0).putInt(s.causalOffset())
                 .putInt((int) s.strideS()).putInt((int) s.strideY()).array();
-        return encoder.dispatch(pipeline, Map.of(0, scores, 1, out), params, new Dimensions(s.m(), 1, s.batch()));
+        return encoder.dispatch(pipeline, Map.of(0, scores, 1, out), params, new Dimensions(s.m(), 1, s.batch()), "softmax");
     }
 
     private static void check(GpuBuffer buffer, long elements, int elementBytes, String name) {
