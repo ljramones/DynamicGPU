@@ -20,6 +20,8 @@ class MetalComputeTest extends ComputeConformance {
             return new KernelBundle("fp-strict", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, stream.readAllBytes())));
         } catch (java.io.IOException e) { throw new AssertionError(e); }
     }
+    /** Metal's fma is one rounding (MSL), and Apple GPUs implement it so. */
+    @Override protected Boolean expectedFusedFma() { return true; }
     @Override protected GpuProvider provider() { return new MetalProvider(); }
     @Override protected KernelBundle kernel() {
         try {

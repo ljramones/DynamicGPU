@@ -6,6 +6,8 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 class MockComputeTest extends ComputeConformance {
     @Override protected GpuProvider provider() { return new MockComputeProvider(); }
+    /** The mock has no probe executable, so it reports no measured features. */
+    @Override protected Boolean expectedFusedFma() { return false; }
     @Override protected KernelBundle kernel() { return new KernelBundle("vector-add", "1", Map.of(Backend.MOCK, new KernelBundle.Executable(KernelBundle.Format.MOCK, new byte[0]))); }
     @Test void pendingMappingAndEncoderCancellationReleaseStorage() {
         var driver = new MockComputeProvider.MockDriver(); driver.hold = true;

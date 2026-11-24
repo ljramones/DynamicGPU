@@ -18,6 +18,7 @@ public final class ComputeDevice implements GpuDevice {
     private final List<Submission> pending = new ArrayList<>();
     private ComputeException queueFailure;
     private boolean closed;
+    private Set<String> measuredFeatures; // null until FeatureProbe has run on this device
 
     public ComputeDevice(GpuAdapter adapter, ComputeDriver driver) {
         this.adapter = Objects.requireNonNull(adapter); this.driver = Objects.requireNonNull(driver);
@@ -31,12 +32,27 @@ public final class ComputeDevice implements GpuDevice {
         require(offset >= 0 && length > 0 && offset <= size && length <= size - offset, "Byte range outside allocation");
     }
     @Override public GpuAdapter adapter() { return adapter; }
+    /**
+     * The adapter's capabilities plus the shader features measured on this device ({@link GpuCapabilities#FUSED_FMA}).
+     * The first call on the owner thread runs a one-dispatch probe and waits for it; later calls are free. Called on
+     * another thread or after close before that, it returns the adapter's capabilities.
+     */
+    @Override public GpuCapabilities capabilities() {
+        if (measuredFeatures == null) {
+            if (Thread.currentThread() != owner || closed) return adapter.capabilities();
+            measuredFeatures = Set.of(); // the probe's own calls see the adapter capabilities
+            measuredFeatures = FeatureProbe.measure(this);
+        }
+        return measuredFeatures.isEmpty() ? adapter.capabilities() : adapter.capabilities().withShaderFeatures(measuredFeatures);
+    }
+    /** Limits for validation; reading them never runs the feature probe. */
+    private GpuCapabilities limits() { return adapter.capabilities(); }
     @Override public GpuBuffer allocate(BufferDescriptor descriptor) {
-        check(); require(descriptor.bytes() <= capabilities().maxBufferBytes(), "Buffer exceeds device allocation limit");
+        check(); require(descriptor.bytes() <= limits().maxBufferBytes(), "Buffer exceeds device allocation limit");
         return new Buffer(new Resource(driver.allocate(descriptor), false), descriptor, 0, descriptor.bytes());
     }
     @Override public GpuComputePipeline pipeline(PipelineDescriptor descriptor) {
-        check(); var caps = capabilities(); var layout = descriptor.layout();
+        check(); var caps = descriptor.requiredFeatures().isEmpty() ? limits() : capabilities(); var layout = descriptor.layout();
         descriptor.kernel().executable(adapter.backend());
         if (!caps.dataTypes().containsAll(descriptor.requiredDataTypes()) || !caps.shaderFeatures().containsAll(descriptor.requiredFeatures()))
             throw new ComputeException(UNSUPPORTED, adapter.name() + " lacks requested data types/features: " + descriptor.requiredDataTypes() + " / " + descriptor.requiredFeatures());
@@ -158,15 +174,15 @@ public final class ComputeDevice implements GpuDevice {
             valid(); require(pipeline instanceof ComputeDevice.Pipeline && pipeline.device() == ComputeDevice.this, "Cross-device or foreign pipeline");
             Pipeline p = (Pipeline) pipeline;
             if (p.released) throw new ComputeException(CLOSED, "Pipeline handle is closed");
-            var d = p.descriptor; capabilities().validateGroups(d.localSize(), groups);
+            var d = p.descriptor; limits().validateGroups(d.localSize(), groups);
             require(parameters.length == d.layout().parameterBytes(), "Scalar parameter byte count differs from layout");
             require(bindings.size() == d.layout().buffers().size(), "Binding count differs from layout");
             List<Bound> bound = new ArrayList<>(); List<Buffer> buffers = new ArrayList<>();
             for (var spec : d.layout().buffers()) {
                 require(bindings.containsKey(spec.slot()), "Missing buffer slot " + spec.slot());
                 Buffer b = buffer(bindings.get(spec.slot())); b.usage(BufferUsage.STORAGE);
-                require(b.offset % capabilities().storageOffsetAlignment() == 0, "Misaligned storage binding at slot " + spec.slot());
-                require(b.bytes >= spec.minimumBytes() && b.bytes <= capabilities().maxStorageRange(), "Invalid storage range at slot " + spec.slot());
+                require(b.offset % limits().storageOffsetAlignment() == 0, "Misaligned storage binding at slot " + spec.slot());
+                require(b.bytes >= spec.minimumBytes() && b.bytes <= limits().maxStorageRange(), "Invalid storage range at slot " + spec.slot());
                 bound.add(new Bound(spec.slot(), b.region(), spec.access())); buffers.add(b);
             }
             for (int i = 0; i < buffers.size(); i++) for (int j = i + 1; j < buffers.size(); j++)

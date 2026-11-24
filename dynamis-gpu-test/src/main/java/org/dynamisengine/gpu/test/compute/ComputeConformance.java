@@ -88,6 +88,23 @@ public abstract class ComputeConformance {
             }
         }
     }
+    /** Whether this backend's devices must report {@link GpuCapabilities#FUSED_FMA}, or null when that is unknown. */
+    protected Boolean expectedFusedFma() { return null; }
+    /** The device measures FUSED_FMA, and a pipeline requiring it is created only where it is reported. */
+    @Test void reportsFusedFmaAsMeasured() {
+        boolean reported = device.capabilities().shaderFeatures().contains(GpuCapabilities.FUSED_FMA);
+        System.out.println("fused fma=" + reported + " on " + device.adapter().name());
+        if (expectedFusedFma() != null) assertEquals(expectedFusedFma(), reported, "FUSED_FMA reported");
+        assertEquals(reported, device.capabilities().shaderFeatures().contains(GpuCapabilities.FUSED_FMA), "measured once, stable");
+        PipelineDescriptor plain; try (var p = pipeline(64)) { plain = p.descriptor(); }
+        var requiring = new PipelineDescriptor(plain.kernel(), plain.entryPoint(), plain.layout(), plain.localSize(), Map.of(),
+                plain.requiredDataTypes(), Set.of(GpuCapabilities.FUSED_FMA));
+        if (reported) {
+            try (var p = device.pipeline(requiring)) { assertTrue(p.descriptor().requiredFeatures().contains(GpuCapabilities.FUSED_FMA)); }
+        } else {
+            assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> device.pipeline(requiring)).code());
+        }
+    }
     @Test void queueOrdersSeparateSubmissions() {
         try (var b = buffer(256, Placement.PRIVATE); var first = device.encoder(); var second = device.encoder()) {
             first.fill(b, 42); var a = device.queue().submit(first); var out = second.download(b); var s = device.queue().submit(second);

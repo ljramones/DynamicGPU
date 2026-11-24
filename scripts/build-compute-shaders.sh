@@ -10,3 +10,9 @@ for kernel in vector_add fp_strict; do
     spirv-val --target-env vulkan1.1 "$repo/dynamis-gpu-test/src/main/resources/compute/$kernel.spv"
   fi
 done
+# The device feature probe ships in dynamis-gpu-api (ComputeDevice runs it).
+probe="$repo/dynamis-gpu-api/src/main/resources/org/dynamisengine/gpu/api/compute/spi/fma_probe"
+glslangValidator -V --target-env vulkan1.1 --source-entrypoint main -e fma_probe "$probe.comp" -o "$probe.spv"
+if command -v spirv-val >/dev/null 2>&1; then
+  spirv-val --target-env vulkan1.1 "$probe.spv"
+fi

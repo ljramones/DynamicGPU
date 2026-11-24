@@ -112,7 +112,22 @@ Check `GpuCapabilities` before allocation and pipeline creation. Limits cover by
 sizes/storage ranges, binding offsets/counts, scalar parameters, local dimensions,
 threads/group and group counts. Type/feature sets conservatively report what this
 runtime enables. FP16, BF16, FP64, subgroups, atomics, optimized matrix paths, and
-GPU timestamps are not advertised in contract 1. Metal additionally checks each
+GPU timestamps are not advertised in contract 1.
+
+**Measured features (1.1.0).** `GpuDevice.capabilities()` adds features the device can only report by running
+code; the adapter's capabilities never include them.
+- **`GpuCapabilities.FUSED_FMA`:** `fma` computes `a*b + c` with one rounding. The first call on the device's owner
+  thread runs one probe dispatch (`fma(x, x, c)` with `c = -(x*x)` rounded on the host) and waits for it, and later
+  calls are free. A failed probe reports the feature absent and logs a warning.
+- **Where it holds:**
+  - native Metal: yes;
+  - MoltenVK on Apple GPUs: yes;
+  - Mesa's lavapipe: no;
+  - the mock: not reported.
+- **Using it:** list it in `PipelineDescriptor.requiredFeatures` and pipeline creation fails with `UNSUPPORTED` where it
+  is absent. Only such pipelines trigger the probe.
+
+Metal additionally checks each
 pipeline's maximum threads. Vulkan verifies the SPIR-V entry point and fixed
 `LocalSize`; `LocalSizeId` is explicitly unsupported. Vulkan supports 32-bit
 specialization constants; Metal ABI 1 rejects specialization requests and accepts
@@ -134,6 +149,14 @@ and Mesa does.
   then round it as written.
 - **MoltenVK:** it would otherwise compile every shader with Metal fast math, so the provider switches that off with
   `VK_EXT_layer_settings` (`MVK_CONFIG_FAST_MATH_ENABLED = 0`). Other drivers ignore the setting.
+
+**Fused multiply-add.** Vulkan does not require `fma` to be fused: its precision rules treat it as a multiply
+followed by an add, and lavapipe rounds twice. Metal's `fma` is fused. Check `GpuCapabilities.FUSED_FMA` before
+relying on one rounding.
+
+Mark `fma` calls `NoContraction` too when their rounding matters. Mesa otherwise rewrites expressions such as
+`fma(k, a, fma(k, b, c))` into `fma(k, a + b, c)`. glslang does not mark `fma` for `precise`, so decorate the module
+after compilation; vectrix-gpu's `build-kernels.py` shows how.
 
 `ComputeConformance.floatingPointFollowsIeeeByDefault` checks these properties on each hardware backend: the
 marked operations everywhere, and unmarked ones where the backend promises strict defaults (Metal and MoltenVK).

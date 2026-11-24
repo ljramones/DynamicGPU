@@ -120,7 +120,9 @@ they are not an optimized Metal/Vulkan performance comparison.
 | macOS arm64, native Metal | Bridge built and embedded in JAR; real GPU suite/example/probe passed on macOS 27.0.1. Deployment target is 13.0; older OS versions remain untested. |
 | macOS arm64, Vulkan/MoltenVK | Real headless compute suite/example/probe passed with the selected SDK. |
 | macOS x86_64 | Native build path and LWJGL classifier configured; hardware/OS validation pending. |
-| Linux x86_64 / arm64, Windows x86_64 | Java/provider and LWJGL classifier paths configured; builds/hardware validation on those systems pending. Portable builds do not invoke Apple tools. |
+| Linux x86_64, Vulkan (Mesa lavapipe) | Portable build and the Vulkan compute conformance suite run in CI on every push (since 1.0.3+, `.github/workflows/ci.yml`). lavapipe is a CPU driver: it validates the runtime, SPIR-V and API behaviour, not GPU performance. |
+| Linux arm64, Vulkan (Mesa lavapipe) | The conformance suite passed in a local container (Docker, Ubuntu 24.04, Mesa llvmpipe). |
+| Linux with GPU drivers, Windows x86_64 | Java/provider and LWJGL classifier paths configured; hardware validation pending. Portable builds do not invoke Apple tools. |
 | Offline Metal executables | Build path implemented; artifact generation/loading remains unverified because Xcode/Metal tools are absent. |
 
 `xcode-select -p` reports `/Library/Developer/CommandLineTools`; Xcode.app is absent.

@@ -19,6 +19,13 @@ class VulkanComputeTest extends ComputeConformance {
     }
     /** MoltenVK (Apple's vendor ID, 0x106B) runs with fast math off; other drivers may reassociate unmarked code. */
     @Override protected boolean strictWithoutPreciseMarks() { return device.adapter().id().contains(":" + 0x106B + ":"); }
+    /** MoltenVK on Apple GPUs (vendor 0x106B) fuses fma; Mesa's lavapipe (vendor 0x10005) rounds twice. */
+    @Override protected Boolean expectedFusedFma() {
+        String id = device.adapter().id();
+        if (id.contains(":" + 0x106B + ":")) return true;
+        if (id.contains(":" + 0x10005 + ":")) return false;
+        return null;
+    }
     @Override protected GpuProvider provider() { return new VulkanProvider(); }
     @Override protected KernelBundle kernel() {
         try (var stream = ComputeConformance.class.getResourceAsStream("/compute/vector_add.spv")) {
