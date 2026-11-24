@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-for kernel in vector_add fp_strict; do
+for kernel in vector_add fp_strict error_report; do
   glslangValidator -V --target-env vulkan1.1 --source-entrypoint main -e "$kernel" \
+    -I"$repo/dynamis-gpu-api/src/main/resources/org/dynamisengine/gpu/api/compute/shader" \
     "$repo/dynamis-gpu-test/src/main/resources/compute/$kernel.comp" \
     -o "$repo/dynamis-gpu-test/src/main/resources/compute/$kernel.spv"
   # Optional additional validation when the SPIR-V tools are installed.

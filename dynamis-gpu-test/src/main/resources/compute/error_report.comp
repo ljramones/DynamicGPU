@@ -1,0 +1,17 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Conformance kernel for kernel error buffers: y[i] = x[i], and x[i] < 0 reports code 1 << (i % 3), a NaN code 8.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0) readonly buffer In { float x[]; };
+layout(set = 0, binding = 1) writeonly buffer Out { float y[]; };
+layout(set = 0, binding = 2) buffer KernelErrorsBlock { uint kernelErrors[4]; };
+#include "kernel_errors.glsl"
+layout(push_constant) uniform Parameters { uint count; } parameters;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= parameters.count) return;
+    float v = x[i];
+    if (isnan(v)) reportError(8u, i);
+    else if (v < 0.0) reportError(1u << (i % 3u), i);
+    y[i] = v;
+}

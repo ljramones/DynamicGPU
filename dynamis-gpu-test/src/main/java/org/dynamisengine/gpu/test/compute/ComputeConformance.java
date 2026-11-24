@@ -105,6 +105,61 @@ public abstract class ComputeConformance {
             assertEquals(ComputeException.Code.UNSUPPORTED, assertThrows(ComputeException.class, () -> device.pipeline(requiring)).code());
         }
     }
+    /** A reported kernel error fails only its submission: the readbacks stay readable and the queue keeps working. */
+    @Test void kernelErrorsFailOnlyTheirSubmission() {
+        try (var errors = device.allocate(KernelErrors.descriptor()); var data = buffer(64, Placement.PRIVATE)) {
+            try (var e = device.encoder()) {
+                e.resetErrors(errors).checkErrors(errors); await(device.queue().submit(e));
+            }
+            GpuReadback kept;
+            try (var e = device.encoder()) {
+                e.fill(errors, 0x4).fill(data, 7); kept = e.download(data); e.checkErrors(errors);
+                var s = device.queue().submit(e);
+                var error = assertThrows(ComputeException.class, () -> s.await(WAIT));
+                assertEquals(ComputeException.Code.KERNEL_ERROR, error.code());
+                assertTrue(error.getMessage().contains("codes 0x00000004"), error.getMessage());
+                assertEquals(GpuSubmission.Status.FAILED, s.status());
+                assertEquals(7, ByteBuffer.wrap(kept.bytes()).order(ByteOrder.nativeOrder()).getInt(), "readbacks stay readable");
+            }
+            try (var e = device.encoder()) {
+                e.fill(data, 9); var read = e.download(data); await(device.queue().submit(e));
+                assertEquals(9, ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder()).getInt(), "the queue keeps working");
+            }
+        }
+    }
+    /** The error_report kernel for this backend (resources compute/error_report.*), or null when it has none. */
+    protected KernelBundle errorKernel() { return null; }
+    /** Kernels report data errors with the shipped helpers; the report does not depend on thread order. */
+    @Test void kernelsReportDataErrorsThroughCompletion() {
+        var kernel = errorKernel(); Assumptions.assumeTrue(kernel != null, "No error_report kernel for this backend");
+        int n = 200;
+        var layout = new BindingLayout(List.of(new BindingLayout.BufferBinding(0, Access.READ, n * 4L),
+                new BindingLayout.BufferBinding(1, Access.WRITE, n * 4L),
+                new BindingLayout.BufferBinding(2, Access.READ_WRITE, KernelErrors.BYTES)), 4);
+        try (var p = device.pipeline(new PipelineDescriptor(kernel, "error_report", layout, new Dimensions(64, 1, 1), Map.of(), Set.of("FP32", "INT32"), Set.of()));
+             var x = buffer(n * 4, Placement.PRIVATE); var y = buffer(n * 4, Placement.PRIVATE); var errors = device.allocate(KernelErrors.descriptor())) {
+            for (boolean bad : new boolean[] {false, true}) {
+                var input = ByteBuffer.allocate(n * 4).order(ByteOrder.nativeOrder());
+                for (int i = 0; i < n; i++) {
+                    float v = i * 0.5f;
+                    if (bad && (i == 5 || i == 70 || i == 130)) v = -1f;
+                    if (bad && i == 150) v = Float.NaN;
+                    input.putFloat(v);
+                }
+                try (var e = device.encoder()) {
+                    e.upload(x, input.array()).resetErrors(errors)
+                        .dispatch(p, Map.of(0, x, 1, y, 2, errors), scalar(n), new Dimensions((n + 63) / 64, 1, 1));
+                    var report = e.download(errors); var out = e.download(y); e.checkErrors(errors);
+                    var s = device.queue().submit(e);
+                    if (!bad) { await(s); assertFalse(KernelErrors.parse(report.bytes()).any()); continue; }
+                    assertEquals(ComputeException.Code.KERNEL_ERROR, assertThrows(ComputeException.class, () -> s.await(WAIT)).code());
+                    var r = KernelErrors.parse(report.bytes());
+                    assertEquals(new KernelErrors.Report(4 | 2 | 8, 5, 4), r, "codes OR, smallest index, count");
+                    assertEquals(-1f, ByteBuffer.wrap(out.bytes()).order(ByteOrder.nativeOrder()).getFloat(5 * 4), "results stay readable");
+                }
+            }
+        }
+    }
     @Test void queueOrdersSeparateSubmissions() {
         try (var b = buffer(256, Placement.PRIVATE); var first = device.encoder(); var second = device.encoder()) {
             first.fill(b, 42); var a = device.queue().submit(first); var out = second.download(b); var s = device.queue().submit(second);

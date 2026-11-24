@@ -20,6 +20,15 @@ class MetalComputeTest extends ComputeConformance {
             return new KernelBundle("fp-strict", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, stream.readAllBytes())));
         } catch (java.io.IOException e) { throw new AssertionError(e); }
     }
+    /** error_report.metal with the shipped kernel_errors.metal helper in front of it. */
+    @Override protected KernelBundle errorKernel() {
+        try (var helper = org.dynamisengine.gpu.api.compute.KernelErrors.class.getResourceAsStream("shader/kernel_errors.metal");
+             var kernel = ComputeConformance.class.getResourceAsStream("/compute/error_report.metal")) {
+            byte[] source = (new String(helper.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8) + "\n"
+                    + new String(kernel.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            return new KernelBundle("error-report", "1", Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, source)));
+        } catch (java.io.IOException e) { throw new AssertionError(e); }
+    }
     /** Metal's fma is one rounding (MSL), and Apple GPUs implement it so. */
     @Override protected Boolean expectedFusedFma() { return true; }
     @Override protected GpuProvider provider() { return new MetalProvider(); }

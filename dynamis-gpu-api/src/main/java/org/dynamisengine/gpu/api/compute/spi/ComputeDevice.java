@@ -144,8 +144,14 @@ public final class ComputeDevice implements GpuDevice {
     private final class Encoder implements GpuCommandEncoder {
         final List<Command> commands = new ArrayList<>();
         final Set<Resource> used = Collections.newSetFromMap(new IdentityHashMap<>());
+        final List<GpuReadback> errorChecks = new ArrayList<>();
         boolean consumed;
         Encoder() { handles.add(this); }
+        private void errorBuffer(GpuBuffer errors) {
+            require(errors != null && errors.bytes() >= KernelErrors.BYTES, "A kernel error buffer needs at least " + KernelErrors.BYTES + " bytes");
+        }
+        @Override public GpuCommandEncoder resetErrors(GpuBuffer errors) { errorBuffer(errors); return fill(errors, 0); }
+        @Override public GpuCommandEncoder checkErrors(GpuBuffer errors) { errorBuffer(errors); errorChecks.add(download(errors)); return this; }
         void valid() { check(); if (consumed) throw new ComputeException(CLOSED, "Encoder already submitted/closed"); }
         void retain(Resource r) { if (used.add(r)) { r.retain(); r.recorded++; } }
         void aligned(Buffer b) { require((b.offset & 3) == 0 && (b.bytes & 3) == 0, "Transfers require four-byte aligned ranges"); }
@@ -232,6 +238,16 @@ public final class ComputeDevice implements GpuDevice {
                 if (result == Status.FAILED) throw new ComputeException(NATIVE_ERROR, "Backend reported failed submission without diagnostics");
                 if (queueFailure != null) throw queueFailure;
                 state = Status.COMPLETE;
+                // Data-dependent kernel errors fail this submission only: the queue stays usable and the other
+                // readbacks keep their results for inspection.
+                for (var check : encoder.errorChecks) {
+                    var report = KernelErrors.parse(check.bytes());
+                    if (report.any()) {
+                        state = Status.FAILED;
+                        error = new ComputeException(KERNEL_ERROR, "Kernel reported errors: " + report);
+                        break;
+                    }
+                }
             } catch (ComputeException ex) {
                 state = Status.FAILED; error = ex; queueFailure = ex;
                 for (var c : encoder.commands) if (c instanceof Download d) d.result().fail(ex);

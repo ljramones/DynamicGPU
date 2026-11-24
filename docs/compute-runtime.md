@@ -214,6 +214,32 @@ categories and native operation diagnostics. No Objective-C exception crosses th
 C ABI; bridge calls scope autorelease pools and copy thread-local error text into
 Java immediately. Native handles are typed and stay inside backend implementations.
 
+## Kernel error buffers
+
+Some arguments live in device memory, such as embedding indices, joint indices and data to be quantized, so the host
+cannot check them before a dispatch. A kernel reports such a data-dependent error into a `KernelErrors` buffer, and
+the submission fails with `ComputeException.Code.KERNEL_ERROR` instead of producing silently wrong results.
+
+- **Buffer:** `KernelErrors.descriptor()` gives a device-private buffer of four 32-bit words.
+  - word 0: the OR of the reported codes;
+  - word 1: the complement of the smallest reported index;
+  - word 2: the report count;
+  - word 3: reserved.
+
+  Each word is updated with an atomic chosen so the report does not depend on thread order. Codes are
+  application-defined, nonzero bit masks.
+- **Shader helpers:** `reportError(code, index)` ships as resources beside `KernelErrors` in `dynamis-gpu-api`:
+  `shader/kernel_errors.glsl` (declare `kernelErrors[4]`, then `#include` it), `.metal` (prepend it) and `.slang`.
+  The conformance suite runs the GLSL and Metal helpers on every hardware backend, and the Slang helper compiles to
+  the same atomics.
+- **Recording:** call `resetErrors(errors)` before the dispatches that report and `checkErrors(errors)` after them.
+  Bind the buffer `READ_WRITE`.
+- **On failure:**
+  - **Scope:** only that submission fails. The queue is not poisoned, and the device stays usable.
+  - **Results:** the submission's other readbacks stay readable, so results and a separate `download` of the error
+    buffer can be inspected.
+  - **The report:** `KernelErrors.parse` decodes the buffer, and the exception message carries the report.
+
 ## Migration and adapter handoff
 
 Existing `api.buffer`, `api.gpu.VkCommandBuffer`, mesh upload/tickets, staging, and
