@@ -14,7 +14,7 @@ import java.util.Set;
  * products of attention.
  * <p>
  * <b>Accuracy.</b> The contract is a bound: before {@code alpha} and {@code beta},
- * {@code |error| <= k * 2^-24 * sum |a b|}, plus one rounding to half for {@link Output#FP16}. Later kernel versions
+ * {@code |error| <= k * 2^-24 * sum |a b|}, plus one rounding to half for {@link Precision#FP16}. Later kernel versions
  * may sum in another order, for example on matrix hardware, within the same bound.
  * <p>
  * <b>Algorithms.</b> {@link Algorithm#TILED} runs everywhere and is reproducible; {@link Algorithm#SIMDGROUP_MATRIX}
@@ -51,20 +51,6 @@ public final class GemmF16 implements AutoCloseable {
          * {@link #reference}.
          */
         SIMDGROUP_MATRIX
-    }
-
-    /** The element type of C. */
-    public enum Output {
-        /** FP32, as accumulated. */
-        FP32(4, "gemm_f16"),
-        /** FP16: the FP32 result rounded once to the nearest half (overflow gives infinity). */
-        FP16(2, "gemm_f16_h");
-
-        private final int bytes;
-        private final String kernel;
-        Output(int bytes, String kernel) { this.bytes = bytes; this.kernel = kernel; }
-        /** Bytes per element of C. */
-        public int bytes() { return bytes; }
     }
 
     /**
@@ -119,7 +105,7 @@ public final class GemmF16 implements AutoCloseable {
         public long bBytes() { return 2 * bElements(); }
         public long cBytes() { return 4 * cElements(); }
         /** The bytes C must hold for {@code output}. */
-        public long cBytes(Output output) { return output.bytes() * cElements(); }
+        public long cBytes(Precision output) { return output.bytes() * cElements(); }
         /** Floating-point operations: {@code 2 m n k} per multiply. */
         public double flops() { return 2.0 * m * n * k * batch; }
         /** Index of B's element at row {@code q} (of k) and column {@code j} (of n) in matrix {@code z}. */
@@ -129,39 +115,41 @@ public final class GemmF16 implements AutoCloseable {
     private final GpuDevice device;
     private final GpuComputePipeline pipeline;
     private final Algorithm algorithm;
-    private final Output output;
+    private final Precision output;
 
-    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, Algorithm algorithm, Output output) {
+    private GemmF16(GpuDevice device, GpuComputePipeline pipeline, Algorithm algorithm, Precision output) {
         this.device = device; this.pipeline = pipeline; this.algorithm = algorithm; this.output = output;
     }
 
     /** Compiles the fastest algorithm {@code device} supports, with an FP32 C. */
-    public static GemmF16 create(GpuDevice device) { return create(device, fastest(device), Output.FP32); }
+    public static GemmF16 create(GpuDevice device) { return create(device, fastest(device), Precision.FP32); }
 
     /** Compiles the fastest algorithm {@code device} supports, with C of type {@code output}. */
-    public static GemmF16 create(GpuDevice device, Output output) { return create(device, fastest(device), output); }
+    public static GemmF16 create(GpuDevice device, Precision output) { return create(device, fastest(device), output); }
 
     /** Compiles {@code algorithm} with an FP32 C. */
-    public static GemmF16 create(GpuDevice device, Algorithm algorithm) { return create(device, algorithm, Output.FP32); }
+    public static GemmF16 create(GpuDevice device, Algorithm algorithm) { return create(device, algorithm, Precision.FP32); }
 
     /** Compiles {@code algorithm} with C of type {@code output}; throws {@code UNSUPPORTED} where the device lacks it. */
-    public static GemmF16 create(GpuDevice device, Algorithm algorithm, Output output) {
+    public static GemmF16 create(GpuDevice device, Algorithm algorithm, Precision output) {
         var types = Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16);
         var accesses = List.of(Access.READ, Access.READ, Access.READ_WRITE);
         PipelineDescriptor descriptor = switch (algorithm) {
-            case TILED -> KERNELS.pipeline(output.kernel, accesses, types, Set.of());
+            case TILED -> KERNELS.pipeline(kernel(output), accesses, types, Set.of());
             case SIMDGROUP_MATRIX -> {
                 if (device.adapter().backend() != Backend.METAL)
                     throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
                 List<BindingLayout.BufferBinding> b = List.of(new BindingLayout.BufferBinding(0, Access.READ, 4),
                         new BindingLayout.BufferBinding(1, Access.READ, 4), new BindingLayout.BufferBinding(2, Access.READ_WRITE, 4));
-                yield new PipelineDescriptor(simdgroupBundle(), output.kernel + "_simdgroup",
-                        new BindingLayout(b, KERNELS.parameterBytes(output.kernel)), new Dimensions(128, 1, 1), Map.of(), types,
+                yield new PipelineDescriptor(simdgroupBundle(), kernel(output) + "_simdgroup",
+                        new BindingLayout(b, KERNELS.parameterBytes(kernel(output))), new Dimensions(128, 1, 1), Map.of(), types,
                         Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
             }
         };
         return new GemmF16(device, device.pipeline(descriptor), algorithm, output);
     }
+
+    private static String kernel(Precision output) { return output == Precision.FP32 ? "gemm_f16" : "gemm_f16_h"; }
 
     private static Algorithm fastest(GpuDevice device) {
         return supports(device, Algorithm.SIMDGROUP_MATRIX) ? Algorithm.SIMDGROUP_MATRIX : Algorithm.TILED;
@@ -190,12 +178,12 @@ public final class GemmF16 implements AutoCloseable {
     public Algorithm algorithm() { return algorithm; }
 
     /** The element type of C. */
-    public Output output() { return output; }
+    public Precision output() { return output; }
 
     /** Records {@code C = alpha * A * B + beta * C} (for each matrix of the batch). */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer a, GpuBuffer b, GpuBuffer c, Shape s) {
         check(a, s.aElements(), 2, "A"); check(b, s.bElements(), 2, "B"); check(c, s.cElements(), output.bytes(), "C");
-        byte[] params = ByteBuffer.allocate(KERNELS.parameterBytes(output.kernel)).order(ByteOrder.LITTLE_ENDIAN)
+        byte[] params = ByteBuffer.allocate(KERNELS.parameterBytes(kernel(output))).order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(s.m()).putInt(s.n()).putInt(s.k()).putInt(s.lda()).putInt(s.ldb()).putInt(s.ldc())
                 .putFloat(s.alpha()).putFloat(s.beta()).putInt(s.transposeB() ? 1 : 0)
                 .putInt((int) s.strideA()).putInt((int) s.strideB()).putInt((int) s.strideC()).array();

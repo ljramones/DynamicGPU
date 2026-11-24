@@ -2,7 +2,6 @@ package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.*;
 import org.dynamisengine.gpu.primitives.GemmF16.Algorithm;
-import org.dynamisengine.gpu.primitives.GemmF16.Output;
 import org.dynamisengine.gpu.primitives.GemmF16.Shape;
 import org.junit.jupiter.api.*;
 import java.nio.ByteBuffer;
@@ -32,7 +31,7 @@ abstract class GemmF16Conformance {
 
     interface Body { void run() throws Exception; }
     /** Runs {@code body} with {@link #gemm} set to each supported algorithm and each output in {@code outputs}. */
-    void eachKernel(Body body, Output... outputs) throws Exception {
+    void eachKernel(Body body, Precision... outputs) throws Exception {
         for (var algorithm : Algorithm.values()) {
             for (var output : outputs) {
                 if (!GemmF16.supports(device, algorithm)) {
@@ -43,7 +42,7 @@ abstract class GemmF16Conformance {
             }
         }
     }
-    void eachKernel(Body body) throws Exception { eachKernel(body, Output.values()); }
+    void eachKernel(Body body) throws Exception { eachKernel(body, Precision.values()); }
 
     GpuBuffer buffer(long bytes) {
         return device.allocate(new BufferDescriptor(bytes, EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE, BufferUsage.TRANSFER_DESTINATION), Placement.PRIVATE));
@@ -70,7 +69,7 @@ abstract class GemmF16Conformance {
             float v = nanC ? Float.NaN : (float) (r.nextDouble() * 2 - 1);
             cF[i] = v; cH[i] = Float.floatToFloat16(v);
         }
-        boolean fp32 = output == Output.FP32;
+        boolean fp32 = output == Precision.FP32;
         ByteBuffer got;
         try (var ga = buffer(pad4(s.aBytes())); var gb = buffer(pad4(s.bBytes())); var gc = buffer(pad4(s.cBytes(output))); var e = device.encoder()) {
             e.upload(ga, bytes(a)).upload(gb, bytes(b)).upload(gc, fp32 ? bytes(cF) : bytes(cH));
@@ -157,7 +156,7 @@ abstract class GemmF16Conformance {
 
     @Test void rejectsUndersizedBuffersAndBadShapes() {
         var s = Shape.of(8, 8, 8, 1, 0);
-        try (var gemm = GemmF16.create(device); var gemm16 = GemmF16.create(device, Output.FP16);
+        try (var gemm = GemmF16.create(device); var gemm16 = GemmF16.create(device, Precision.FP16);
              var small = buffer(64); var a = buffer(256); var b = buffer(256); var c = buffer(256); var e = device.encoder()) {
             assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, small, b, c, s));
             assertThrows(IllegalArgumentException.class, () -> gemm.encode(e, a, small, c, s));
@@ -175,7 +174,7 @@ abstract class GemmF16Conformance {
     /** -Dgemm.benchmark=true: GFLOP/s for square multiplies over back-to-back dispatches, by GPU time and by wall time. */
     @Test void benchmark() throws Exception {
         Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
-        eachKernel(this::benchmarkOne, Output.FP32);
+        eachKernel(this::benchmarkOne, Precision.FP32);
     }
 
     private void benchmarkOne() {

@@ -20,7 +20,7 @@ class GemmF16Test {
     @Test void shapeSizes() {
         var s = new GemmF16.Shape(3, 5, 7, 8, 6, 9, 1, 0);
         assertEquals(2L * (2 * 8 + 7), s.aBytes()); assertEquals(2L * (6 * 6 + 5), s.bBytes()); assertEquals(4L * (2 * 9 + 5), s.cBytes());
-        assertEquals(2L * (2 * 9 + 5), s.cBytes(GemmF16.Output.FP16));
+        assertEquals(2L * (2 * 9 + 5), s.cBytes(Precision.FP16));
         assertEquals(2.0 * 3 * 5 * 7, s.flops());
         var t = GemmF16.Shape.ofTransposedB(3, 5, 7, 1, 0); // B is 5 x 7
         assertEquals(7, t.ldb()); assertEquals(2L * (4 * 7 + 7), t.bBytes()); assertEquals(2 * 7 + 4, t.bIndex(0, 4, 2));

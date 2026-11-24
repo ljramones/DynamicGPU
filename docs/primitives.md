@@ -2,7 +2,16 @@
 
 `dynamis-gpu-primitives` (module `org.dynamisengine.gpu.primitives`) holds throughput kernels on the compute API,
 written in Slang and built with `dynamis-gpu-shaders`. Their contract is an accuracy bound, not bit-exactness. The
-exact GPU twins of Vectrix's kernels are vectrix-gpu. The first primitive is a half-precision matrix multiply.
+exact GPU twins of Vectrix's kernels are vectrix-gpu.
+
+| Primitive | Does | Since |
+|---|---|---|
+| `GemmF16` | half-precision matrix multiply: transposed B, batches, FP32 or FP16 output | 1.2.0 (forms 1.4.0) |
+| `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
+| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
+
+Output types are `Precision.FP32` and `Precision.FP16`. FP16 output is the FP32 result rounded once to the nearest
+half.
 
 ## `GemmF16`
 
@@ -96,11 +105,74 @@ back-to-back multiplies in one submission (`-Dgemm.benchmark=true`). MoltenVK ru
 - **Peak:** the tiled kernel reaches about a third of the GPU's FP32 peak, and the matrix kernel about three
   quarters.
 
+## `Softmax`
+
+`y[j] = exp(s[j] - max) / sum exp(s[j'] - max)` over each row of an `m x n` matrix of FP32 scores. Masked columns
+are 0.
+
+```java
+try (Softmax softmax = Softmax.create(device, Precision.FP16)) {      // FP16 output feeds GemmF16 directly
+    softmax.encode(encoder, scores, probs, Softmax.Shape.of(rows, cols).causal(cols - rows).batched(heads));
+}
+```
+
+- **Causal mask:** row `r` sees columns `0 .. r + causalOffset`. With a cache of `n` keys and `m` new queries the
+  offset is `n - m`.
+- **Batches:** the batch is the dispatch's z dimension.
+- **The kernel:** one group of 256 threads per row. The max and the sum are combined by a fixed tree, so a device's
+  result doesn't depend on scheduling. The row's max and sum live in their own group variables, because Slang's
+  SPIR-V target may reread a local copy of a groupshared value after a barrier.
+- **Accuracy:** `exp` is the device's own, so results are bounded, not bit-identical across devices. For an unmasked
+  element, with `x = s - max` and `xbar` the softmax-weighted mean of `|x|`:
+  `|y - exact| <= (n + 10 + 2|x| + 2 xbar) 2^-24 exact + 2^-126`, plus one rounding to half for FP16. The `2^-126`
+  allows for Apple GPUs flushing subnormal results to zero.
+- **Measured:** the tests check every element on native Metal, MoltenVK and lavapipe. FP32 output stays within a
+  quarter of the bound; FP16 output is dominated by its final rounding.
+
+## `AttentionF16`
+
+`O = softmax(scale Q K^T + mask) V` for every head.
+- **Layout:** Q is `[heads][queries][headDim]`, K and V `[heads][keys][headDim]`, all FP16, densely packed. O has the
+  layout of Q, in FP16 or FP32.
+
+```java
+try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
+    var shape = AttentionF16.Shape.of(heads, queries, keys, headDim).asCausal();   // scale = 1/sqrt(headDim)
+    attention.encode(encoder, q, k, v, o, scores, probs, shape);   // scores: shape.scoresBytes(); probs: probsBytes()
+}
+```
+
+- **The steps:** it records three dispatches.
+  1. `S = scale Q K^T`: `GemmF16` with transposed B, FP32.
+  2. `P = softmax(S)`: FP16, causal if asked.
+  3. `O = P V`.
+- **Algorithm:** both products use the fastest `GemmF16` algorithm the device has.
+- **Memory:** the scratch buffers hold `heads * queries * keys` scores and probabilities, so memory grows with the
+  square of the sequence. A fused (flash) kernel is planned.
+- **Causal:** query `i` sees keys `0 .. i + keys - queries`, so new queries at the end of a KV cache see the whole
+  cache. One decode step (`queries = 1`) sees every key.
+- **Accuracy:** the error of O is the composition of the steps' bounds.
+  - The scores' `GemmF16` error perturbs P by at most `2 P max|dS|`.
+  - `Softmax` adds its bound, and P adds one rounding to half.
+  - The value product adds `(keys + 2) 2^-24 sum P |V|`, then the rounding of O.
+  - The tests check every element of O against that composition, computed in double precision from the same half
+    inputs: on native Metal, MoltenVK and lavapipe, for causal and unmasked shapes and both outputs. The worst
+    measured error is 37 % of the bound.
+- **Measured** on an Apple M4 Max (native Metal, `SIMDGROUP_MATRIX`), 32 heads, head dimension 128, causal, FP16, by
+  GPU time:
+
+  | Sequence | Time | Dense-equivalent rate |
+  |---|---|---|
+  | 512 | 0.82 ms | 5.3 TFLOP/s |
+  | 1024 | 2.1 ms | 8.1 TFLOP/s |
+  | 2048 | 7.4 ms | 9.3 TFLOP/s |
+
+  The rate counts both products in full. A causal mask makes half of the scores unnecessary, so a kernel that skips
+  them would do better.
+
 ## Planned
 
-- **GEMM:**
-  - FP16 output;
-  - transposed B (the `x W^T` of a linear layer);
-  - batched and strided multiplies;
-  - a Vulkan cooperative-matrix path, once there is hardware to test it on.
-- **Other primitives:** reductions, softmax and attention, and int8 and BF16 weight formats.
+- **Flash attention:** fused attention that keeps the scores on chip, with memory linear in the sequence, and skips
+  masked blocks.
+- **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on.
+- **Other primitives:** layer and RMS norms, reductions, and int8 and BF16 weight formats.
