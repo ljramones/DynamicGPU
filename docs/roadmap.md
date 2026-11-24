@@ -182,7 +182,7 @@ hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers abov
 
 ### 1.7: Kernel kit
 
-**Status: complete on branch `feat/kernel-kit`, ready to release as 1.7.0.** Done:
+**Status: complete, released as 1.7.0.** Done:
 - the Java kit (`ParameterLayout`, `StridedView`, `Grid`, `PipelineSet`, `Checks`);
 - specialization on Metal (function constants, bridge ABI 6);
 - device and pipeline limits;
