@@ -505,7 +505,13 @@ public final class ComputeDevice implements GpuDevice {
             }
             if (error != null) throw error; return true;
         }
-        @Override public void close() { if (!await(Duration.ofSeconds(30))) throw new ComputeException(TIMEOUT, "Submission still pending after 30 seconds; device retains its resources"); }
+        /** Waits for completion. A failed submission's error is reported by await, status and failure(), not again here. */
+        @Override public void close() {
+            boolean done;
+            try { done = await(Duration.ofSeconds(30)); }
+            catch (ComputeException e) { if (e != error) throw e; done = true; }
+            if (!done) throw new ComputeException(TIMEOUT, "Submission still pending after 30 seconds; device retains its resources");
+        }
     }
     private final class Recording implements GpuRecording {
         final List<Command> commands;

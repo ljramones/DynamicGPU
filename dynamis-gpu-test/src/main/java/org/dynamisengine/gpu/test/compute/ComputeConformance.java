@@ -749,6 +749,8 @@ public abstract class ComputeConformance {
                 assertTrue(error.getMessage().contains("codes 0x00000004"), error.getMessage());
                 assertEquals(GpuSubmission.Status.FAILED, s.status());
                 assertEquals(7, ByteBuffer.wrap(kept.bytes()).order(ByteOrder.nativeOrder()).getInt(), "readbacks stay readable");
+                s.close(); s.close();   // a failed submission closes quietly (1.7.0)
+                assertEquals(ComputeException.Code.KERNEL_ERROR, s.failure().orElseThrow().code());
             }
             try (var e = device.encoder()) {
                 e.fill(data, 9); var read = e.download(data); await(device.queue().submit(e));

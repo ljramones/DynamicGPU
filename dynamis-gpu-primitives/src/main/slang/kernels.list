@@ -3,3 +3,10 @@ gemm_f16 gemm_f16.slang gemm_f16
 gemm_f16_h gemm_f16_h.slang gemm_f16_h
 softmax_f32 softmax_f32.slang softmax_f32
 softmax_f16 softmax_f16.slang softmax_f16
+# kernel kit primitives (1.7.0): the operation is a specialization constant
+ew_unary ew_unary.slang ew_unary
+ew_binary ew_binary.slang ew_binary
+reduce_rows reduce_rows.slang reduce_rows
+reduce_argmax reduce_argmax.slang reduce_argmax
+scan_rows scan_rows.slang scan_rows
+nan_check nan_check.slang nan_check

@@ -9,6 +9,16 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `GemmF16` | half-precision matrix multiply: transposed B, batches, FP32 or FP16 output | 1.2.0 (forms 1.4.0) |
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
 | `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
+| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting | 1.7.0 |
+| `Reduce` | fixed-order sum, max, min and argmax along the last dimension | 1.7.0 |
+| `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
+| `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
+
+Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
+- **What it says:** the input types, the accumulation type, the output rounding, the order class and the bound.
+  - **Order class:** `FIXED` gives the same bits on every device; `DEVICE` means the result is bounded.
+  - **Bound:** exact against a named CPU reference, within ULPs, or a formula.
+- **Measured:** the tests check each primitive against its contract on native Metal, MoltenVK and lavapipe.
 
 Output types are `Precision.FP32` and `Precision.FP16`. FP16 output is the FP32 result rounded once to the nearest
 half.
@@ -176,3 +186,57 @@ try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
   masked blocks.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on.
 - **Other primitives:** layer and RMS norms, reductions, and int8 and BF16 weight formats.
+
+## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)
+
+They take kit `StridedView`s of rank up to 4 over FP32 buffers, so dense, sliced, transposed, batched and
+interleaved data need no copies. The operation is a specialization constant, so each one compiles to its own folded
+pipeline on first use.
+
+```java
+try (var ew = Elementwise.create(device); var reduce = Reduce.create(device)) {
+    var x = StridedView.matrix(0, rows, cols, ld);                       // a sliced matrix
+    ew.binary(e, Elementwise.Binary.ADD, a, x, bias, StridedView.contiguous(cols), y, StridedView.matrix(rows, cols));
+    reduce.rows(e, Reduce.Op.MAX, y, StridedView.matrix(rows, cols), m, StridedView.contiguous(rows));
+}
+```
+
+- **`Elementwise`:**
+  - **Unary:** COPY, NEG, ABS, SQUARE, RELU, SQRT, EXP, LOG, RECIPROCAL.
+  - **Binary:** ADD, SUB, MUL, DIV, MAX, MIN.
+  - **Broadcasting:** inputs broadcast along extent-1 dimensions, aligned at the last dimension as in NumPy.
+  - **Accuracy:**
+    - **Exact:** the exact operations, plus ADD, SUB, MUL, MAX and MIN, match `Elementwise.apply` bit for bit.
+      MAX and MIN follow Java's `Math.max` and `Math.min` (NaN propagates; max(-0, +0) = +0) on every device,
+      not the hardware's.
+    - **Device functions:** SQRT, EXP, LOG, RECIPROCAL and DIV use the device's own functions, within the Vulkan
+      and Metal precision requirements: 5, max(4, 3 + 2|x|), 4 (or 2^-21 absolute near 1), 2.5 and 2.5 ULP.
+  - **Measured worst error:**
+
+    | Device | SQRT | DIV | RECIPROCAL | EXP | LOG |
+    |---|---|---|---|---|---|
+    | M4 Max (Metal and MoltenVK) | 0 | 0 | 0 | 1 | 2 |
+    | lavapipe | 0 | 0 | 0 | 7 | 8 (inside [0.5, 2]) |
+- **`Reduce`:** sum, max and min along the last dimension, and argmax (the first largest; NaN counts as the largest).
+  - **The order:** one group of 256 threads per row. Thread `t` folds columns `t, t + 256, ...`, then the partials
+    combine in a fixed tree.
+  - **Exactness:** the result is the same bits on every device, and `Reduce.reference` reproduces it on the CPU.
+  - **Against the exact sum:** `|err| <= (ceil(n / 256) + 8) u sum |x|`.
+- **`Scan`:** inclusive sum, max and min scans along the last dimension.
+  - **The order:** blocks of 256 are scanned in a fixed Blelloch tree and combined with the carry of the blocks
+    before them.
+  - **Exactness:** the same bits on every device, reproduced by `Scan.reference`.
+  - **Against the exact prefix sum:** `|err_j| <= (18 + ceil((j + 1) / 256)) u sum_{i <= j} |x_i|`.
+- **`NanCheck`:** it reports every NaN and infinity of a view, with code `NanCheck.NONFINITE` and the smallest
+  row-major index in the view.
+  - **`tripwire`:** it resets the error buffer, checks the view and records `checkErrors`. The submission then fails
+    with `KERNEL_ERROR` if the dispatch before it produced a non-finite value, with no readback.
+- **The Slang side:** these kernels are written on the kit's Slang library, which ShaderBuild bundles:
+  - views (`dg_at`, `dg_coords`, `dg_row`, broadcasting);
+  - fixed-tree reductions and scans (`DG_GROUP_REDUCE`, `DG_GROUP_SCAN_EXCLUSIVE`);
+  - Java-semantics `dg_max` and `dg_min`;
+  - classification by bits (`dg_is_nan`);
+  - `dg_report_error`.
+
+  Any kernel built with ShaderBuild gets them through `#include "dynamis/kit.slang"`.
+

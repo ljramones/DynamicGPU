@@ -182,6 +182,17 @@ hooks; serving vocabulary (prefill, decode, KV, tokens) stays in the layers abov
 
 ### 1.7: Kernel kit
 
+**Progress (branch `feat/kernel-kit`):** done so far:
+- the Java kit (`ParameterLayout`, `StridedView`, `Grid`, `PipelineSet`, `Checks`);
+- specialization on Metal (function constants, bridge ABI 6);
+- device and pipeline limits;
+- the Slang include library;
+- `AccuracyContract`;
+- `Elementwise`, `Reduce`, `Scan` and `NanCheck` with tripwires.
+
+Next come the debug kernel builds, the reproducible mode and the cross-backend harness, then the shape registry,
+then contracts for `GemmF16`, `Softmax` and `AttentionF16`.
+
 - **Shared plumbing:**
   - **Parameter-block builder:** fields named and checked against the manifest.
   - **Grids:** linear-to-2D grids that respect the group-count limits.

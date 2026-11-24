@@ -30,7 +30,8 @@ import java.util.stream.Stream;
  * buffer indices follow (DynamisGPU's {@code BindingLayout.parameterSlot()}).</li>
  * </ul>
  * The manifest has one {@code key=value} line per entry, sorted: {@code slangc.version}, {@code source.sha256} (over
- * every {@code .slang} file in the hash directories) and, per kernel, {@code entry}, {@code local}, {@code buffers}
+ * every {@code .slang} file in the hash directories), {@code include.sha256} (over the bundled kit library,
+ * {@link #includeHash}) and, per kernel, {@code entry}, {@code local}, {@code buffers}
  * ({@code name:slot}), {@code params} ({@code name:offset:type}), {@code constants} ({@code name:id:type}, kernels with
  * specialization constants only), {@code spirv.sha256} and {@code metal.sha256}.
  * <p>
@@ -56,7 +57,44 @@ public final class ShaderBuild {
     public record Config(Path src, Path out, String manifestName, List<Path> includes, List<Path> hashDirs,
             List<Kernel> kernels, Path slangc) { }
 
+    /**
+     * The kernel kit's Slang library, bundled in this jar and put on every build's include path (after the
+     * {@code --include} directories, before the source directory): {@code #include "dynamis/kit.slang"}.
+     */
+    public static final List<String> INCLUDES = List.of("dynamis/kit.slang", "dynamis/grid.slang", "dynamis/view.slang",
+            "dynamis/reduce.slang", "dynamis/numeric.slang", "dynamis/errors.slang");
+
     private ShaderBuild() { }
+
+    /** Writes the bundled include library under {@code dir} ({@code dir/dynamis/*.slang}). */
+    public static void writeIncludes(Path dir) throws IOException {
+        for (String name : INCLUDES) {
+            try (var in = ShaderBuild.class.getResourceAsStream("include/" + name)) {
+                if (in == null) throw new IllegalStateException("missing bundled include " + name);
+                Path f = dir.resolve(name);
+                Files.createDirectories(f.getParent());
+                Files.write(f, in.readAllBytes());
+            }
+        }
+    }
+
+    /**
+     * The SHA-256 of the bundled include library, recorded as {@code include.sha256}: over each file in
+     * {@link #INCLUDES} order, as its name, a zero byte, its contents and a zero byte.
+     */
+    public static String includeHash() throws IOException {
+        MessageDigest h = digest();
+        for (String name : INCLUDES) {
+            try (var in = ShaderBuild.class.getResourceAsStream("include/" + name)) {
+                if (in == null) throw new IllegalStateException("missing bundled include " + name);
+                h.update(name.getBytes(StandardCharsets.UTF_8));
+                h.update((byte) 0);
+                h.update(in.readAllBytes());
+                h.update((byte) 0);
+            }
+        }
+        return HexFormat.of().formatHex(h.digest());
+    }
 
     public static void main(String[] args) throws IOException {
         Path src = null, out = null, kernels = null, slangc = null;
@@ -110,11 +148,15 @@ public final class ShaderBuild {
         Map<String, String> manifest = new TreeMap<>();
         manifest.put("slangc.version", version);
         manifest.put("source.sha256", sourceHash(c.hashDirs()));
+        manifest.put("include.sha256", includeHash());
         Path tmp = Files.createTempDirectory("dynamis-shaders");
         try {
+            Path kit = tmp.resolve("include");
+            writeIncludes(kit);
             for (Kernel k : c.kernels()) {
                 List<String> common = new ArrayList<>(List.of(slangc.toString(), c.src().resolve(k.source()).toString()));
                 for (Path inc : c.includes()) { common.add("-I"); common.add(inc.toString()); }
+                common.add("-I"); common.add(kit.toString());
                 common.addAll(List.of("-I", c.src().toString(), "-entry", k.entry(), "-stage", "compute", "-O0",
                         "-line-directive-mode", "none"));
                 Path spvTmp = tmp.resolve(k.name() + ".spv"), refl = tmp.resolve(k.name() + ".json");
