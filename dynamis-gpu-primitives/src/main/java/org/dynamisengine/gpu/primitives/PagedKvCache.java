@@ -5,8 +5,6 @@ import org.dynamisengine.gpu.api.compute.kit.Checks;
 import org.dynamisengine.gpu.api.compute.kit.Grid;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
 import org.dynamisengine.gpu.api.compute.kit.PipelineSet;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.EnumSet;
@@ -100,6 +98,7 @@ public final class PagedKvCache implements AutoCloseable {
                 if (closed) return;
                 closed = true;
                 for (int page : pages) unref(page);
+                if (tableSequence == this) tableSequence = null;
                 pages.clear();
                 sequences.remove(this);
             }
@@ -114,6 +113,9 @@ public final class PagedKvCache implements AutoCloseable {
     private final Map<Sequence, Boolean> sequences = new IdentityHashMap<>();
     private final PipelineSet pipelines;
     private final ParameterLayout layout;
+    // A page list serves every layer. Only the GPU owner thread releases or replaces its buffer.
+    private Sequence tableSequence;
+    private GpuBuffer pageTable;
     private boolean closed;
 
     private PagedKvCache(GpuDevice device, Config config) {
@@ -177,6 +179,7 @@ public final class PagedKvCache implements AutoCloseable {
         live(s);
         if (tokens < 0 || tokens > s.tokens) throw new IllegalArgumentException("tokens must be in [0, " + s.tokens + "]: " + tokens);
         int keep = Math.ceilDiv(tokens, config.pageSize());
+        if (s.pages.size() > keep && s == tableSequence) tableSequence = null;
         while (s.pages.size() > keep) unref(s.pages.removeLast());
         s.tokens = tokens;
     }
@@ -195,6 +198,7 @@ public final class PagedKvCache implements AutoCloseable {
         int need = Math.ceilDiv(s.tokens + tokens, ps) - s.pages.size() + (cow ? 1 : 0);
         if (need > freePages.size())
             throw new ComputeException(ComputeException.Code.RESOURCE_EXHAUSTED, "the KV cache needs " + need + " pages and has " + freePages.size() + " free");
+        if (need > 0 && s == tableSequence) tableSequence = null;
         if (cow) {
             int old = s.pages.removeLast(), fresh = freePages.poll();
             refs[fresh] = 1;
@@ -238,21 +242,31 @@ public final class PagedKvCache implements AutoCloseable {
         byte[] params = layout.block().u32("kvHeads", config.kvHeads()).u32("headDim", config.headDim()).u32("tokens", tokens)
                 .u32("position", position).u32("pageSize", config.pageSize()).u32("headStride", headStride).u32("tokenStride", tokenStride)
                 .u32("gridX", grid.gridX()).bytes();
-        try (var table = table(encoder, s)) {
+        try (var table = table(s)) {
             encoder.dispatch(pipelines.get(0), Map.of(0, k, 1, v, 2, keys[layer], 3, values[layer], 4, table), params, grid.groups(), "kv.write");
         }
         return encoder;
     }
 
-    /** The sequence's page table in a new GPU buffer, uploaded on {@code encoder} (the caller closes the handle). */
-    synchronized GpuBuffer table(GpuCommandEncoder encoder, Sequence s) {
+    /** A retained view of the immutable table. Recorded bindings keep their snapshot across page changes. */
+    synchronized GpuBuffer table(Sequence s) {
         live(s);
-        var b = ByteBuffer.allocate(Math.max(16, 4 * s.pages.size())).order(ByteOrder.nativeOrder());
-        for (int page : s.pages) b.putInt(page);
-        var buffer = device.allocate(new BufferDescriptor(b.capacity(), EnumSet.of(BufferUsage.STORAGE, BufferUsage.TRANSFER_DESTINATION),
-                Placement.PRIVATE).withLabel("kv-page-table"));
-        encoder.upload(buffer, b.array());
-        return buffer;
+        if (s != tableSequence) {
+            long bytes = Math.max(16, 4L * s.pages.size());
+            var next = device.allocate(new BufferDescriptor(bytes, EnumSet.of(BufferUsage.STORAGE, BufferUsage.MAP_WRITE),
+                    Placement.SHARED).withLabel("kv-page-table"));
+            try (var mapping = next.map(Access.WRITE)) {
+                var words = mapping.bytes().asIntBuffer();
+                for (int page : s.pages) words.put(page);
+            } catch (RuntimeException | Error failure) {
+                next.close();
+                throw failure;
+            }
+            if (pageTable != null) pageTable.close();
+            pageTable = next;
+            tableSequence = s;
+        }
+        return pageTable.slice(0, pageTable.bytes());
     }
 
     /** The pool's state now (no GPU sync). */
@@ -291,6 +305,7 @@ public final class PagedKvCache implements AutoCloseable {
         if (closed) return;
         closed = true;
         try { pipelines.close(); } finally {
+            if (pageTable != null) pageTable.close();
             for (var b : keys) b.close();
             for (var b : values) b.close();
         }

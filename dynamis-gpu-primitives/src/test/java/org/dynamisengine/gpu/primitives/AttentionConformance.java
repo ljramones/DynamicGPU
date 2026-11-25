@@ -330,6 +330,33 @@ abstract class AttentionConformance {
         });
     }
 
+    @Test void recordedAttentionRetainsItsPageTable() {
+        var shape = Shape.of(1, 1, 1, 2);
+        try (var q = buffer(shape.qBytes()); var first = buffer(8); var second = buffer(8);
+             var a = AttentionF16.create(device, Precision.FP32); var e = device.encoder()) {
+            try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(1, 1, 2, 32, 2));
+                 var seq = cache.newSequence()) {
+                e.fill(q, 0).fill(cache.keys(0), 0);
+                short[] values = new short[128];
+                java.util.Arrays.fill(values, 0, 64, Float.floatToFloat16(1f));
+                java.util.Arrays.fill(values, 64, 128, Float.floatToFloat16(2f));
+                e.upload(cache.values(0), bytes(values));
+                cache.reserve(e, seq, 1);
+                a.encode(e, q, cache, 0, seq, first, shape);
+                cache.truncate(seq, 0);
+                cache.reserve(e, seq, 1);
+                a.encode(e, q, cache, 0, seq, second, shape);
+            }
+            var old = e.download(first);
+            var current = e.download(second);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+            for (int i = 0; i < 2; i++) {
+                assertEquals(1f, ByteBuffer.wrap(old.bytes()).order(ByteOrder.nativeOrder()).getFloat(4 * i));
+                assertEquals(2f, ByteBuffer.wrap(current.bytes()).order(ByteOrder.nativeOrder()).getFloat(4 * i));
+            }
+        }
+    }
+
     @Test void sharpSoftmax() { eachOutput(a -> check(a, Shape.of(2, 64, 96, 64), 4, 46)); }
 
     @Test void rejectsBadShapes() {

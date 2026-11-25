@@ -300,7 +300,7 @@ public final class AttentionF16 implements AutoCloseable {
         if (s.kvHeads() != c.kvHeads() || s.headDim() != c.headDim())
             throw new IllegalArgumentException("the shape's kvHeads and headDim must be the cache's: " + s + ", " + c);
         if (s.keys() > sequence.tokens()) throw new IllegalArgumentException("the sequence has " + sequence.tokens() + " tokens, not " + s.keys());
-        try (var table = cache.table(encoder, sequence)) {
+        try (var table = cache.table(sequence)) {
             return fused(encoder, q, cache.keys(layer), cache.values(layer), table, c.pageSize(), o, s);
         }
     }

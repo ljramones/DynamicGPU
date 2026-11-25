@@ -668,7 +668,11 @@ try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(layers, kvH
   - **Per sequence:** `tokens()` and `pages()`.
 
   All of these are host-side bookkeeping.
-- **Attention:** reads K and V through the sequence's page table, uploaded per encode. A key block never crosses a page.
+- **Attention:** reads K and V through an immutable snapshot of the sequence's page table in shared memory. Layers
+  attending the same page list reuse the snapshot. Switching sequences or changing a page index creates a new
+  snapshot on the next use. Recorded commands retain their original table. On the M4 Max, four layers of
+  512-key decode with cached kernel metadata took 224 µs on the GPU with a private table upload per layer
+  and 195 µs with the snapshot. Wall time fell from 343–347 to 290–293 µs in two runs each.
 - **Tests:** a cache built through `reserve`, `write`, `fork` with copy on write, and `truncate` gives the same bits as
   the contiguous attention over the same keys and values, on all three backends. The test covers decode, prefill and
   split shapes, and checks the stats at each step.
