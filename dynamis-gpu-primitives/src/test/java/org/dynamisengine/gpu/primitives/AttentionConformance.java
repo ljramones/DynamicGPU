@@ -110,6 +110,7 @@ abstract class AttentionConformance {
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
             got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
         }
+        boolean halfWeights = attention.fusedKernel(s).equals("flash.simdgroup");
         double worst = 0, scale = s.scale();
         int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
         double expErr = 8 * U;   // 4 ulp
@@ -134,8 +135,8 @@ abstract class AttentionConformance {
                 }
                 for (int j = 0; j < limit; j++) {
                     p[j] /= total;
-                    dP[j] = (2 * maxdS + eps[j] + epsMax) * p[j] * 1.01 + 0x1p-126
-                            + p[j] * 0x1p-11 * 1.01 + 0x1p-25;   // P rounded to FP16 (the matrix path's product)
+                    dP[j] = (2 * maxdS + eps[j] + epsMax) * p[j] * 1.01 + 0x1p-126;
+                    if (halfWeights) dP[j] += p[j] * 0x1p-11 * 1.01 + 0x1p-25;   // P rounded for its matrix product
                 }
                 for (int c = 0; c < d; c++) {
                     double o = 0, err = 0, mag = 0;
@@ -167,7 +168,9 @@ abstract class AttentionConformance {
                     Shape.of(8, 5, 300, 128).withKvHeads(2).asCausal().withCacheKeys(512),  // grouped-query, a longer cache
                     Shape.of(32, 1, 2000, 128).withKvHeads(8).withCacheKeys(2048),           // a llama-like decode step
                     Shape.of(6, 7, 7, 2).withKvHeads(3),
-                    Shape.of(16, 2, 9000, 64).withKvHeads(2).asCausal(),                     // decode, 8 rows a KV head
+                    Shape.of(16, 2, 9000, 64).withKvHeads(2).asCausal(),                     // flash, 16 rows per KV head
+                    Shape.of(8, 2, 513, 64).withKvHeads(2).asCausal(),                       // decode, 8 rows and a final single key
+                    Shape.of(6, 1, 129, 128).withKvHeads(2),                                // decode, 3 rows per KV head
                     Shape.of(2, 3, 5000, 256).withKvHeads(1).asCausal().withCacheKeys(6000), // decode at DMAX 256
                     Shape.of(4, 9, 40, 64).withKvHeads(4)}) {
                 assertTrue(a.fusedSupports(s), s.toString());
