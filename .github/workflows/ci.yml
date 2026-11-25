@@ -19,14 +19,16 @@ jobs:
           distribution: temurin
           java-version: "25"
           cache: maven
-      - name: Install Vectrix (for dynamis-gpu-vectrix; Vectrix 3.x is released on GitHub, not Maven Central)
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Install Vectrix (dynamis-gpu-vectrix and -primitives need it; released on GitHub, not Maven Central)
+        # Vectrix 4 is several jars with a parent POM, released as a Maven repository ZIP with an install script
+        shell: bash
         run: |
-          VECTRIX=$(mvn -B -q help:evaluate -pl dynamis-gpu-vectrix -Dexpression=vectrix.version -DforceStdout)
-          gh release download "v$VECTRIX" --repo ljramones/vectrix --pattern "vectrix-$VECTRIX.jar" --dir "$RUNNER_TEMP"
-          mvn -B -q install:install-file -Dfile="$RUNNER_TEMP/vectrix-$VECTRIX.jar" -DgroupId=org.dynamisengine \
-            -DartifactId=vectrix -Dversion="$VECTRIX" -Dpackaging=jar
+          VECTRIX=$(mvn -B -q help:evaluate -N -Dexpression=vectrix.version -DforceStdout)
+          curl -fsSL -o "$RUNNER_TEMP/vectrix.zip" \
+            "https://github.com/ljramones/vectrix/releases/download/v$VECTRIX/vectrix-$VECTRIX-maven.zip"
+          rm -rf "$RUNNER_TEMP/vectrix-$VECTRIX"
+          unzip -q "$RUNNER_TEMP/vectrix.zip" -d "$RUNNER_TEMP"
+          sh "$RUNNER_TEMP/vectrix-$VECTRIX/install.sh"
       - name: Verify
         run: mvn -B verify
 
@@ -44,6 +46,16 @@ jobs:
           distribution: temurin
           java-version: "25"
           cache: maven
+      - name: Install Vectrix (dynamis-gpu-vectrix and -primitives need it; released on GitHub, not Maven Central)
+        # Vectrix 4 is several jars with a parent POM, released as a Maven repository ZIP with an install script
+        shell: bash
+        run: |
+          VECTRIX=$(mvn -B -q help:evaluate -N -Dexpression=vectrix.version -DforceStdout)
+          curl -fsSL -o "$RUNNER_TEMP/vectrix.zip" \
+            "https://github.com/ljramones/vectrix/releases/download/v$VECTRIX/vectrix-$VECTRIX-maven.zip"
+          rm -rf "$RUNNER_TEMP/vectrix-$VECTRIX"
+          unzip -q "$RUNNER_TEMP/vectrix.zip" -d "$RUNNER_TEMP"
+          sh "$RUNNER_TEMP/vectrix-$VECTRIX/install.sh"
       - name: Install lavapipe and the Vulkan loader
         run: |
           sudo apt-get update -qq
@@ -79,6 +91,16 @@ jobs:
         with:
           distribution: temurin
           java-version: "25"
+      - name: Install Vectrix (dynamis-gpu-vectrix and -primitives need it; released on GitHub, not Maven Central)
+        # Vectrix 4 is several jars with a parent POM, released as a Maven repository ZIP with an install script
+        shell: bash
+        run: |
+          VECTRIX=$(mvn -B -q help:evaluate -N -Dexpression=vectrix.version -DforceStdout)
+          curl -fsSL -o "$RUNNER_TEMP/vectrix.zip" \
+            "https://github.com/ljramones/vectrix/releases/download/v$VECTRIX/vectrix-$VECTRIX-maven.zip"
+          rm -rf "$RUNNER_TEMP/vectrix-$VECTRIX"
+          unzip -q "$RUNNER_TEMP/vectrix.zip" -d "$RUNNER_TEMP"
+          sh "$RUNNER_TEMP/vectrix-$VECTRIX/install.sh"
       - name: Show the GPU and toolchain
         run: |
           system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Metal' | head -3

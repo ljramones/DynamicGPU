@@ -1,6 +1,7 @@
 package org.dynamisengine.gpu.primitives;
 
 import org.dynamisengine.gpu.api.compute.kit.Checks;
+import org.dynamisengine.vectrix.nn.BlockQuant;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -50,6 +51,10 @@ import java.nio.ByteOrder;
  * 20 bytes {@code d}, 0 and 16 int8 scales (Q6K); padded with zeros to a multiple of 4 bytes.</li>
  * </ul>
  * Values must be finite, and a block's scale must fit FP16 (|x| up to about 65504 times the code range).
+ * <p>
+ * <b>The math is Vectrix's</b> (1.13.0): the encoders, scale packing and decoding are
+ * {@link org.dynamisengine.vectrix.nn.BlockQuant}'s, which holds the same formats under the same names; this record
+ * adds the GPU layout.
  *
  * @param format the block format
  * @param block elements per block: 32, 64 or 128; 256 for the K formats
@@ -88,13 +93,12 @@ public record QuantizedMatrix(Format format, int block, int rows, int cols) {
         int highBits() { return kQuant() ? bits - 4 : 0; }
         /** Parameter bytes per block or super-block. */
         int parameterBytes() { return this == Q6K ? 20 : kQuant() ? 16 : 2 * parameters; }
+        /** The same format in Vectrix's {@link BlockQuant}, which holds the math. */
+        BlockQuant.Format quant() { return BlockQuant.Format.valueOf(name()); }
     }
 
     /** Elements per super-block of the K formats. */
-    public static final int SUPER_BLOCK = 256;
-
-    /** The reciprocal constants the scales are computed with (exact in their use: one correctly rounded multiply). */
-    static final float INV127 = 1f / 127f, INV15 = 1f / 15f, INV63 = 1f / 63f, INV31 = 1f / 31f;
+    public static final int SUPER_BLOCK = BlockQuant.SUPER_BLOCK;
 
     public QuantizedMatrix {
         Checks.notNull(format, "format");
@@ -142,143 +146,28 @@ public record QuantizedMatrix(Format format, int block, int rows, int cols) {
         }
         byte[] out = new byte[Math.toIntExact(bytes())];
         var params = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        BlockQuant.Format q = format.quant();
         int[] codes = new int[block];
+        short[] p = new short[2];
+        int[] sc = new int[SUPER_BLOCK / 16], mn = new int[SUPER_BLOCK / 16];
         for (int r = 0; r < rows; r++) {
             for (int bl = 0; bl < blocksPerRow(); bl++) {
                 int base = r * cols + bl * block;
                 int at = (int) (parameterOffset() + ((long) r * blocksPerRow() + bl) * format.parameterBytes());
-                if (format.kQuant()) encodeSuperBlock(values, base, codes, out, at);
-                else {
-                    short[] p = encodeBlock(values, base, codes);
+                if (format.kQuant()) {
+                    // d and dmin (Q6K: d and 0), then the sub-block scales: llama.cpp's 12 packed bytes, or 16 int8
+                    BlockQuant.encodeSuperBlock(q, values, base, codes, 0, p, 0, sc, 0, mn, 0);
+                    params.putShort(at, p[0]).putShort(at + 2, p[1]);
+                    if (format == Format.Q6K) for (int t = 0; t < q.subBlocks(); t++) out[at + 4 + t] = (byte) sc[t];
+                    else BlockQuant.packScales(sc, 0, mn, 0, out, at + 4);
+                } else {
+                    BlockQuant.encodeBlock(q, values, base, block, codes, 0, p, 0);
                     for (int t = 0; t < format.parameters; t++) params.putShort(at + 2 * t, p[t]);
                 }
                 for (int i = 0; i < block; i++) putCode(out, r, bl * block + i, codes[i]);
             }
         }
         return out;
-    }
-
-    /** Encodes one block: its parameters (d, or d and m) as FP16 bits, and its codes (signed for Q8 and Q4). */
-    short[] encodeBlock(float[] x, int base, int[] codes) {
-        float lo = Float.POSITIVE_INFINITY, hi = Float.NEGATIVE_INFINITY, amax = 0f, extreme = 0f;
-        for (int i = 0; i < block; i++) {
-            float v = x[base + i];
-            lo = Math.min(lo, v); hi = Math.max(hi, v);
-            if (Math.abs(v) > amax) { amax = Math.abs(v); extreme = v; }   // the first of largest magnitude
-        }
-        float d, m = 0f;
-        short dBits, mBits = 0;
-        switch (format) {
-            case Q8 -> { dBits = Float.floatToFloat16(amax * INV127); }
-            case Q4 -> { dBits = Float.floatToFloat16(extreme * -0.125f); }
-            default -> {
-                mBits = Float.floatToFloat16(lo);
-                m = Float.float16ToFloat(mBits);
-                dBits = Float.floatToFloat16((hi - lo) * INV15);
-            }
-        }
-        d = Float.float16ToFloat(dBits);
-        if (Float.isInfinite(d) || Float.isInfinite(m)) throw new IllegalArgumentException("a block's parameters overflow FP16 at element " + base);
-        int min = format == Format.Q8 ? -127 : format == Format.Q4 ? -8 : 0, max = format == Format.Q8 ? 127 : format == Format.Q4 ? 7 : 15;
-        for (int i = 0; i < block; i++) {
-            float y = format == Format.Q4M ? x[base + i] - m : x[base + i];
-            codes[i] = nearestCode(y, d, min, max);
-        }
-        return format == Format.Q4M ? new short[] {dBits, mBits} : new short[] {dBits};
-    }
-
-    /** The code nearest to {@code y / d} clamped to [min, max]; 0 when d is 0. A negative d works as {@code (-y) / (-d)}. */
-    static int nearestCode(float y, float d, int min, int max) {
-        if (d == 0f) return 0;
-        return Math.max(min, Math.min(max, d > 0 ? nearest(y, d) : nearest(-y, -d)));
-    }
-
-    /**
-     * Encodes a K-format super-block (simply: each sub-block's scale from its range, codes nearest), writing its
-     * parameters at {@code at} and returning its codes in {@code codes}.
-     */
-    private void encodeSuperBlock(float[] x, int base, int[] codes, byte[] out, int at) {
-        int sub = format.subBlock, subs = SUPER_BLOCK / sub;
-        var p = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
-        if (format == Format.Q6K) {
-            // each sub-block's signed extreme maps to -32; the int8 scales share d, whose extreme scale maps to -128
-            float[] scale = new float[subs];
-            float extremeScale = 0f;
-            for (int j = 0; j < subs; j++) {
-                float amax = 0f, extreme = 0f;
-                for (int i = 0; i < sub; i++) { float v = x[base + j * sub + i]; if (Math.abs(v) > amax) { amax = Math.abs(v); extreme = v; } }
-                scale[j] = extreme * (-1f / 32f);
-                if (Math.abs(scale[j]) > Math.abs(extremeScale)) extremeScale = scale[j];
-            }
-            short dBits = Float.floatToFloat16(extremeScale * (-1f / 128f));
-            float d = Float.float16ToFloat(dBits);
-            if (Float.isInfinite(d)) throw new IllegalArgumentException("a super-block's scale overflows FP16 at element " + base);
-            p.putShort(at, dBits);
-            for (int j = 0; j < subs; j++) {
-                int sc = nearestCode(scale[j], d, -128, 127);
-                out[at + 4 + j] = (byte) sc;
-                float dd = d * sc;   // exact: 11 bits times 8
-                for (int i = 0; i < sub; i++) codes[j * sub + i] = nearestCode(x[base + j * sub + i], dd, -32, 31);
-            }
-            return;
-        }
-        // Q4K, Q5K: x = D q - M with M >= 0 subtracting the sub-block's negative minimum
-        int qmax = format == Format.Q4K ? 15 : 31;
-        float[] scale = new float[subs], min = new float[subs];
-        float maxScale = 0f, maxMin = 0f;
-        for (int j = 0; j < subs; j++) {
-            float lo = Float.POSITIVE_INFINITY, hi = Float.NEGATIVE_INFINITY;
-            for (int i = 0; i < sub; i++) { float v = x[base + j * sub + i]; lo = Math.min(lo, v); hi = Math.max(hi, v); }
-            min[j] = lo < 0 ? -lo : 0f;
-            scale[j] = (Math.max(hi, 0f) + min[j]) * (format == Format.Q4K ? INV15 : INV31);
-            maxScale = Math.max(maxScale, scale[j]); maxMin = Math.max(maxMin, min[j]);
-        }
-        short dBits = Float.floatToFloat16(maxScale * INV63), mBits = Float.floatToFloat16(maxMin * INV63);
-        float d = Float.float16ToFloat(dBits), dmin = Float.float16ToFloat(mBits);
-        if (Float.isInfinite(d) || Float.isInfinite(dmin)) throw new IllegalArgumentException("a super-block's scale overflows FP16 at element " + base);
-        p.putShort(at, dBits).putShort(at + 2, mBits);
-        int[] sc = new int[subs], mn = new int[subs];
-        for (int j = 0; j < subs; j++) {
-            sc[j] = nearestCode(scale[j], d, 0, 63);
-            mn[j] = nearestCode(min[j], dmin, 0, 63);
-            float dd = d * sc[j], mm = dmin * mn[j];   // exact: 11 bits times 6
-            for (int i = 0; i < sub; i++) codes[j * sub + i] = nearestCode(x[base + j * sub + i] + mm, dd, 0, qmax);
-        }
-        packScales(sc, mn, out, at + 4);
-    }
-
-    /** llama.cpp's 12-byte packing of eight 6-bit scales and mins (get_scale_min_k4's inverse). */
-    static void packScales(int[] sc, int[] mn, byte[] out, int at) {
-        for (int j = 0; j < 4; j++) {
-            out[at + j] = (byte) ((sc[j] & 63) | ((sc[j + 4] >> 4) << 6));
-            out[at + j + 4] = (byte) ((mn[j] & 63) | ((mn[j + 4] >> 4) << 6));
-            out[at + j + 8] = (byte) ((sc[j + 4] & 15) | ((mn[j + 4] & 15) << 4));
-        }
-    }
-
-    /** Sub-block {@code j}'s 6-bit scale (t = 0) or min (t = 1) from llama.cpp's 12 packed bytes (get_scale_min_k4). */
-    static int scaleMin(byte[] b, int at, int j, int t) {
-        int q0 = b[at + j] & 0xFF, q4 = j < 4 ? b[at + j + 4] & 0xFF : 0, q8 = j >= 4 ? b[at + j + 4] & 0xFF : 0;
-        if (j < 4) return t == 0 ? q0 & 63 : q4 & 63;
-        int lo = b[at + j - 4] & 0xFF, mid = b[at + j] & 0xFF;
-        return t == 0 ? (q8 & 0xF) | ((lo >> 6) << 4) : (q8 >> 4) | ((mid >> 6) << 4);
-    }
-
-    /**
-     * The integer nearest to {@code y / d} (ties to even) for {@code d > 0}, found as the GPU finds it: an estimate,
-     * corrected by comparing {@code y} with the exact midpoints {@code (2c + 1) d / 2} (exact for the codes in range:
-     * {@code 2c + 1} has at most 9 bits and d at most 15). Defined for {@code |y / d| < 2^8}; beyond, the result only
-     * needs to clamp correctly.
-     */
-    static int nearest(float y, float d) {
-        float est = (float) Math.rint(y * (1f / d));
-        int c = (int) Math.max(-300f, Math.min(300f, est));
-        for (int step = 0; step < 2; step++) {
-            float up = (2 * c + 1) * d * 0.5f, down = (2 * c - 1) * d * 0.5f;
-            if (y > up || y == up && (c & 1) != 0) c++;
-            else if (y < down || y == down && (c & 1) != 0) c--;
-        }
-        return c;
     }
 
     /** Writes the code of element {@code (r, col)}: the low plane and, for Q5K and Q6K, the high bits. */
@@ -326,19 +215,24 @@ public record QuantizedMatrix(Format format, int block, int rows, int cols) {
         int j = (col % SUPER_BLOCK) / format.subBlock;
         float d = half(packed, at);
         if (format == Format.Q6K) return new float[] {d * packed[at + 4 + j], 0f};
-        return new float[] {d * scaleMin(packed, at + 4, j, 0), half(packed, at + 2) * scaleMin(packed, at + 4, j, 1)};
+        return new float[] {d * BlockQuant.unpackScale(packed, at + 4, j, false),
+            half(packed, at + 2) * BlockQuant.unpackScale(packed, at + 4, j, true)};
     }
 
     /** Element {@code (r, col)} of a packed matrix, dequantized: {@code q d}, {@code fl(q d + m)}, {@code fl(D q - M)}, {@code fl(D q)}. */
     public float value(byte[] packed, int r, int col) {
-        float q = code(packed, r, col);
+        int q = code(packed, r, col);
         if (format.kQuant()) {
-            float[] dm = subBlockScale(packed, r, col);
-            return format == Format.Q6K ? dm[0] * q : dm[0] * q - dm[1];
+            int at = (int) (parameterOffset() + ((long) r * blocksPerRow() + col / SUPER_BLOCK) * format.parameterBytes());
+            int j = (col % SUPER_BLOCK) / format.subBlock;
+            float d = half(packed, at);
+            if (format == Format.Q6K) return BlockQuant.decodeK(format.quant(), q, d, 0f, packed[at + 4 + j], 0);
+            return BlockQuant.decodeK(format.quant(), q, d, half(packed, at + 2),
+                BlockQuant.unpackScale(packed, at + 4, j, false), BlockQuant.unpackScale(packed, at + 4, j, true));
         }
         int bl = col / block;
-        float d = parameter(packed, r, bl, 0);
-        return format == Format.Q4M ? q * d + parameter(packed, r, bl, 1) : q * d;
+        return BlockQuant.decode(format.quant(), q, parameter(packed, r, bl, 0),
+            format == Format.Q4M ? parameter(packed, r, bl, 1) : 0f);
     }
 
     /** Dequantizes a packed matrix to FP32 ({@code rows x cols}, row-major), bit for bit as {@link Quantize}. */

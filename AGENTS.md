@@ -35,9 +35,11 @@ DynamisGPU is the GPU layer of the Dynamis engine and of its throughput (neural-
 - **JDK and Maven:** JDK 25 and Maven 3.9.
   - **Development machine:** macOS on arm64 with an Apple GPU (an M4 Max so far).
   - **Parent POM:** the external parent `org.dynamisengine:dynamis-parent:1.0.1` comes from Maven Central.
-  - **Vectrix:** `dynamis-gpu-vectrix` needs `org.dynamisengine:vectrix` (version `vectrix.version` in its POM) from
-    the [Vectrix GitHub release](https://github.com/ljramones/vectrix/releases). Vectrix 3.x is not on Maven
-    Central. CI installs it with `mvn install:install-file`.
+  - **Vectrix:** `dynamis-gpu-vectrix` needs `vectrix-core` and `vectrix-render`, and `dynamis-gpu-primitives` needs
+    `vectrix-ml` (version `vectrix.version` in the parent POM), from the
+    [Vectrix GitHub release](https://github.com/ljramones/vectrix/releases). Vectrix 4 is not on Maven Central; its
+    release is a Maven repository ZIP whose `install.sh` CI runs. `QuantizedMatrix`'s quantization math is Vectrix's
+    `BlockQuant`: change it there, not here.
 - **Vulkan SDK:** it lives in `~/VulkanSDK/<version>/macOS` (1.4.341.0 at the time of writing).
   - **What it provides:** the MoltenVK driver, the loader, `spirv-val`, `spirv-dis` and `slangc` 2026.1.
   - **Which slangc:** use the SDK's `slangc`. `/usr/local/bin/slangc` on the development machine is broken, because

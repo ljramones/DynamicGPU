@@ -1,5 +1,7 @@
 package org.dynamisengine.gpu.primitives;
 
+import org.dynamisengine.vectrix.nn.BlockQuant;
+
 import org.dynamisengine.gpu.primitives.QuantizedMatrix.Format;
 import org.junit.jupiter.api.Test;
 import java.util.SplittableRandom;
@@ -101,16 +103,16 @@ class QuantizedMatrixTest {
     }
 
     @Test void codesAreNearestWithTiesToEven() {
-        assertEquals(2, QuantizedMatrix.nearest(2.5f, 1f));
-        assertEquals(4, QuantizedMatrix.nearest(3.5f, 1f));
-        assertEquals(-2, QuantizedMatrix.nearest(-2.5f, 1f));
-        assertEquals(3, QuantizedMatrix.nearest(2.5000002f, 1f));
-        assertEquals(7, QuantizedMatrix.nearest(0.875f, 0.125f));
+        assertEquals(2, BlockQuant.nearest(2.5f, 1f));
+        assertEquals(4, BlockQuant.nearest(3.5f, 1f));
+        assertEquals(-2, BlockQuant.nearest(-2.5f, 1f));
+        assertEquals(3, BlockQuant.nearest(2.5000002f, 1f));
+        assertEquals(7, BlockQuant.nearest(0.875f, 0.125f));
         var r = new SplittableRandom(9);
         for (int i = 0; i < 100_000; i++) {
             float d = Float.float16ToFloat(Float.floatToFloat16((float) (r.nextDouble() * 4 + 1e-4)));
             float y = (float) ((r.nextDouble() * 2 - 1) * 127 * d);
-            assertEquals((int) Math.rint((double) y / d), QuantizedMatrix.nearest(y, d), "y=" + y + " d=" + d);
+            assertEquals((int) Math.rint((double) y / d), BlockQuant.nearest(y, d), "y=" + y + " d=" + d);
         }
     }
 

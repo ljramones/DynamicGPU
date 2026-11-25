@@ -359,7 +359,8 @@ backend.
 Differences from the plan:
 - **The CPU formats live in DynamisGPU** (`QuantizedMatrix`), not Vectrix `nn.Formats`. The primitives do not depend
   on Vectrix, and putting them there would have needed a Vectrix release first. Vectrix can adopt them in the
-  Vectrix flow; its int8 format (FP32 scales) is a different format.
+  Vectrix flow; its int8 format (FP32 scales) is a different format. (It did: since 1.13.0 the math is Vectrix
+  4.0's `nn.BlockQuant`, and `QuantizedMatrix` keeps the GPU layout.)
 - **No FP16 tile packing:** the matrix kernel reads row-major `W^T` at full rate (12.7 TFLOP/s), so a tiled layout
   has nothing to gain.
 
@@ -507,16 +508,27 @@ The plan as agreed:
 
 ## Flowing into Vectrix
 
-These follow as the layers land.
-- **vectrix-gpu moves onto the kit** (after 1.7): its `Kernels`, `Rows` and `EngineBuffers` plumbing is replaced by
-  DynamisGPU's. Its 58 exact twins and their CPU models stay in vectrix-gpu.
-- **vectrix-gpu uses the runtime** (after 1.5 and 1.6): pooled buffers, recorded replay for its multi-dispatch
-  operations, and per-dispatch timing in its benchmarks.
-- **Vectrix's 4.0 cleanup:** the deprecated GPU layout classes are removed, and the jar is split into
-  `vectrix-core`, `-render`, `-signal` and `-ml`.
-- **CPU references:**
-  - Quantization formats and their CPU encode and decode belong in Vectrix (`nn.Formats` already holds int8).
-  - DynamisGPU's quantize kernels are tested against them, the same way `GemmF16.reference` works today.
+**Status: complete with Vectrix 4.0.0 and DynamisGPU 1.13.0.**
+- **vectrix-gpu moves onto the kit** (after 1.7): done in Vectrix 4.0.
+  - **Replaced:** its kernel loading and parameter checks run on `KernelLibrary`, `ParameterLayout`, `Grid` and
+    `Checks`.
+  - **Kept:** its exact twins and their CPU models stay in vectrix-gpu.
+- **vectrix-gpu uses the runtime** (after 1.5 and 1.6): done in Vectrix 4.0.
+  - **Recorded replay:** a recorded multi-dispatch sequence replays bit-identically.
+  - **Timing:** its dispatches are labelled `vectrix.<kernel>` for per-dispatch timing.
+  - **Not adopted: pooled buffers.** vectrix-gpu writes into buffers its callers pass in, and `MemoryPool` is a
+    backend detail (`compute.spi`).
+- **Vectrix's 4.0 cleanup:** done.
+  - **Removed:** the deprecated GPU layout classes.
+  - **Split:** the jar is now `vectrix-core`, `-render`, `-signal` and `-ml`, with `vectrix` depending on all four.
+- **CPU references:** done.
+  - **Where the math lives:** the block quantization formats and their CPU encode and decode are Vectrix's
+    `nn.BlockQuant` (Vectrix 4.0), not `nn.Formats`, whose int8 is a different format.
+  - **What DynamisGPU keeps:** `QuantizedMatrix` delegates to `BlockQuant` from 1.13.0 and keeps only the GPU layout.
+  - **Tests:** the GPU quantizer and kernels are still tested against `QuantizedMatrix`, so against `BlockQuant`.
+- **Dependencies (1.13.0):**
+  - **`dynamis-gpu-vectrix`:** depends on `vectrix-render`, which brings `vectrix-core`.
+  - **`dynamis-gpu-primitives`:** depends on `vectrix-ml`.
 
 ## After this
 

@@ -47,6 +47,9 @@
     <jmh.version>1.37</jmh.version>
     <compute.metal.required>false</compute.metal.required>
     <compute.vulkan.required>false</compute.vulkan.required>
+    <!-- Vectrix (GitHub releases, not Maven Central): dynamis-gpu-vectrix uses vectrix-core and -render, and
+         dynamis-gpu-primitives' block quantization is vectrix-ml's BlockQuant (1.13.0). -->
+    <vectrix.version>4.0.0</vectrix.version>
   </properties>
 
   <dependencyManagement>
@@ -79,6 +82,21 @@
         <groupId>org.dynamisengine</groupId>
         <artifactId>dynamis-gpu-primitives</artifactId>
         <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dynamisengine</groupId>
+        <artifactId>vectrix-core</artifactId>
+        <version>${vectrix.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dynamisengine</groupId>
+        <artifactId>vectrix-render</artifactId>
+        <version>${vectrix.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dynamisengine</groupId>
+        <artifactId>vectrix-ml</artifactId>
+        <version>${vectrix.version}</version>
       </dependency>
       <dependency>
         <groupId>org.dynamisengine</groupId>

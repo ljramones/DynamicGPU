@@ -11,16 +11,14 @@
   </parent>
   <artifactId>dynamis-gpu-vectrix</artifactId>
   <name>DynamisGPU Vectrix bridge</name>
-  <!-- GPU data written from Vectrix types: transform layouts and writers, instance submission. The only DynamisGPU
-       module that depends on Vectrix; dynamis-gpu-api stays dependency-free. -->
-  <properties>
-    <vectrix.version>3.3.0</vectrix.version>
-  </properties>
+  <!-- GPU data written from Vectrix types: transform layouts and writers, instance submission. With
+       dynamis-gpu-primitives (vectrix-ml), one of the two DynamisGPU modules that depend on Vectrix;
+       dynamis-gpu-api stays dependency-free. -->
   <dependencies>
+    <!-- core types (affine, core, soa) and render's GPU encodings (gpu.Half, gpu.QuatCompression) -->
     <dependency>
       <groupId>org.dynamisengine</groupId>
-      <artifactId>vectrix</artifactId>
-      <version>${vectrix.version}</version>
+      <artifactId>vectrix-render</artifactId>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
