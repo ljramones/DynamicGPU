@@ -254,9 +254,11 @@ public final class AttentionF16 implements AutoCloseable {
 
     private GpuComputePipeline decodePipeline(int variant, int rows) {
         int tier = rows == 1 ? 1 : rows <= 4 ? 4 : DECODE_ROWS;
+        boolean wave = device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC);
+        String family = wave ? "attn_decode_wave_" : "attn_decode_";
         return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), key ->
-                device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_" + variant + (output() == Precision.FP32 ? "_f32" : ""),
-                        FLASH_ACCESSES, Set.of(GpuCapabilities.FP32), Set.of(), Map.of("ROW_TIER", tier))));
+                device.pipeline(GemmF16.KERNELS.pipeline(family + variant + (output() == Precision.FP32 ? "_f32" : ""),
+                        FLASH_ACCESSES, Set.of(GpuCapabilities.FP32), wave ? Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC) : Set.of(), Map.of("ROW_TIER", tier))));
     }
 
     private static KernelBundle matrixBundle() {

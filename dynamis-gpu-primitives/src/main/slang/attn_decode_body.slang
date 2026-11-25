@@ -10,6 +10,9 @@
 // DMAX, ENTRY and OUT_F32. ROW_TIER (1, 4 or 8) removes unused rows at pipeline compilation.
 // M4 Max Metal, 32/8 heads, D128, 512 / 4096 / 32768 keys: 64.8 / 94.6 / 410.4 us with room for eight
 // rows reduced to 51.4 / 71.8 / 345.2 us by specializing to four. Active rows use the same arithmetic.
+// WAVE_ROWS assigns rows to subgroups and reduces each FP32 softmax there, measuring 41.4 / 65.3 / 329.3 us.
+// The FP32 weight sum rounds in subgroup order, within the scalar fused bound. Devices without subgroup
+// arithmetic use the fixed tree below.
 #include "attn_common.slang"
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint> q;
@@ -35,7 +38,11 @@ static const uint VB = 8;                // V loads in flight per thread
 
 groupshared uint qs[RMAX * D2];
 groupshared float ss[SK];
+#ifdef WAVE_ROWS
+groupshared uint waves;
+#else
 groupshared float red[THREADS];
+#endif
 groupshared float rowM[RMAX];
 groupshared float rowL[RMAX];
 
@@ -50,6 +57,9 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint n = kEnd > kStart ? kEnd - kStart : 0u;
     uint sk = p.splitKeys;   // the stride of a row's scores
 
+#ifdef WAVE_ROWS
+    if (t == 0) waves = 0;
+#endif
     for (uint e = t; e < ROW_TIER * D2; e += THREADS)
     {
         uint r = e / D2, pr = e % D2, w = 0;
@@ -62,6 +72,14 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     }
     GroupMemoryBarrierWithGroupSync();
 
+#ifdef WAVE_ROWS
+    // Each subgroup owns its rows and can reduce without a workgroup barrier. Elect dense IDs
+    // once, independently of the mapping between subgroup lanes and local invocation indices.
+    uint wid = 0;
+    uint width = WaveActiveSum(1u), lane = WavePrefixSum(1u);
+    if (lane == 0) InterlockedAdd(waves, 1u, wid);
+    wid = WaveActiveSum(wid);
+#endif
     // the scores
     for (uint j = t; j < n; j += THREADS)
     {
@@ -99,6 +117,25 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     }
     GroupMemoryBarrierWithGroupSync();
 
+#ifdef WAVE_ROWS
+    for (uint r = wid; r < rows; r += waves)
+    {
+        float m = dg_negative_infinity();
+        for (uint j = lane; j < n; j += width) m = max(m, ss[r * sk + j]);
+        m = WaveActiveMax(m);
+        float sum = 0.0f;
+        for (uint j = lane; j < n; j += width)
+        {
+            float sv = ss[r * sk + j];
+            float w = sv == dg_negative_infinity() ? 0.0f : exp(sv - m);
+            ss[r * sk + j] = w;
+            sum += w;
+        }
+        sum = WaveActiveSum(sum);
+        if (lane == 0) { rowM[r] = m; rowL[r] = sum; }
+    }
+    GroupMemoryBarrierWithGroupSync();
+#else
     // each row's max and sum, P in place: a thread's keys in order, then the kit's fixed tree (one tree for all rows,
     // with RMAX times the group memory, was slower: 87 against 57 us for 4096 keys)
     for (uint r = 0; r < rows; r++)
@@ -124,6 +161,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         if (t == 0) rowL[r] = red[0];
         GroupMemoryBarrierWithGroupSync();
     }
+
+#endif
 
     // P V: column pair t % D2 over keys t / D2, t / D2 + TPP, ..
     uint pair = t % D2, part = t / D2;

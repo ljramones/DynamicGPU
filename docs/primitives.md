@@ -623,6 +623,10 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
 - **Decode review, row specialization.** Repeating the whole encode with four timed rounds of at least 20 ms
   on the M4 Max (32 query heads, 8 KV heads, dimension 128, FP16 O), 512 / 4096 / 32768 keys took
   64.8 / 94.6 / 410.4 us on 1.11.0 and 51.4 / 71.8 / 345.2 us with row specialization alone.
+  Subgroup reductions on the specialized kernel measured 41.4 / 65.3 / 329.3 us. Each subgroup processes
+  one row independently, then the group shares its weights for the value product. On devices with subgroup
+  arithmetic, the FP32 probability sum rounds in subgroup reduction order. The scalar attention bound covers
+  this order. Devices without subgroup arithmetic use the fixed-tree version.
 
 - **Alternatives that lost:**
   - **The portable flash kernel on Metal:** 0.66 / 2.5 / 9.9 ms at 512 / 1024 / 2048.
