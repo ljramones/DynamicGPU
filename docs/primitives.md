@@ -8,7 +8,7 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 |---|---|---|
 | `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
-| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0 | 1.4.0 |
+| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0, batched decode since 1.11.1 | 1.4.0 |
 | `PagedKvCache` | a KV cache in fixed-size pages, shared across sequences with copy on write | 1.11.0 |
 | `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0) | 1.7.0 |
 | `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1) | 1.7.0 |
@@ -579,7 +579,8 @@ in the sequence, and with the causal mask key blocks that no query of a group se
     SIMD-group owns 8 rows: `S = Q K^T` and `P V` are matrix products, the accumulators are rescaled by a diagonal
     matrix, and K and V blocks are staged in threadgroup memory. P is rounded to FP16 for its product.
   - **Decode** (Slang): at most 8 rows per KV head (a decode step's query heads). A group takes one range of keys of a
-    KV head and keeps its scores. Pipelines specialize the maximum row count to 1, 4 or 8. The compiler can then
+    KV head in chunks of the scores it keeps (`1024 / rows` keys), rescaling its running max, sum and accumulators
+    between chunks (1.11.1). Unbatched decode sizes its ranges to one chunk each. Pipelines specialize the maximum row count to 1, 4 or 8. The compiler can then
     eliminate dot products and accumulators for unused rows. The order within each active row is preserved.
   - **Short decode, Metal** (head dimension 128, up to 512 keys and 8 rows per KV head). One 512-thread group per
     output row computes Q·K, the softmax, and P·V, then writes O directly. K and V can be paged. This needs
@@ -747,6 +748,8 @@ try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(layers, kvH
     attention.encode(encoder, q, cache, layer, seq, o, shape.withKvHeads(kvHeads));
     var branch = cache.fork(seq);                           // shares every page
 }
+// a decode step for many sequences at once (1.11.1): Q and O are [batch][heads][queries][headDim]
+attention.encodeBatch(encoder, q, cache, layer, List.of(seqA, seqB, seqC), o, AttentionF16.DecodeBatch.of(heads, kvHeads, headDim));
 ```
 
 - **Pages:** a page holds `pageSize` tokens (a multiple of 32) of every KV head, `[kvHeads][pageSize][headDim]` FP16.
@@ -772,14 +775,37 @@ try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(layers, kvH
   snapshot on the next use. Recorded commands retain their original table. On the M4 Max, four layers of
   512-key decode with cached kernel metadata took 224 µs on the GPU with a private table upload per layer
   and 195 µs with the snapshot. Wall time fell from 343–347 to 290–293 µs in two runs each.
-- **Tests:** a cache built through `reserve`, `write`, `fork` with copy on write, and `truncate` gives the same bits as
-  the contiguous attention over the same keys and values, on all three backends. The test covers decode, prefill and
-  split shapes, and checks the stats at each step.
+- **Batched decode (1.11.1):** `AttentionF16.encodeBatch` decodes a batch of sequences of different lengths, which may
+  share pages, in one dispatch, as continuous batching needs.
+  - **How:** group x of the decode kernel is the sequence. Its tokens and the offset of its pages come from a header
+    in the batch's page table.
+  - **Ranges:** chosen for parallelism (about 256 groups), and a range longer than the kernel's score memory is taken
+    in chunks. A large batch gets one range per sequence and needs no combine.
+  - **The table:** kept, immutable, while the batch and its sequences' tokens and pages are unchanged, so the layers
+    of a step share it.
+  - **Rows:** at most 8 per KV head (`heads / kvHeads * queries`). Batched prefill is not covered.
+  - **Measured** (M4 Max, 32 heads, 8 KV heads, head dimension 128, FP16 O, each sequence on its own pages):
+
+    | Batch x keys | Batched: GPU / host | One encode per sequence: GPU / host |
+    |---|---|---|
+    | 8 x 4096 | 422 us (318 GB/s) / 12 us | 580 / 70 us |
+    | 32 x 1024 | 414 us (324 GB/s) / 7 us | 1,251 / 223 us |
+    | 32 x 4096 | 1,549 us (347 GB/s) / 10 us | 2,323 / 209 us |
+    | 64 x 512 | 373 us (360 GB/s) / 8 us | 1,420 / 337 us |
+
+- **Tests:**
+  - **Paged against contiguous:** a cache built through `reserve`, `write`, `fork` with copy on write, and `truncate`
+    gives the same bits as the contiguous attention over the same keys and values, on all three backends. The test
+    covers decode, prefill and split shapes, and checks the stats at each step.
+  - **Batched decode:** checked element by element against each sequence's own fused bound. The batches cover mixed
+    lengths (1 to 4100 keys), 33 sequences in chunked ranges, two queries per sequence, and a fork sharing pages.
+  - **The fixed-tree kernel:** forced through the same checks, since every device here would otherwise take the
+    subgroup kernel.
 
 ## Planned
 
-- **Batched decode across sequences:** the fused and paged attention takes one sequence per dispatch. A dispatch over
-  many sequences of different lengths, as continuous batching needs, is planned.
+- **Batched prefill across sequences:** batched decode (1.11.1) takes at most 8 rows per KV head. Mixing prompt
+  chunks of several sequences into one dispatch is not covered.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
 - **Quantized weights:** a quantized form of the matrix kernel for prefill.
 

@@ -442,9 +442,12 @@ The plan as agreed:
   - host-side facts: free, pinned, evictable and shared pages, and tokens and pages per sequence.
 - **The oracle:** the double-precision check of `AttentionConformance`, with the fused bound.
 
+- **1.11.1:** batched decode across sequences of different lengths, in one dispatch through their page tables
+  (`AttentionF16.encodeBatch`), as continuous batching needs. 32 sequences of 1024 keys take 414 us of GPU time
+  against 1,251 for one encode each.
+
 Not done:
-- **Batched decode across sequences:** a dispatch takes one sequence. Continuous batching needs one over many
-  sequences of different lengths.
+- **Batched prefill across sequences:** batched decode takes at most 8 rows per KV head.
 
 The plan as agreed:
 
