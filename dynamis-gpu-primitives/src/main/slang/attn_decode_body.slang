@@ -11,6 +11,8 @@
 // M4 Max Metal, 32/8 heads, D128, 512 / 4096 / 32768 keys: 64.8 / 94.6 / 410.4 us with room for eight
 // rows reduced to 51.4 / 71.8 / 345.2 us by specializing to four. Active rows use the same arithmetic.
 // WAVE_ROWS assigns rows to subgroups and reduces each FP32 softmax there, measuring 41.4 / 65.3 / 329.3 us.
+// On MoltenVK (M4 Max, same shapes), release / specialized / subgroup totals were respectively
+// 50.6 / 78.7 / 432.9 us, 46.4 / 63.7 / 359.4 us and 39.9 / 58.0 / 335.6 us.
 // The FP32 weight sum rounds in subgroup order, within the scalar fused bound. Devices without subgroup
 // arithmetic use the fixed tree below.
 #include "attn_common.slang"
