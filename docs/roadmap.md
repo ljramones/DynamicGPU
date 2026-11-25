@@ -472,7 +472,7 @@ The plan as agreed:
 
 ### 1.12: Training kernels
 
-**Status: complete, to be released as 1.12.0.** Done:
+**Status: complete, released as 1.12.0.** Done:
 - **Backward passes:**
   - the activations (`Elementwise` `RELU_BACKWARD`, `SILU_BACKWARD`, `GELU_BACKWARD`; SwiGLU's compose from them);
   - `Softmax.backward`;
