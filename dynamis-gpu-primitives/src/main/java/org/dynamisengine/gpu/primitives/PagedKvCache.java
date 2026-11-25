@@ -99,6 +99,7 @@ public final class PagedKvCache implements AutoCloseable {
                 closed = true;
                 for (int page : pages) unref(page);
                 if (tableSequence == this) tableSequence = null;
+                version++;
                 pages.clear();
                 sequences.remove(this);
             }
@@ -116,6 +117,11 @@ public final class PagedKvCache implements AutoCloseable {
     // A page list serves every layer. Only the GPU owner thread releases or replaces its buffer.
     private Sequence tableSequence;
     private GpuBuffer pageTable;
+    // Batched decode (1.11.1): the last batch's table, valid while no sequence's tokens or pages have changed.
+    private long version;
+    private List<Sequence> batchSequences = List.of();
+    private long batchVersion = -1;
+    private GpuBuffer batchTable;
     private boolean closed;
 
     private PagedKvCache(GpuDevice device, Config config) {
@@ -182,6 +188,7 @@ public final class PagedKvCache implements AutoCloseable {
         if (s.pages.size() > keep && s == tableSequence) tableSequence = null;
         while (s.pages.size() > keep) unref(s.pages.removeLast());
         s.tokens = tokens;
+        version++;
     }
 
     /**
@@ -216,6 +223,7 @@ public final class PagedKvCache implements AutoCloseable {
             s.pages.add(page);
         }
         s.tokens += tokens;
+        version++;
         return encoder;
     }
 
@@ -246,6 +254,39 @@ public final class PagedKvCache implements AutoCloseable {
             encoder.dispatch(pipelines.get(0), Map.of(0, k, 1, v, 2, keys[layer], 3, values[layer], 4, table), params, grid.groups(), "kv.write");
         }
         return encoder;
+    }
+
+    /**
+     * The table of a decode batch (1.11.1): a header of (tokens, page offset) per sequence, then every sequence's
+     * pages. It is kept, immutable, while the batch and its sequences' tokens and pages are unchanged, so the layers of
+     * a step share it; a retained view, as {@link #table(Sequence)}.
+     */
+    synchronized GpuBuffer batchTable(List<Sequence> batch) {
+        open();
+        if (batch.isEmpty()) throw new IllegalArgumentException("the batch is empty");
+        for (var s : batch) live(s);
+        boolean same = batchTable != null && batchVersion == version && batchSequences.size() == batch.size();
+        for (int i = 0; same && i < batch.size(); i++) same = batchSequences.get(i) == batch.get(i);
+        if (!same) {
+            long words = 2L * batch.size();
+            for (var s : batch) words += s.pages.size();
+            var next = device.allocate(new BufferDescriptor(Math.max(16, 4 * words), EnumSet.of(BufferUsage.STORAGE, BufferUsage.MAP_WRITE),
+                    Placement.SHARED).withLabel("kv-batch-table"));
+            try (var mapping = next.map(Access.WRITE)) {
+                var w = mapping.bytes().asIntBuffer();
+                int offset = 0;
+                for (var s : batch) { w.put(s.tokens); w.put(offset); offset += s.pages.size(); }
+                for (var s : batch) for (int page : s.pages) w.put(page);
+            } catch (RuntimeException | Error failure) {
+                next.close();
+                throw failure;
+            }
+            if (batchTable != null) batchTable.close();
+            batchTable = next;
+            batchSequences = List.copyOf(batch);
+            batchVersion = version;
+        }
+        return batchTable.slice(0, batchTable.bytes());
     }
 
     /** A retained view of the immutable table. Recorded bindings keep their snapshot across page changes. */
@@ -306,6 +347,7 @@ public final class PagedKvCache implements AutoCloseable {
         closed = true;
         try { pipelines.close(); } finally {
             if (pageTable != null) pageTable.close();
+            if (batchTable != null) batchTable.close();
             for (var b : keys) b.close();
             for (var b : values) b.close();
         }

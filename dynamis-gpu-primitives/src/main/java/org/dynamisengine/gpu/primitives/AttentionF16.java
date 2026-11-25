@@ -258,6 +258,17 @@ public final class AttentionF16 implements AutoCloseable {
         });
     }
 
+    private boolean subgroups = true;
+
+    /**
+     * Tests only: compile the decode kernels without subgroup reductions (the fixed-tree path devices without subgroup
+     * arithmetic run), before any decode pipeline is compiled.
+     */
+    void useFixedTreeDecode() {
+        if (!decodePipelines.isEmpty()) throw new IllegalStateException("decode pipelines are already compiled");
+        subgroups = false;
+    }
+
     private GpuComputePipeline decodePipeline(int variant, int rows) {
         int tier = rows == 1 ? 1 : rows <= 4 ? 4 : DECODE_ROWS;
         return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), this::compileDecodePipeline);
@@ -267,7 +278,7 @@ public final class AttentionF16 implements AutoCloseable {
         String suffix = variant.headDim() + (output() == Precision.FP32 ? "_f32" : "");
         var constants = Map.<String, Object>of("ROW_TIER", variant.rowTier());
         var types = Set.of(GpuCapabilities.FP32);
-        if (device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC)) {
+        if (subgroups && device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC)) {
             try {
                 return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_wave_" + suffix, FLASH_ACCESSES, types,
                         Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC), constants));
@@ -381,7 +392,7 @@ public final class AttentionF16 implements AutoCloseable {
         var combineGrid = Grid.linear(device.capabilities(), rows);   // a group per row
         byte[] params = layout.block().u32("heads", s.heads()).u32("kvHeads", s.kvHeads()).u32("queries", s.queries()).u32("keys", s.keys())
                 .u32("headDim", s.headDim()).u32("cacheKeys", s.cacheKeys()).f32("scale", s.scale()).u32("causal", s.causal() ? 1 : 0)
-                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", direct || splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).bytes();
+                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", direct || splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).u32("batch", 0).bytes();
         if (direct)
             return encoder.dispatch(shortDecode, Map.of(0, q, 1, k, 2, v, 3, o, 4, table), params, combineGrid.groups(), "attention.decode.short");
         var set = fusedPipelines(variant);
@@ -395,6 +406,93 @@ public final class AttentionF16 implements AutoCloseable {
                         new Dimensions(Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), MATRIX_ROWS), s.kvHeads(), splits), "attention.flash.simdgroup");
             else
                 encoder.dispatch(set.get(0), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(rowBlocks, s.kvHeads(), splits), "attention.flash");
+            if (splits > 1)
+                encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o), params, combineGrid.groups(), "attention.combine");
+        }
+        return encoder;
+    }
+
+    /**
+     * A batched decode step's dimensions (1.11.1): every sequence of the batch has {@code queries} new queries on each
+     * of {@code heads} query heads, and attends all of its tokens in the cache. Q and O are
+     * {@code [batch][heads][queries][headDim]}.
+     *
+     * @param kvHeads the cache's KV heads, dividing {@code heads}; {@code heads / kvHeads * queries} at most 8
+     * @param causal whether query {@code i} of a sequence of n tokens sees keys {@code 0 .. i + n - queries}
+     */
+    public record DecodeBatch(int heads, int kvHeads, int queries, int headDim, float scale, boolean causal) {
+        public DecodeBatch {
+            if (heads <= 0 || kvHeads <= 0 || queries <= 0 || headDim <= 0)
+                throw new IllegalArgumentException("dimensions must be positive: " + heads + ", " + kvHeads + ", " + queries + ", " + headDim);
+            if (heads % kvHeads != 0) throw new IllegalArgumentException("kvHeads must divide heads: " + kvHeads + ", " + heads);
+            if ((long) heads / kvHeads * queries > DECODE_ROWS)
+                throw new IllegalArgumentException("batched decode takes at most " + DECODE_ROWS + " rows per KV head (heads / kvHeads * queries): " + this);
+            if (!Float.isFinite(scale)) throw new IllegalArgumentException("scale must be finite: " + scale);
+        }
+        /** One causal query per sequence, {@code scale = 1 / sqrt(headDim)}. */
+        public static DecodeBatch of(int heads, int kvHeads, int headDim) {
+            return new DecodeBatch(heads, kvHeads, 1, headDim, (float) (1 / Math.sqrt(headDim)), true);
+        }
+        /** The bytes Q must hold for {@code batch} sequences. */
+        public long qBytes(int batch) { return 2L * batch * heads * queries * headDim; }
+        /** The bytes O must hold for {@code batch} sequences in {@code output}. */
+        public long oBytes(Precision output, int batch) { return (long) output.bytes() * batch * heads * queries * headDim; }
+        /** The shape of one sequence of {@code keys} tokens. */
+        Shape shape(int keys) { return new Shape(heads, queries, keys, headDim, scale, causal, kvHeads, keys); }
+    }
+
+    /** The key ranges of a batched decode, {@code {splits, splitKeys}}: enough ranges for the GPU, chunked in the kernel. */
+    static int[] batchSplit(DecodeBatch b, int batch, int maxKeys) {
+        int want = Math.max(1, Math.ceilDiv(TARGET_GROUPS, b.kvHeads() * batch));
+        int splitKeys = Math.max(128, Math.ceilDiv(Math.ceilDiv(maxKeys, want), 128) * 128);
+        splitKeys = Math.max(splitKeys, Math.ceilDiv(Math.ceilDiv(maxKeys, MAX_SPLITS), 128) * 128);   // the combine's limit
+        return new int[] {Math.ceilDiv(maxKeys, splitKeys), splitKeys};
+    }
+
+    /**
+     * Records one decode step for a batch of sequences of a paged KV cache (1.11.1): for sequence {@code b} of
+     * {@code sequences}, its queries (rows {@code b} of Q) attend all of its tokens in layer {@code layer}, through its
+     * page table, in one dispatch for the batch (and a combine when its keys are split into ranges). Sequences may have
+     * different lengths, and may share pages. The fused bound ({@link #fusedContract}) holds for each sequence.
+     */
+    public GpuCommandEncoder encodeBatch(GpuCommandEncoder encoder, GpuBuffer q, PagedKvCache cache, int layer,
+            List<PagedKvCache.Sequence> sequences, GpuBuffer o, DecodeBatch b) {
+        Checks.notNull(cache, "cache"); Checks.notNull(sequences, "sequences"); Checks.notNull(b, "batch");
+        if (closed) throw new IllegalStateException("closed");
+        var c = cache.config();
+        if (b.kvHeads() != c.kvHeads() || b.headDim() != c.headDim())
+            throw new IllegalArgumentException("the batch's kvHeads and headDim must be the cache's: " + b + ", " + c);
+        int batch = sequences.size(), maxKeys = 0;
+        if (batch == 0) return encoder;
+        for (var seq : sequences) {
+            int n = Checks.notNull(seq, "sequence").tokens();
+            if (n < (b.causal() ? b.queries() : 1))
+                throw new IllegalArgumentException("a sequence has " + n + " tokens, fewer than its " + b.queries() + " queries need");
+            maxKeys = Math.max(maxKeys, n);
+        }
+        var s = b.shape(maxKeys);
+        requireFused(s);
+        Checks.range(q, 0, b.qBytes(batch) / 2, 2, "q");
+        Checks.range(o, 0, b.oBytes(output(), batch) / output().bytes(), output().bytes(), "o");
+        int variant = variant(b.headDim());
+        var layout = ParameterLayout.of(GemmF16.KERNELS, "attn_flash_" + variant + (output() == Precision.FP32 ? "_f32" : ""));
+        int[] sp = batchSplit(b, batch, maxKeys);
+        int splits = sp[0];
+        long rows = (long) batch * b.heads() * b.queries();
+        var combineGrid = Grid.linear(device.capabilities(), rows);
+        if (batch > device.capabilities().maxGroupCount().x())
+            throw new ComputeException(ComputeException.Code.UNSUPPORTED, batch + " sequences exceed the device's group-count limit");
+        byte[] params = layout.block().u32("heads", b.heads()).u32("kvHeads", b.kvHeads()).u32("queries", b.queries()).u32("keys", maxKeys)
+                .u32("headDim", b.headDim()).u32("cacheKeys", maxKeys).f32("scale", b.scale()).u32("causal", b.causal() ? 1 : 0)
+                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", combineGrid.gridX()).u32("pageSize", c.pageSize())
+                .u32("batch", batch).bytes();
+        var set = fusedPipelines(variant);
+        try (var table = cache.batchTable(sequences);
+             var ml = scratch(splits > 1 ? 8L * splits * rows : 16, "attention-partial-ml");
+             var acc = scratch(splits > 1 ? 4L * splits * rows * b.headDim() : 16, "attention-partial-acc")) {
+            encoder.dispatch(decodePipeline(variant, b.heads() / b.kvHeads() * b.queries()),
+                    Map.of(0, q, 1, cache.keys(layer), 2, cache.values(layer), 3, o, 4, ml, 5, acc, 6, table), params,
+                    new Dimensions(batch, b.kvHeads(), splits), "attention.decode.batch");
             if (splits > 1)
                 encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o), params, combineGrid.groups(), "attention.combine");
         }

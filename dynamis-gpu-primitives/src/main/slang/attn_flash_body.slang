@@ -99,7 +99,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         {
             uint j = e / D2, pr = e % D2, key = b + j;
             bool ok = key < kEnd && pr < d2;
-            uint at = ok ? ATTN_KV_WORD(p, table, kvHead, key, pr, d2) : 0u;
+            uint at = ok ? ATTN_KV_WORD(p, table, 0u, kvHead, key, pr, d2) : 0u;
             ks[j * STRIDE + pr] = ok ? k[at] : 0u;
             vs[j * STRIDE + pr] = ok ? v[at] : 0u;
         }

@@ -88,6 +88,7 @@ struct AttnParams_0
     uint splitKeys_0;
     uint rowBlocks_0;
     uint pageSize_0;
+    uint batch_0;
 };
 
 struct KernelContext_0
@@ -118,7 +119,7 @@ struct KernelContext_0
     threadgroup float rowL_1;
     (&kernelContext_0)->rowL_0 = &rowL_1;
     uint t_0 = local_0.x;
-    uint rows_0 = p_1->heads_0 * p_1->queries_0;
+    uint rows_0 = max(p_1->batch_0, 1U) * p_1->heads_0 * p_1->queries_0;
     uint _S5 = p_1->headDim_0 / 2U;
     uint row_0 = dg_linear_group_0(group_1, p_1->rowBlocks_0);
     if(row_0 >= rows_0)

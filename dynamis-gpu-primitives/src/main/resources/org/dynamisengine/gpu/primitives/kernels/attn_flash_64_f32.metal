@@ -33,6 +33,7 @@ struct AttnParams_0
     uint splitKeys_0;
     uint rowBlocks_0;
     uint pageSize_0;
+    uint batch_0;
 };
 
 struct KernelContext_0

@@ -110,7 +110,15 @@ abstract class AttentionConformance {
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
             got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
         }
-        boolean halfWeights = attention.fusedKernel(s).equals("flash.simdgroup");
+        return verifyFused(q, k, v, s, got, 0, attention.fusedKernel(s).equals("flash.simdgroup"), fp32, "fused");
+    }
+
+    /**
+     * Checks O for shape {@code s} (its elements from {@code outBase} of {@code got}) against the fused bound computed in
+     * double precision from Q, and K and V as {@code [kvHeads][cacheKeys][headDim]}; returns the worst error / bound.
+     */
+    double verifyFused(short[] q, short[] k, short[] v, Shape s, ByteBuffer got, int outBase, boolean halfWeights, boolean fp32, String label) {
+        int d = s.headDim(), nq = s.queries(), nk = s.keys(), cache = s.cacheKeys(), hpk = s.heads() / s.kvHeads();
         double worst = 0, scale = s.scale();
         int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
         double expErr = 8 * U;   // 4 ulp
@@ -147,10 +155,10 @@ abstract class AttentionConformance {
                     double bound = err + 2 * (nk + 2 + 2 * blocks) * U * mag + 0x1p-126;
                     bound += 2 * U * (Math.abs(o) + bound);   // acc / l
                     if (!fp32) bound += (Math.abs(o) + bound) * 0x1p-11 + 0x1p-25;
-                    int idx = (h * nq + i) * d + c;
+                    int idx = outBase + (h * nq + i) * d + c;
                     double gv = fp32 ? got.getFloat(4 * idx) : Float.float16ToFloat(got.getShort(2 * idx));
                     double err2 = Math.abs(gv - o);
-                    assertTrue(err2 <= bound, "fused O[" + h + "][" + i + "][" + c + "] = " + gv + ", reference " + o + ", bound " + bound + " for " + s + " " + out);
+                    assertTrue(err2 <= bound, label + " O[" + h + "][" + i + "][" + c + "] = " + gv + ", reference " + o + ", bound " + bound + " for " + s + (fp32 ? " FP32" : " FP16"));
                     worst = Math.max(worst, err2 / bound);
                 }
             }
@@ -310,6 +318,138 @@ abstract class AttentionConformance {
         }
     }
 
+    /**
+     * Batched decode (1.11.1): sequences of different lengths in one paged cache, some sharing pages, decoded in one
+     * dispatch; each sequence's rows of O within the fused bound of its own keys and values.
+     */
+    @Test void batchedDecodeMatchesEachSequence() {
+        eachOutput(a -> {
+            // mixed lengths, the keys split into ranges and combined
+            checkBatch(a, AttentionF16.DecodeBatch.of(8, 2, 64), new int[] {1, 37, 300, 1000, 4100}, false, 60);
+            // a large batch: one range per sequence, taken in chunks (no combine)
+            var random = new SplittableRandom(61);
+            int[] lengths = new int[33];
+            for (int i = 0; i < lengths.length; i++) lengths[i] = 1 + random.nextInt(700);
+            checkBatch(a, AttentionF16.DecodeBatch.of(32, 8, 128), lengths, false, 62);
+            // two queries per sequence (8 rows a KV head), and a fork that shares its parent's pages
+            checkBatch(a, new AttentionF16.DecodeBatch(8, 2, 2, 128, 0.0884f, true), new int[] {2, 70, 513, 200}, true, 63);
+        });
+    }
+
+    /**
+     * The fixed-tree decode kernel, which devices without subgroup arithmetic run: every device here has subgroups,
+     * so it is forced, through single and batched decode (chunked ranges included).
+     */
+    @Test void fixedTreeDecodeMatchesTheReference() {
+        for (var out : Precision.values()) {
+            try (var a = AttentionF16.create(device, out)) {
+                a.useFixedTreeDecode();
+                for (var s : new Shape[] {Shape.of(2, 1, 300, 64), Shape.of(32, 1, 2000, 128).withKvHeads(8).withCacheKeys(2048),
+                        Shape.of(8, 2, 513, 64).withKvHeads(2).asCausal(), Shape.of(2, 3, 5000, 256).withKvHeads(1).asCausal()}) {
+                    double worst = checkFused(a, s, 1, 64);
+                    System.out.printf("attention fixed-tree decode %s %s worst error/bound %.3g (%s)%n", out, s, worst, dispatchDescription(a, s));
+                }
+                var random = new SplittableRandom(65);
+                int[] lengths = new int[33];
+                for (int i = 0; i < lengths.length; i++) lengths[i] = 1 + random.nextInt(700);
+                checkBatch(a, AttentionF16.DecodeBatch.of(32, 8, 128), lengths, false, 66);
+                checkBatch(a, AttentionF16.DecodeBatch.of(8, 2, 64), new int[] {1, 37, 300, 1000, 4100}, false, 67);
+            }
+        }
+    }
+
+    void checkBatch(AttentionF16 a, AttentionF16.DecodeBatch b, int[] lengths, boolean fork, long seed) {
+        var r = new SplittableRandom(seed);
+        int kvh = b.kvHeads(), d = b.headDim(), ps = 32, batch = lengths.length + (fork ? 1 : 0);
+        int pages = 8;
+        for (int n : lengths) pages += Math.ceilDiv(n + 40, ps);
+        try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(1, kvh, d, ps, pages))) {
+            var seqs = new java.util.ArrayList<PagedKvCache.Sequence>();
+            var ks = new java.util.ArrayList<short[]>();
+            var vs = new java.util.ArrayList<short[]>();
+            try (var e = device.encoder()) {
+                for (int n : lengths) {
+                    var seq = cache.newSequence();
+                    short[] k = halves((long) kvh * n * d, 1, r), v = halves((long) kvh * n * d, 1, r);
+                    cache.reserve(e, seq, n);
+                    try (var gk = buffer(2L * k.length); var gv = buffer(2L * v.length)) {
+                        e.upload(gk, bytes(k)).upload(gv, bytes(v));
+                        cache.write(e, 0, seq, 0, gk, gv, n, n * d, d);
+                    }
+                    seqs.add(seq); ks.add(k); vs.add(v);
+                }
+                if (fork) {
+                    // a fork of the third sequence that grows by 40 tokens past a partly filled shared page
+                    int parent = 2, n0 = lengths[parent], extra = 40, n = n0 + extra;
+                    var seq = cache.fork(seqs.get(parent));
+                    cache.reserve(e, seq, extra);
+                    short[] k = halves((long) kvh * extra * d, 1, r), v = halves((long) kvh * extra * d, 1, r);
+                    try (var gk = buffer(2L * k.length); var gv = buffer(2L * v.length)) {
+                        e.upload(gk, bytes(k)).upload(gv, bytes(v));
+                        cache.write(e, 0, seq, n0, gk, gv, extra, extra * d, d);
+                    }
+                    short[] fk = new short[kvh * n * d], fv = new short[kvh * n * d];
+                    for (int h = 0; h < kvh; h++) for (int t = 0; t < n; t++) for (int c = 0; c < d; c++) {
+                        fk[(h * n + t) * d + c] = t < n0 ? ks.get(parent)[(h * n0 + t) * d + c] : k[(h * extra + t - n0) * d + c];
+                        fv[(h * n + t) * d + c] = t < n0 ? vs.get(parent)[(h * n0 + t) * d + c] : v[(h * extra + t - n0) * d + c];
+                    }
+                    seqs.add(seq); ks.add(fk); vs.add(fv);
+                }
+                try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+            }
+            short[] q = halves(b.qBytes(batch) / 2, 1, r);
+            var out = a.output(); boolean fp32 = out == Precision.FP32;
+            ByteBuffer got;
+            try (var gq = buffer(b.qBytes(batch)); var go = buffer(b.oBytes(out, batch)); var e = device.encoder()) {
+                e.upload(gq, bytes(q));
+                a.encodeBatch(e, gq, cache, 0, seqs, go, b);
+                var read = e.download(go);
+                try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
+            }
+            int maxKeys = 0;
+            for (var seq : seqs) maxKeys = Math.max(maxKeys, seq.tokens());
+            int perSeq = b.heads() * b.queries() * d;
+            double worst = 0;
+            for (int i = 0; i < batch; i++) {
+                var s = b.shape(seqs.get(i).tokens());
+                short[] qi = java.util.Arrays.copyOfRange(q, i * perSeq, (i + 1) * perSeq);
+                worst = Math.max(worst, verifyFused(qi, ks.get(i), vs.get(i), s, got, i * perSeq, false, fp32, "batched decode, sequence " + i));
+            }
+            int[] sp = AttentionF16.batchSplit(b, batch, maxKeys);
+            System.out.printf("attention batched decode %s %s, %d sequences up to %d keys: worst error/bound %.3g (splits %d of %d keys)%n",
+                    out, b, batch, maxKeys, worst, sp[0], sp[1]);
+            for (var seq : seqs) seq.close();
+        }
+    }
+
+    /** -Dgemm.benchmark=true: a batched decode step against one encode per sequence (host, GPU and wall time). */
+    @Test void benchmarkBatchedDecode() {
+        Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
+        var b = AttentionF16.DecodeBatch.of(32, 8, 128);
+        for (int[] cfg : new int[][] {{8, 4096}, {32, 1024}, {32, 4096}, {64, 512}}) {
+            int batch = cfg[0], keys = cfg[1], ps = 64;
+            var config = new PagedKvCache.Config(1, 8, 128, ps, batch * Math.ceilDiv(keys, ps));
+            try (var a = AttentionF16.create(device, Precision.FP16); var cache = PagedKvCache.create(device, config);
+                 var q = buffer(b.qBytes(batch)); var o = buffer(b.oBytes(Precision.FP16, batch)); var init = device.encoder()) {
+                var seqs = new java.util.ArrayList<PagedKvCache.Sequence>();
+                for (int i = 0; i < batch; i++) { var seq = cache.newSequence(); cache.reserve(init, seq, keys); seqs.add(seq); }
+                init.fill(q, 0x3800b800).fill(cache.keys(0), 0x34003800).fill(cache.values(0), 0xbc003c00);
+                try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+                var batched = GpuBenchmark.measure(device, e -> a.encodeBatch(e, q, cache, 0, seqs, o, b));
+                var s = b.shape(keys);
+                var single = GpuBenchmark.measure(device, e -> {
+                    for (var seq : seqs) a.encode(e, q, cache, 0, seq, o, s);   // the same work, one sequence at a time
+                });
+                double bytes = 2.0 * batch * keys * 8 * 128 * 2;
+                System.out.printf("attention %s batched decode %d x %d keys: batched GPU %.1f us (%.0f GB/s), host %.1f us; one encode each: GPU %.1f us, host %.1f us%n",
+                        device.adapter().name(), batch, keys, batched.gpuMicros(), bytes / batched.gpuMicros() / 1e3, batched.encodeMicros(),
+                        single.gpuMicros(), single.encodeMicros());
+                for (var seq : seqs) seq.close();
+            }
+        }
+    }
+
     @Test void fusedRefusesWhatItCannotTake() {
         eachOutput(a -> {
             assertFalse(a.fusedSupports(Shape.of(1, 1, 1, 7)));
@@ -319,6 +459,8 @@ abstract class AttentionConformance {
         });
         assertThrows(IllegalArgumentException.class, () -> Shape.of(4, 1, 1, 8).withKvHeads(3));
         assertThrows(IllegalArgumentException.class, () -> Shape.of(4, 1, 8, 8).withCacheKeys(7));
+        assertThrows(IllegalArgumentException.class, () -> AttentionF16.DecodeBatch.of(32, 2, 128));   // 16 rows per KV head
+        assertThrows(IllegalArgumentException.class, () -> new AttentionF16.DecodeBatch(8, 3, 1, 64, 0.1f, true));
     }
 
     void eachOutput(java.util.function.Consumer<AttentionF16> body) {

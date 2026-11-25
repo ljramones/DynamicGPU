@@ -18,12 +18,16 @@ struct AttnParams
     uint rowBlocks;   // groups along the rows of a KV head
     uint pageSize;    // 0: K and V are contiguous; else paged (1.11.0): key j is slot j % pageSize of page
                       // table[j / pageSize], and a page holds [kvHeads][pageSize][headDim]
+    uint batch;       // 0: one sequence; else batched decode (1.11.1): `batch` paged sequences, group x the
+                      // sequence. The table starts with a header of (tokens, page offset) per sequence; sequence b's
+                      // pages follow at 2 batch + its offset. Q and O are [batch][heads][queries][headDim].
 };
 
-// The word (pair of halves) index of pair pr of key `key` of KV head kvHead, contiguous or through the page table.
-#define ATTN_KV_WORD(p, table, kvHead, key, pr, d2)                                                              \
+// The word (pair of halves) index of pair pr of key `key` of KV head kvHead, contiguous or through the page table
+// from entry `base` (a batched sequence's pages).
+#define ATTN_KV_WORD(p, table, base, kvHead, key, pr, d2)                                                        \
     ((p).pageSize == 0 ? ((kvHead) * (p).cacheKeys + (key)) * (d2) + (pr)                                         \
-                       : ((table[(key) / (p).pageSize] * (p).kvHeads + (kvHead)) * (p).pageSize + (key) % (p).pageSize) * (d2) + (pr))
+                       : ((table[(base) + (key) / (p).pageSize] * (p).kvHeads + (kvHead)) * (p).pageSize + (key) % (p).pageSize) * (d2) + (pr))
 
 float attnLo(uint w) { return f16tof32(w & 0xFFFFu); }
 float attnHi(uint w) { return f16tof32(w >> 16); }

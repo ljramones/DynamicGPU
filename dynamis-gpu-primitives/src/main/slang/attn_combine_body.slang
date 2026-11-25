@@ -24,7 +24,7 @@ groupshared float rowL;
 [numthreads(128, 1, 1)]
 void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
-    uint t = local.x, rows = p.heads * p.queries, d2 = p.headDim / 2;
+    uint t = local.x, rows = max(p.batch, 1u) * p.heads * p.queries, d2 = p.headDim / 2;
     uint row = dg_linear_group(group, p.rowBlocks);   // rowBlocks: the grid width here
     if (row >= rows) return;   // uniform across the group
     float acc = dg_negative_infinity();

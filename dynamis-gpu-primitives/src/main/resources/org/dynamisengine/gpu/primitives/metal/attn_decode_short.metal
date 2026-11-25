@@ -9,7 +9,7 @@ using namespace metal;
 
 struct AttnParams {
     uint heads; uint kvHeads; uint queries; uint keys; uint headDim; uint cacheKeys; float scale; uint causal;
-    uint splits; uint splitKeys; uint rowBlocks; uint pageSize;
+    uint splits; uint splitKeys; uint rowBlocks; uint pageSize; uint batch;   // batch: 1.11.1, 0 here
 };
 
 // Short decode: keep all keys in the group and write the final output in one dispatch.
