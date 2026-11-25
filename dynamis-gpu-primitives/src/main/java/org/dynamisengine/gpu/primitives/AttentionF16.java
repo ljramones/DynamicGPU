@@ -542,6 +542,44 @@ public final class AttentionF16 implements AutoCloseable {
         });
     }
 
+    private boolean scalarBackward;
+    private final Map<Integer, GpuComputePipeline> matrixBackwardQ = new HashMap<>();
+
+    /** Tests only: run the portable backward kernels even where the matrix ones would serve (1.12.1). */
+    void useScalarBackward() { scalarBackward = true; }
+
+    /**
+     * Whether {@link #backward} runs the Metal matrix kernels for {@code s} (1.12.1): native Metal with
+     * SIMD-group matrices, head dimension 64 or 128, and not reproducible mode.
+     */
+    boolean matrixBackward(Shape s) {
+        return !scalarBackward && matrixPath(s.headDim()) && !org.dynamisengine.gpu.api.compute.kit.KitOptions.current().reproducible();
+    }
+
+    private final Map<Integer, GpuComputePipeline> matrixBackwardKV = new HashMap<>();
+
+    private GpuComputePipeline matrixBackwardKV(int d) {
+        return matrixBackwardKV.computeIfAbsent(d, x -> {
+            var acc = List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE);
+            var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
+            for (int i = 0; i < acc.size(); i++) b.add(new BindingLayout.BufferBinding(i, acc.get(i), 4));
+            return device.pipeline(new PipelineDescriptor(metalBundle("attn_bwd_simdgroup"), "attn_bwd_kv_" + d + "_simdgroup",
+                    new BindingLayout(b, GemmF16.KERNELS.parameterBytes("attn_bwd_kv_" + d)), new Dimensions(128, 1, 1), Map.of(),
+                    Set.of(GpuCapabilities.FP32), Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16)));
+        });
+    }
+
+    private GpuComputePipeline matrixBackwardQ(int d) {
+        return matrixBackwardQ.computeIfAbsent(d, x -> {
+            var acc = List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE);
+            var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
+            for (int i = 0; i < acc.size(); i++) b.add(new BindingLayout.BufferBinding(i, acc.get(i), 4));
+            return device.pipeline(new PipelineDescriptor(metalBundle("attn_bwd_simdgroup"), "attn_bwd_q_" + d + "_simdgroup",
+                    new BindingLayout(b, GemmF16.KERNELS.parameterBytes("attn_bwd_q_" + d)), new Dimensions(128, 1, 1), Map.of(),
+                    Set.of(GpuCapabilities.FP32), Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16)));
+        });
+    }
+
     /** Query rows per tile of the backward kernels for a variant. */
     static int backwardRows(int variant) { return variant == 256 ? 8 : 16; }
 
@@ -565,7 +603,9 @@ public final class AttentionF16 implements AutoCloseable {
      * <p>
      * P is recomputed from Q, K and L, in FP32. Two kernels, one walking each key block's queries for dK and dV and one
      * walking each query block's keys for dQ, keep every sum in a fixed order (no atomics), so a device's result does
-     * not depend on scheduling. Bounded ({@link #backwardContract}).
+     * not depend on scheduling. On native Metal at head dimensions 64 and 128 (not in reproducible mode) they run on the
+     * SIMD-group matrix hardware (1.12.1), whose products take FP16 operands: dO, P and dS are rounded to FP16 for them,
+     * as the forward matrix path rounds P. Bounded ({@link #backwardContract}).
      */
     public GpuCommandEncoder backward(GpuCommandEncoder encoder, GpuBuffer q, GpuBuffer k, GpuBuffer v, GpuBuffer o, GpuBuffer lse,
             GpuBuffer dO, GpuBuffer dQ, GpuBuffer dK, GpuBuffer dV, Shape s) {
@@ -586,10 +626,17 @@ public final class AttentionF16 implements AutoCloseable {
         int rowsKv = s.heads() / s.kvHeads() * s.queries();
         try (var dD = scratch(4 * rows, "attention-backward-d")) {
             encoder.dispatch(set.get(0), Map.of(0, o, 1, dO, 2, dD), params, dotGrid.groups(), "attention.backward.dot");
-            encoder.dispatch(set.get(1), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dK, 7, dV), params,
+            if (matrixBackward(s))
+                encoder.dispatch(matrixBackwardKV(variant), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dK, 7, dV), params,
+                        new Dimensions(Math.ceilDiv(s.keys(), 32), s.kvHeads(), 1), "attention.backward.kv.simdgroup");
+            else encoder.dispatch(set.get(1), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dK, 7, dV), params,
                     new Dimensions(Math.ceilDiv(s.keys(), 16), s.kvHeads(), 1), "attention.backward.kv");
-            encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dQ), params,
-                    new Dimensions(Math.ceilDiv(rowsKv, bq), s.kvHeads(), 1), "attention.backward.q");
+            if (matrixBackward(s))
+                encoder.dispatch(matrixBackwardQ(variant), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dQ), params,
+                        new Dimensions(Math.ceilDiv(rowsKv, 32), s.kvHeads(), 1), "attention.backward.q.simdgroup");
+            else
+                encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dQ), params,
+                        new Dimensions(Math.ceilDiv(rowsKv, bq), s.kvHeads(), 1), "attention.backward.q");
         }
         return encoder;
     }
@@ -599,7 +646,8 @@ public final class AttentionF16 implements AutoCloseable {
         return new AccuracyContract("AttentionF16 backward", List.of("FP16 Q, K, V", "O", "FP32 L", "FP32 dO"), "FP32, fixed orders", "FP32",
                 AccuracyContract.Order.DEVICE, AccuracyContract.Bound.formula("P carries the scores' error, L's, the rounding of its exponent and "
                         + "exp's; dS = P (dP - D) adds dP's (headDim + 2) 2^-24 sum|dO V| and D's error (O's own error through dO); dV, dK and "
-                        + "dQ sum (P or dS) times (dO, Q or K) over their rows or keys with (length + 2) 2^-24 of the magnitudes"), "");
+                        + "dQ sum (P or dS) times (dO, Q or K) over their rows or keys with (length + 2) 2^-24 of the magnitudes; the Metal "
+                        + "matrix path (1.12.1) adds the FP16 rounding of dO (in dP and dV), of P (in dV) and of dS (in dK and dQ)"), "");
     }
 
     /**
@@ -625,6 +673,8 @@ public final class AttentionF16 implements AutoCloseable {
             var resources = new java.util.ArrayList<AutoCloseable>(decodePipelines.values());
             resources.addAll(fused.values());
             resources.addAll(backwardPipelines.values());
+            resources.addAll(matrixBackwardQ.values());
+            resources.addAll(matrixBackwardKV.values());
             resources.add(shortDecode);
             PipelineSet.closeAll(resources.toArray(new AutoCloseable[0]));
         } finally {

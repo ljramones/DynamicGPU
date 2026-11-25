@@ -507,14 +507,16 @@ abstract class AttentionConformance {
      * backward's own through every step.
      */
     @Test void backwardMatchesTheReference() {
-        eachOutput(a -> {
+        for (boolean scalar : new boolean[] {false, true}) for (var out : Precision.values()) try (var a = AttentionF16.create(device, out)) {
+            if (scalar) a.useScalarBackward();   // the portable kernels, where the matrix ones would serve
             for (var s : new Shape[] {Shape.of(4, 64, 64, 64).asCausal(), Shape.of(3, 37, 50, 40), Shape.of(8, 20, 45, 128).withKvHeads(2).asCausal(),
                     Shape.of(2, 9, 33, 256), Shape.of(2, 1, 300, 64), Shape.of(2, 30, 30, 2).asCausal(), Shape.of(4, 17, 40, 128).withKvHeads(4).withCacheKeys(48)}) {
                 assertTrue(a.backwardSupports(s), s.toString());
+                if (scalar && !a.matrixPath(s.headDim())) continue;   // already the portable kernels
                 double worst = checkBackward(a, s, 95);
-                System.out.printf("attention backward %s O %s worst error/bound %.3g%n", a.output(), s, worst);
+                System.out.printf("attention backward %s O %s worst error/bound %.3g (%s)%n", a.output(), s, worst, a.matrixBackward(s) ? "matrix" : "portable");
             }
-        });
+        }
     }
 
     double checkBackward(AttentionF16 a, Shape s, long seed) {
@@ -539,7 +541,7 @@ abstract class AttentionConformance {
             gk2 = ByteBuffer.wrap(rk.bytes()).order(ByteOrder.nativeOrder());
             gv2 = ByteBuffer.wrap(rv.bytes()).order(ByteOrder.nativeOrder());
         }
-        boolean halfWeights = a.matrixPath(d);
+        boolean halfWeights = a.matrixPath(d), halfOps = a.matrixBackward(s);
         int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
         double E = 8 * U, scale = s.scale();
         double[] eK = new double[kn], bK = new double[kn], mK = new double[kn], eV = new double[kn], bV = new double[kn], mV = new double[kn];
@@ -592,6 +594,8 @@ abstract class AttentionConformance {
                 dPj[j] = dPv;
                 dSj[j] = pj[j] * (dp - D);
                 ddS[j] = dPv * Math.abs(dp - D) + pj[j] * ((d + 2) * U * magP + dD + U * Math.abs(dp - D)) + U * Math.abs(dSj[j]) + 0x1p-126;
+                // the matrix path: dO rounded to FP16 for dP, and dS rounded to FP16 for its products
+                if (halfOps) ddS[j] += pj[j] * 0x1p-11 * magP * 1.01 + (Math.abs(dSj[j]) + ddS[j]) * 0x1p-11 * 1.01 + 0x1p-25;
             }
             // dQ for this row
             for (int c = 0; c < d; c++) {
@@ -611,6 +615,7 @@ abstract class AttentionConformance {
                 int at = (kvh * cache + j) * d + c;
                 double g = dO[qb + c], qq = f(q[qb + c]);
                 eV[at] += pj[j] * g; bV[at] += dPj[j] * Math.abs(g); mV[at] += pj[j] * Math.abs(g);
+                if (halfOps) bV[at] += (pj[j] + dPj[j]) * Math.abs(g) * 2 * 0x1p-11 * 1.01 + 0x1p-25 * Math.abs(g);   // P and dO rounded to FP16
                 eK[at] += dSj[j] * qq; bK[at] += ddS[j] * Math.abs(qq); mK[at] += Math.abs(dSj[j] * qq);
             }
         }
