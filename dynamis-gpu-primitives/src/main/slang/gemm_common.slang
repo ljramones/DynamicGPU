@@ -23,6 +23,9 @@ struct GemmParams
     uint act;       // 0 none, 1 ReLU, 2 GELU (tanh form), 3 SiLU
     uint gated;     // r * gate
     uint residual;  // r + residual
+#ifdef QUANT
+    uint qparams;   // the first word of the block parameters in the packed B (format and block: constants)
+#endif
 #ifdef GROUPED
     uint count;     // problems
     uint aLength;   // the buffers' lengths in elements: problems outside them are skipped and reported

@@ -39,3 +39,14 @@ reduce_rows reduce_rows.slang reduce_rows
 reduce_argmax reduce_argmax.slang reduce_argmax
 scan_rows scan_rows.slang scan_rows
 nan_check nan_check.slang nan_check
+quant_pack quant_pack.slang quant_pack
+quant_unpack quant_unpack.slang quant_unpack
+# quantized weights (1.9.0)
+gemm_q_skinny gemm_q_skinny.slang gemm_q_skinny
+gemm_q_skinny_h gemm_q_skinny_h.slang gemm_q_skinny_h
+gemm_q_skinny_bf16 gemm_q_skinny_bf16.slang gemm_q_skinny_bf16
+gemm_q_skinny_bf16_h gemm_q_skinny_bf16_h.slang gemm_q_skinny_bf16_h
+gemm_q_tiled gemm_q_tiled.slang gemm_q_tiled
+gemm_q_tiled_h gemm_q_tiled_h.slang gemm_q_tiled_h
+gemm_q_tiled_bf16 gemm_q_tiled_bf16.slang gemm_q_tiled_bf16
+gemm_q_tiled_bf16_h gemm_q_tiled_bf16_h.slang gemm_q_tiled_bf16_h
