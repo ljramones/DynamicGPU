@@ -799,6 +799,10 @@ attention.encodeBatch(encoder, q, cache, layer, List.of(seqA, seqB, seqC), o, At
     | 32 x 4096 | 1,549 us (347 GB/s) / 10 us | 2,323 / 209 us |
     | 64 x 512 | 373 us (360 GB/s) / 8 us | 1,420 / 337 us |
 
+- **Long-context paged decode:** at 32,768 keys and batch one on the M4 Max, reusing one layer's
+  FP16 pages took 379 µs per call on Metal. Rotating through 384 MiB of layers also took 379 µs.
+  At 4,096 keys the same comparison took 67.6 and 73.4 µs. [Working-set measurements and codec study](paged-kv-study.md)
+
 - **Tests:**
   - **Paged against contiguous:** a cache built through `reserve`, `write`, `fork` with copy on write, and `truncate`
     gives the same bits as the contiguous attention over the same keys and values, on all three backends. The test
