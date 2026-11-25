@@ -394,7 +394,7 @@ The plan as agreed:
 
 ### 1.10: Inference kernels
 
-**Status: complete, released as 1.10.0.** Done:
+**Status: complete, released as 1.10.0 and 1.10.1.** Done:
 - **`Norms`:** RMSNorm and LayerNorm, with the fused residual add (h exact, in place or not).
 - **`Rope`:** both layouts and partial rotary dimensions, from a host table in double. It is bit for bit everywhere.
 - **Activations:** `Elementwise` `SILU`, `GELU` and `SWIGLU`; the residual add is `ADD`.
@@ -402,10 +402,8 @@ The plan as agreed:
 - **`Sampler`:** greedy, temperature, top-k and top-p, seeded. The token stays on the GPU and feeds the embedding
   gather. Greedy is exact, and draws matched the CPU reference on every backend.
 - **`Reduce.logSumExp`.**
-
-Not done:
-- **Fast sampling and log-sum-exp for one row:** they run in one group, so top-k 40 with top-p takes about 0.5 ms at
-  a vocabulary of 128256. A multi-group form is planned.
+- **1.10.1:** sampling and log-sum-exp spread a row across groups. At a vocabulary of 128256 on an M4 Max, top-k 40
+  with top-p dropped from 526 to 76 us, temperature-only sampling from 51 to 17 us, and log-sum-exp from 124 to 10 us.
 
 The plan as agreed:
 

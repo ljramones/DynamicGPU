@@ -10,7 +10,7 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
 | `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
 | `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0) | 1.7.0 |
-| `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0) | 1.7.0 |
+| `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1) | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
 | `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M; the K formats Q4K, Q5K, Q6K): CPU and GPU encoders and decoders, bit for bit | 1.9.0 (K formats 1.9.1) |
@@ -18,7 +18,7 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `Norms` | RMSNorm and LayerNorm per row, with an optional fused residual add | 1.10.0 |
 | `Rope` | rotary position embedding from a host table, positions on the GPU | 1.10.0 |
 | `Embedding` | rows gathered by GPU-resident tokens from FP32, FP16 or quantized tables | 1.10.0 |
-| `Sampler` | greedy, temperature, top-k and top-p sampling on the GPU, seeded | 1.10.0 |
+| `Sampler` | greedy, temperature, top-k and top-p sampling on the GPU, seeded (multi-group 1.10.1) | 1.10.0 |
 | `QuantizedGemm` | matrix multiply with quantized weights, dequantized in the kernel, for decode and prefill | 1.9.0 |
 
 Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
@@ -415,7 +415,13 @@ token).
 
 ### `Sampler`
 
-A token from each row of FP32 logits, into a uint32 GPU buffer. One group of 1024 threads handles each row.
+A token from each row of FP32 logits, into a uint32 GPU buffer. Since 1.10.1 a row is spread across the GPU:
+
+- **Stage 1 (`sample.chunks`):** one group of 1024 threads per chunk of 1024 logits, for the chunk's max, its first
+  argmax and its sum of weights. With top-k or top-p, it also sorts the chunk into runs of 256.
+- **Merge rounds (`sample.merge`, top-k or top-p only):** each group merges a power of two of sorted lists (a
+  pairwise merge tree, one binary search per element and level) and keeps the first k.
+- **Stage 2 (`sample.final`):** one group per row combines the chunks, merges the last lists, and draws.
 
 ```java
 var settings = new Sampler.Settings(0.8f, 40, 0.95f, seed);   // temperature, top-k, top-p, seed
@@ -425,7 +431,8 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
 
 - **Greedy** (temperature 0 or `k = 1`): the first index of the largest logit, with NaN counting as -infinity.
 - **Sampling:** weights `exp((l - max) / T)`.
-  - **Without top-k and top-p:** over the whole vocabulary, in index order.
+  - **Without top-k and top-p:** over the whole vocabulary, in index order: a chunk is drawn by its total weight,
+    then a token within it.
   - **With them:** over the k largest (`k <= 1024`), sorted by logit then index, and cut at top-p. Top-p alone
     takes the 1024 largest.
   - **The draw:** `u = rand * total`, with `rand` from a counter-based hash of (seed, row, step); the token is the
@@ -452,12 +459,17 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
 | residual add + RMSNorm | 1 x 4096 / 512 x 4096 | 8.3 us / 54 us |
 | RoPE | 32 heads x 128, 1 / 512 tokens | 21 us / 32 us |
 | embedding gather | 1 row of 4096, FP16 | 16 us |
-| sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 19 / 51 / 526 us |
-| log-sum-exp | 128256 | 124 us |
+| sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 12 / 17 / 76 us |
+| log-sum-exp | 128256 | 10 us |
 
-- **Why sampling and log-sum-exp are slow:** one group per row leaves most of the GPU idle on a single row. Top-k's
-  radix select also makes four histogram passes through contended group-memory atomics. A multi-group form is
-  planned.
+- **Before 1.10.1:** one group per row took 19 / 51 / 526 us for sampling and 124 us for log-sum-exp. On a single
+  row it left most of the GPU idle.
+- **Top-k + top-p by stage:** sorting runs takes 51 us (temperature alone: 10 us), the merges 16 us, and the final
+  stage 14 us. Other selections measured slower:
+  - a radix select in group memory, 67 us for the select alone: the largest keys share a few bins, so the atomics
+    contend;
+  - sorting every chunk in full, 68 us;
+  - sorting 2048 slots per merge group, 67 us.
 - **RoPE and the gather** include their error check (an error-buffer reset and check around the dispatch).
 
 ## `Softmax`

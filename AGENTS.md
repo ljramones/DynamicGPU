@@ -113,6 +113,13 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - Put `[ForceUnroll]` on every fixed-trip loop. Without it the SPIR-V keeps per-thread arrays in memory, and
     MoltenVK ran a GEMM 14 times slower.
   - Hoist uniform branches out of inner loops. Testing `transB` inside the k loop cost the matrix GEMM about 15 %.
+- **Group-wide work on one row** (the 1.10.1 sampler and log-sum-exp):
+  - **Spread across groups:** one group per row leaves the GPU idle when there are few rows. Split the row into
+    chunks, one group each, and combine the chunks in a second dispatch.
+  - **Barriers cost:** a 1024-thread bitonic step costs about 1 us across 126 groups on an M4 Max. Sort only what
+    must be sorted (runs, then merges), and size scans and trees to the live slots.
+  - **Group-memory atomics on skewed keys contend:** a radix-select histogram of logits puts most keys in a few bins.
+    A merge by binary search was faster.
 - **Slang traps:**
   - **Groupshared rereads:** Slang's SPIR-V target may reread a local copy of a groupshared value after a barrier.
     Never copy a group variable and then overwrite it; give results their own group variable (`rowMax`, `rowSum`).
@@ -261,7 +268,7 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.9.1 are on GitHub.
+- **Published:** 1.0.x to 1.10.0 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
@@ -270,5 +277,6 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.9.0:** quantized weights.
 - **1.9.1:** K formats, block 128 and GGUF import. `scripts/ggml-oracle.py` (with gguf-py) writes the GGML test
   samples.
-- **1.10.0 (inference kernels):** built on branch `feat/inference-kernels`; see `docs/releases/1.10.0.md`.
+- **1.10.0:** inference kernels (norms, RoPE, embedding, sampling, activations, log-sum-exp).
+- **1.10.1 (fast sampling):** built on branch `feat/fast-sampling`; see `docs/releases/1.10.1.md`.
 - **Next:** milestone 1.11 (attention at scale).
