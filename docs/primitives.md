@@ -420,6 +420,9 @@ A token from each row of FP32 logits, into a uint32 GPU buffer. Since 1.10.1 a r
 
 - **Stage 1 (`sample.chunks`):** one group of 1024 threads per chunk of 1024 logits, for the chunk's max, its first
   argmax and its sum of weights. With top-k or top-p, it also sorts the chunk into runs of 256.
+- **Subgroup sorting:** for at least 64 chunks, devices with subgroup shuffle and arithmetic can exchange the
+  short bitonic strides in registers. Long strides use group memory. The kernel checks lane ordering and active
+  width, and can use group memory for every stride.
 - **Merge rounds (`sample.merge`, top-k or top-p only):** each group merges a power of two of sorted lists (a
   pairwise merge tree, one binary search per element and level) and keeps the first k.
 - **Stage 2 (`sample.final`):** one group per row combines the chunks, merges the last lists, and draws.
@@ -463,6 +466,9 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
 | sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 12 / 17 / 76 us |
 | log-sum-exp | 128256 | 10 us |
 
+- **Subgroup sort measurements:** on native Metal (Apple M4 Max, 128256 logits, k = 1024, p = 0.95), whole
+  encodes fell from 121.85 to 111.86 us on fixed-seed uniform logits and from 122.05 to 108.70 us on tied logits.
+  With k = 40, the same sort took 65.04 us on uniform logits (release 75.17 us). No weight, scan or draw changes.
 - **Before 1.10.1:** one group per row took 19 / 51 / 526 us for sampling and 124 us for log-sum-exp. On a single
   row it left most of the GPU idle.
 - **Top-k + top-p by stage:** sorting runs takes 51 us (temperature alone: 10 us), the merges 16 us, and the final

@@ -79,7 +79,11 @@ public final class Sampler implements AutoCloseable {
     private final org.dynamisengine.gpu.api.compute.kit.PipelineSet pipelines;
     private final ParameterLayout layout;
 
-    private Sampler(GpuDevice device, org.dynamisengine.gpu.api.compute.kit.PipelineSet pipelines) {
+    // Subgroup sorting is optional on devices with narrower per-kernel limits.
+    private final boolean shuffle;
+
+    private Sampler(GpuDevice device, org.dynamisengine.gpu.api.compute.kit.PipelineSet pipelines, boolean shuffle) {
+        this.shuffle = shuffle;
         this.device = device; this.pipelines = pipelines;
         this.layout = ParameterLayout.of(GemmF16.KERNELS, "sample_final");
     }
@@ -88,15 +92,20 @@ public final class Sampler implements AutoCloseable {
     public static Sampler create(GpuDevice device) {
         Checks.notNull(device, "device");
         var types = Set.of(GpuCapabilities.FP32);
-        var set = org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, List.of(
+        var descriptors = new java.util.ArrayList<>(List.of(
                 GemmF16.KERNELS.pipeline("sample_chunks", List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE), types, Set.of()),
                 GemmF16.KERNELS.pipeline("sample_final", List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE), types, Set.of()),
                 GemmF16.KERNELS.pipeline("sample_merge", List.of(Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE), types, Set.of())));
+        var features = Set.of(GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.SUBGROUP_ARITHMETIC);
+        boolean shuffle = device.capabilities().shaderFeatures().containsAll(features);
+        if (shuffle) descriptors.add(GemmF16.KERNELS.pipeline("sample_shuffle",
+                List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE), types, features));
+        var set = org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, descriptors);
         if (set.get(0).limits().maxThreads() < THREADS || set.get(1).limits().maxThreads() < THREADS || set.get(2).limits().maxThreads() < THREADS) {
             set.close();
             throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the sampler needs groups of " + THREADS + " threads");
         }
-        return new Sampler(device, set);
+        return new Sampler(device, set, shuffle && set.get(3).limits().maxThreads() >= THREADS);
     }
 
     private GpuBuffer scratch(long bytes, String label) {
@@ -117,7 +126,7 @@ public final class Sampler implements AutoCloseable {
              var bv = scratch(restricted ? 4L * s.rows() * chunks * CHUNK : 16, "sampler-merged-values");
              var bi = scratch(restricted ? 4L * s.rows() * chunks * CHUNK : 16, "sampler-merged-indices");
              var info = scratch(16L * s.rows() * chunks, "sampler-chunks")) {
-            encoder.dispatch(pipelines.get(0), Map.of(0, logits, 1, av, 2, ai, 3, info), params(s, settings, step, chunks, restricted, chunks, CHUNK, k, 1),
+            encoder.dispatch(pipelines.get(restricted && shuffle && chunks >= 64 ? 3 : 0), Map.of(0, logits, 1, av, 2, ai, 3, info), params(s, settings, step, chunks, restricted, chunks, CHUNK, k, 1),
                     new Dimensions(chunks, s.rows(), 1), "sample.chunks");
             // merge rounds: each group keeps the first k of up to 2048 candidates, until one list a row remains
             GpuBuffer curV = av, curI = ai, nextV = bv, nextI = bi;

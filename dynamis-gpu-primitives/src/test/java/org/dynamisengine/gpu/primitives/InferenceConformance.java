@@ -234,7 +234,32 @@ abstract class InferenceConformance {
                         }
                     }
                     System.out.println("sampler " + device.adapter().name() + " vocab " + vocab + (tied ? " tied" : "") + " " + st + ": " + mismatches + " of " + draws + " differ from the reference");
-                    assertTrue(mismatches <= draws / 20, mismatches + " of " + draws + " draws differ from the reference: " + st);
+                    assertEquals(0, mismatches, "draws differing from the reference: " + st);
+                }
+            }
+        }
+    }
+
+    @Test void restrictedSamplingHonorsTiesAndPartialChunks() {
+        int vocab = 65549, rows = 5;
+        var shape = new Sampler.Shape(rows, vocab, vocab + 11);
+        var data = new float[rows * shape.ldl()];
+        for (int j = 0; j < vocab; j++) {
+            data[j] = (j & 1) == 0 ? -0.0f : 0.0f;
+            data[shape.ldl() + j] = j % 64 == 0 ? Float.NaN : Float.NEGATIVE_INFINITY;
+            data[2 * shape.ldl() + j] = j >= vocab - 13 ? 10 : j % 7;
+            data[3 * shape.ldl() + j] = j % 64 == 39 ? -10 : j % 5;
+            data[4 * shape.ldl() + j] = j % 7 == 0 ? Float.NEGATIVE_INFINITY : j;
+        }
+        try (var sampler = Sampler.create(device)) {
+            for (int k : new int[] {2, 13, 39, 40, 64, 65, 257, 1024}) {
+                var st = new Sampler.Settings(0.8f, k, 0.95f, 901);
+                for (int step = 0; step < 4; step++) {
+                    var tokens = sample(sampler, data, shape, st, step);
+                    for (int row = 0; row < rows; row++) {
+                        assertEquals(Sampler.reference(data, row * shape.ldl(), vocab, st, row, step), tokens[row],
+                                "top-k " + k + " row " + row + " step " + step);
+                    }
                 }
             }
         }
@@ -350,6 +375,35 @@ abstract class InferenceConformance {
     /** GPU microseconds per run of {@code body}: an untimed round, then the best of 4 rounds of about 20 ms. */
     double micros(java.util.function.Consumer<GpuCommandEncoder> body) {
         return GpuBenchmark.measure(device, body).gpuMicros();
+    }
+
+    /** Whole encodes on tied and varied logits. A fast prefilter can depend on their distribution. */
+    @Test void topKBenchmark() {
+        Assumptions.assumeTrue(Boolean.getBoolean("inference.benchmark"));
+        int vocab = Integer.getInteger("sampler.benchVocab", 128256);
+        var shape = Sampler.Shape.of(1, vocab);
+        var st = new Sampler.Settings(0.8f, Integer.getInteger("sampler.benchK", 40), 0.95f, 1);
+        int k = st.topK() == 0 ? Math.min(vocab, Sampler.MAX_K) : st.topK();
+        try (var sampler = Sampler.create(device); var gl = buffer(4L * vocab); var gt = buffer(4)) {
+            for (String pattern : new String[] {"tied", "varied", "skewed", "concentrated", "weak-bound", "ascending"}) {
+                var data = new float[vocab];
+                var random = new SplittableRandom(4329);
+                for (int i = 0; i < vocab; i++) {
+                    data[i] = switch (pattern) {
+                        case "tied" -> 0f;
+                        case "ascending" -> i;
+                        case "concentrated" -> i >= 1024 && i < 2048 ? i % 7 : Float.NEGATIVE_INFINITY;
+                        case "weak-bound" -> i == k - 1 || i / 1024 % k == 0
+                                ? -12f : (float) random.nextDouble(-6, 6);
+                        case "skewed" -> i % 64 == 39 ? -12f : (float) random.nextDouble(-6, 6);
+                        default -> (float) random.nextDouble(-6, 6);
+                    };
+                }
+                run(e -> { e.upload(gl, encode(data, Precision.FP32)); return e.download(gl); });
+                double best = micros(e -> sampler.encode(e, gl, gt, shape, st, 0));
+                System.out.printf("sampler-benchmark %s vocab=%d k=%d %s %.2f us%n", device.adapter().name(), vocab, st.topK(), pattern, best);
+            }
+        }
     }
 
     /** -Dinference.benchmark=true: a decode step's kernels at llama-like sizes. */
