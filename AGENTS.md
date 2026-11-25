@@ -124,6 +124,8 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   the other and ran 22 % slower than with them side by side in one loop.
 - **Exact optimizers depend on division and sqrt.** `Optimizer` is bit for bit its Java reference only where they are
   correctly rounded (0 ULP measured on all three backends), and because nothing is fused: lavapipe does not fuse fma.
+- **System properties reach surefire's JVM as `-Dname=value`, not through `-DargLine`.** An experiment's switch
+  passed only through `argLine` was ignored, and its runs timed the unchanged kernels.
 - **Force every fallback path in a test.** When all three devices support a fast path (subgroup decode, say), the
   portable path it falls back from never runs on hardware. Give it a package-private switch
   (`AttentionF16.useFixedTreeDecode`) and run its numbers too.
@@ -299,7 +301,7 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.11.1 are on GitHub.
+- **Published:** 1.0.x to 1.11.1 are on GitHub; 1.12.0 is prepared on `release/1.12.0`.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
@@ -312,5 +314,6 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.10.1:** fast sampling and log-sum-exp.
 - **1.11.0:** attention at scale (flash, decode, paged KV cache), with an independent optimization review.
 - **1.11.1:** batched decode.
-- **1.12.0 (training kernels):** built on branch `feat/training-kernels`; see `docs/releases/1.12.0.md`.
+- **1.12.0:** training kernels.
+- **1.12.1 (matrix attention backward):** built on branch `feat/matrix-backward`; see `docs/releases/1.12.1.md`.
 - **Next:** flowing the stack into Vectrix, then NNJava planning (see `docs/roadmap.md`).

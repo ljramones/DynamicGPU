@@ -488,8 +488,11 @@ Changed from the plan:
   dQ kernel in the attention backward. Gradients therefore do not depend on scheduling. Atomics would save the dQ
   kernel's recompute, about half of the attention backward's time.
 
+- **1.12.1:** the attention backward on Apple GPU matrix hardware. At sequence 2048 it takes 37.8 ms, against 51.5,
+  with every sum still in a fixed order.
+
 Not done:
-- **A Metal matrix-path attention backward:** the portable one runs at about 10 times the forward pass's time.
+- **A faster attention backward:** the matrix path still runs at about 7 times the forward pass's time.
 
 The plan as agreed:
 

@@ -877,29 +877,44 @@ AdamW and SGD (momentum, Nesterov, weight decay) over FP32 parameters.
     1. a pre-pass for `D = rowsum(dO O)`;
     2. a kernel per block of 16 keys that walks its queries for dK and dV;
     3. a kernel per block of query rows that walks its keys for dQ.
-  - **P:** recomputed from L in FP32, so it is not rounded to FP16.
+  - **P:** recomputed from L in FP32.
   - **Coverage:** grouped-query attention, the causal mask (with blocks skipped) and caches longer than the keys.
+  - **On Apple GPUs (1.12.1):** native Metal at head dimensions 64 and 128 runs hand-written `simdgroup_matrix`
+    kernels.
+    - **dQ:** 32-row groups over 32-key blocks.
+    - **dK and dV:** 32-key groups over 16-row tiles.
+    - **Rounding:** dO, P and dS are rounded to FP16 for the products, as the forward matrix path rounds P. Every sum
+      is still in a fixed order.
+    - **Elsewhere:** reproducible mode (`-Ddynamisgpu.reproducible=true`) and other devices run the portable kernels,
+      with P and dS in FP32.
 - **Accuracy:** each gradient element is checked against double from the same half inputs, within a bound that
-  carries the forward pass's errors in O and L and every step of the backward's own. The worst measured error is
-  48 % of the bound, at head dimension 2 with FP16 O. Most shapes measure under 10 %.
+  carries the forward pass's errors in O and L and every step of the backward's own.
+  - **Portable kernels:** the worst measured error is 48 % of the bound, at head dimension 2 with FP16 O; most shapes
+    measure under 10 %.
+  - **The matrix path:** its bound adds the FP16 roundings, which dominate; the worst measured error is 81 % of it.
+  - **Coverage:** both paths are tested on Metal (a test switch forces the portable one).
 - **Measured** on an M4 Max: 32 heads, head dimension 128, causal, FP16 O.
 
-  | Sequence | Training forward | Backward |
-  |---|---|---|
-  | 512 | 0.41 ms | 3.5 ms |
-  | 1024 | 1.38 ms | 13.3 ms |
-  | 2048 | 5.15 ms | 51.5 ms |
+  | Sequence | Training forward | Backward, matrix (1.12.1) | Backward, portable (1.12.0) |
+  |---|---|---|---|
+  | 512 | 0.41 ms | 2.84 ms | 3.5 ms |
+  | 1024 | 1.38 ms | 9.84 ms | 13.2 ms |
+  | 2048 | 5.15 ms | 37.8 ms | 51.5 ms |
 
-  - **Running dot products one after the other:** the backward took 65.7 ms at 2048. Each thread now runs its two
-    pairs' dot products side by side.
-  - **The cost of determinism:** the dQ kernel recomputes P and dP, about half of the time. FlashAttention-2 instead
-    accumulates dQ with float atomics, whose results depend on scheduling, and that is not used.
-  - **Next:** a Metal matrix backward, as the forward pass has.
+  - **Each matrix kernel alone, at 2048:** dQ 16.8 ms against about 22 for the portable kernel, and dK and dV
+    21.1 ms against 29.1.
+  - **Alternatives that lost:**
+    - **dQ over key blocks of 16** (half the threadgroup memory): the same time.
+    - **K and V held in registers for dK and dV, with 32-row tiles:** 23.6 ms.
+    - **Running each thread's dot products one after the other (portable):** the backward took 65.7 ms at 2048.
+  - **The cost of determinism:** the dQ kernel recomputes P and dP. FlashAttention-2 instead accumulates dQ with float
+    atomics, whose results depend on scheduling, and that is not used.
+  - **What is left:** each matrix kernel still takes 3 to 4 times the forward pass's time, for 1.5 to 2 times its
+    matrix work. The elementwise passes go through threadgroup memory.
 
 ## Planned
 
-- **Attention backward on the Metal matrix hardware:** the backward pass is portable scalar code, at about 10 times
-  the forward pass's time.
+- **A faster attention backward:** the matrix path runs at about 7 times the forward pass's time.
 - **Batched prefill across sequences:** batched decode (1.11.1) takes at most 8 rows per KV head. Mixing prompt
   chunks of several sequences into one dispatch is not covered.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
