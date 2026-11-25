@@ -95,6 +95,51 @@ class GradientReferenceTest {
         close(CrossEntropy.lossExact(l, 0, n, target), lse - l[target], 1, "the loss");
     }
 
+    /** The attention gradient formulas the conformance test holds the GPU to, against finite differences of O. */
+    @Test void attentionGradients() {
+        var r = new SplittableRandom(4);
+        int nq = 3, nk = 5, d = 4;
+        double scale = 0.6;
+        double[][] Q = new double[nq][d], K = new double[nk][d], V = new double[nk][d], dO = new double[nq][d];
+        for (var m : new double[][][] {Q, K, V, dO}) for (var row : m) for (int c = 0; c < d; c++) row[c] = r.nextDouble(-1, 1);
+        java.util.function.Supplier<Double> loss = () -> {
+            double l = 0;
+            for (int i = 0; i < nq; i++) {
+                int limit = i + nk - nq + 1;   // causal, the queries at the end of the keys
+                double[] s = new double[limit]; double mx = Double.NEGATIVE_INFINITY, sum = 0;
+                for (int j = 0; j < limit; j++) { for (int c = 0; c < d; c++) s[j] += scale * Q[i][c] * K[j][c]; mx = Math.max(mx, s[j]); }
+                for (int j = 0; j < limit; j++) sum += Math.exp(s[j] - mx);
+                for (int c = 0; c < d; c++) { double o = 0; for (int j = 0; j < limit; j++) o += Math.exp(s[j] - mx) / sum * V[j][c]; l += dO[i][c] * o; }
+            }
+            return l;
+        };
+        double[][] gQ = new double[nq][d], gK = new double[nk][d], gV = new double[nk][d];
+        for (int i = 0; i < nq; i++) {
+            int limit = i + nk - nq + 1;
+            double[] s = new double[limit], p = new double[limit]; double mx = Double.NEGATIVE_INFINITY, sum = 0;
+            for (int j = 0; j < limit; j++) { for (int c = 0; c < d; c++) s[j] += scale * Q[i][c] * K[j][c]; mx = Math.max(mx, s[j]); }
+            for (int j = 0; j < limit; j++) sum += Math.exp(s[j] - mx);
+            double L = mx + Math.log(sum), D = 0;
+            for (int j = 0; j < limit; j++) p[j] = Math.exp(s[j] - L);
+            for (int c = 0; c < d; c++) { double o = 0; for (int j = 0; j < limit; j++) o += p[j] * V[j][c]; D += dO[i][c] * o; }
+            for (int j = 0; j < limit; j++) {
+                double dp = 0; for (int c = 0; c < d; c++) dp += dO[i][c] * V[j][c];
+                double ds = p[j] * (dp - D);
+                for (int c = 0; c < d; c++) { gQ[i][c] += scale * ds * K[j][c]; gK[j][c] += scale * ds * Q[i][c]; gV[j][c] += p[j] * dO[i][c]; }
+            }
+        }
+        for (var pair : new Object[][] {{Q, gQ, "dQ"}, {K, gK, "dK"}, {V, gV, "dV"}}) {
+            double[][] m = (double[][]) pair[0], g = (double[][]) pair[1];
+            for (int a = 0; a < m.length; a++) for (int c = 0; c < d; c++) {
+                double keep = m[a][c];
+                m[a][c] = keep + H; double up = loss.get();
+                m[a][c] = keep - H; double down = loss.get();
+                m[a][c] = keep;
+                close(g[a][c], (up - down) / (2 * H), Math.abs(g[a][c]), pair[2] + "[" + a + "][" + c + "]");
+            }
+        }
+    }
+
     @Test void activationDerivatives() {
         double c = Math.sqrt(2 / Math.PI), k = 0.044715;
         DoubleUnaryOperator silu = x -> x / (1 + Math.exp(-x));

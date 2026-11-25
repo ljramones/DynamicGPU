@@ -715,6 +715,31 @@ abstract class AttentionConformance {
                             a.algorithm(), s.heads(), s.queries(), s.headDim(), best * 1e3, s.flops() / best / 1e9, fusedBest * 1e3, s.flops() / fusedBest / 1e9);
                 }
             }
+            // training: the forward pass with its log-sum-exp, and the backward pass (1.12.0)
+            for (var s : new Shape[] {Shape.of(32, 512, 512, 128).asCausal(), Shape.of(32, 1024, 1024, 128).asCausal(), Shape.of(32, 2048, 2048, 128).asCausal()}) {
+                long qn = (long) s.heads() * s.queries() * s.headDim();
+                try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(Precision.FP16));
+                     var gl = buffer(4L * s.heads() * s.queries()); var gdo = buffer(4 * qn); var gdq = buffer(4 * qn); var gdk = buffer(4 * qn); var gdv = buffer(4 * qn)) {
+                    try (var init = device.encoder()) {
+                        init.fill(gq, 0x3800b800).fill(gk, 0x34003800).fill(gv, 0xbc003c00).fill(gdo, 0x3c23d70a);
+                        try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+                    }
+                    double fwd = time(e -> a.encode(e, gq, gk, gv, go, gl, s));
+                    double bwd = time(e -> a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s));
+                    System.out.printf("attention %s training heads=%d seq=%d dim=%d causal: forward with lse %.2f ms, backward %.2f ms (%.0f GFLOP/s dense-equivalent at 2.5x the forward's)%n",
+                            device.adapter().name(), s.heads(), s.queries(), s.headDim(), fwd * 1e3, bwd * 1e3, 2.5 * s.flops() / bwd / 1e9);
+                    var stages = new java.util.TreeMap<String, Double>();
+                    try (var e = device.encoder()) {
+                        e.profile();
+                        a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s);
+                        try (var sub = device.queue().submit(e)) {
+                            assertTrue(sub.await(WAIT));
+                            for (var d : sub.dispatchTimings()) stages.merge(d.label(), d.time().toNanos() / 1e6, Double::sum);
+                        }
+                    }
+                    System.out.println("attention backward stages (ms) seq=" + s.queries() + ": " + stages);
+                }
+            }
             // decoding: one query per head against a long cache, grouped-query (32 heads, 8 KV heads)
             for (int keys : new int[] {512, 4096, 32768}) {
                 var s = new Shape(32, 1, keys, 128, (float) (1 / Math.sqrt(128)), true, 8, keys);

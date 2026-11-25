@@ -26,6 +26,7 @@ static const uint BK = 16;
 static const uint D2 = DMAX / 2;
 static const uint STRIDE = D2 + 1;
 static const uint CPT = DMAX / 8;   // columns per thread: part, part + 8, ..
+static const uint PPT = BQ * BK / THREADS;   // (row, key) pairs per thread
 
 groupshared uint qs[BQ * STRIDE];
 groupshared uint ks[BK * STRIDE];
@@ -43,36 +44,40 @@ float half2At(uint w, uint c) { return (c & 1) == 0 ? attnLo(w) : attnHi(w); }
 void pairs(uint t, uint r0, uint rows, uint k0, uint d2)
 {
     uint offset = p.keys - p.queries;
+    // the thread's pairs side by side: their dot products as independent chains (one pair after the other left each
+    // thread waiting on its own fma chain)
+    float sv[PPT], dp[PPT];
+    uint ii[PPT], kv[PPT];
     [ForceUnroll]
-    for (uint u = 0; u < BQ * BK / THREADS; u++)
+    for (uint u = 0; u < PPT; u++) { uint e = t + u * THREADS; ii[u] = e / BK; kv[u] = e % BK; sv[u] = 0.0f; dp[u] = 0.0f; }
+    for (uint p0 = 0; p0 < D2; p0 += 8)
     {
-        uint e = t + u * THREADS, i = e / BK, kk = e % BK, r = r0 + i, key = k0 + kk;
-        float pv = 0.0f, dsv = 0.0f;
-        bool live = r < rows && key < p.keys && (p.causal == 0 || key <= (r % p.queries) + offset);
-        if (live)
+        [ForceUnroll]
+        for (uint pi = 0; pi < 8; pi++)
         {
-            float s = 0.0f, dp = 0.0f;
-            for (uint p0 = 0; p0 < D2; p0 += 8)
+            uint pr = p0 + pi;
+            if (pr < d2)
             {
                 [ForceUnroll]
-                for (uint pi = 0; pi < 8; pi++)
+                for (uint u = 0; u < PPT; u++)
                 {
-                    uint pr = p0 + pi;
-                    if (pr < d2)
-                    {
-                        uint qw = qs[i * STRIDE + pr], kw = ks[kk * STRIDE + pr], vw = vs[kk * STRIDE + pr];
-                        s = fma(attnLo(qw), attnLo(kw), s);   // FP16 products are exact
-                        s = fma(attnHi(qw), attnHi(kw), s);
-                        dp = dp + dos[i * (DMAX + 1) + 2 * pr] * attnLo(vw);
-                        dp = dp + dos[i * (DMAX + 1) + 2 * pr + 1] * attnHi(vw);
-                    }
+                    uint qw = qs[ii[u] * STRIDE + pr], kw = ks[kv[u] * STRIDE + pr], vw = vs[kv[u] * STRIDE + pr];
+                    sv[u] = fma(attnLo(qw), attnLo(kw), sv[u]);   // FP16 products are exact
+                    sv[u] = fma(attnHi(qw), attnHi(kw), sv[u]);
+                    dp[u] = dp[u] + dos[ii[u] * (DMAX + 1) + 2 * pr] * attnLo(vw);
+                    dp[u] = dp[u] + dos[ii[u] * (DMAX + 1) + 2 * pr + 1] * attnHi(vw);
                 }
             }
-            pv = exp(s * p.scale - ls[i]);
-            dsv = pv * (dp - ds[i]);
         }
+    }
+    [ForceUnroll]
+    for (uint u = 0; u < PPT; u++)
+    {
+        uint i = ii[u], kk = kv[u], r = r0 + i, key = k0 + kk;
+        bool live = r < rows && key < p.keys && (p.causal == 0 || key <= (r % p.queries) + offset);
+        float pv = live ? exp(sv[u] * p.scale - ls[i]) : 0.0f;
         ps[i * BK + kk] = pv;
-        dss[i * BK + kk] = dsv;
+        dss[i * BK + kk] = live ? pv * (dp[u] - ds[i]) : 0.0f;
     }
 }
 
