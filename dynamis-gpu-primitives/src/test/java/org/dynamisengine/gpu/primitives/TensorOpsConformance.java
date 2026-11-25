@@ -431,4 +431,47 @@ abstract class TensorOpsConformance {
             }
         }
     }
+
+    @Test void gradientNormIsFixedOrderAndClipScales() {
+        var rng = new SplittableRandom(61);
+        int n0 = 10_000, rows = 37, cols = 50, ld = 64, n2 = 3;
+        float[] a = new float[n0], b = new float[rows * ld], c = new float[n2];
+        for (int i = 0; i < n0; i++) a[i] = (float) ((rng.nextDouble() * 2 - 1) * Math.pow(2, rng.nextInt(-10, 4)));
+        for (int i = 0; i < b.length; i++) b[i] = (float) (rng.nextDouble() * 2 - 1);
+        for (int i = 0; i < n2; i++) c[i] = (float) (rng.nextDouble() * 100);
+        var av = StridedView.contiguous(n0);
+        var bv = StridedView.matrix(0, rows, cols, ld);   // strided: the padding is not counted
+        var cv = StridedView.contiguous(n2);
+        try (var clip = GradientClip.create(device); var ga = buffer(4L * n0); var gb = buffer(4L * b.length); var gc = buffer(4L * n2);
+                var gs = buffer(4)) {
+            var parts = java.util.List.of(new GradientClip.Part(ga, av), new GradientClip.Part(gb, bv), new GradientClip.Part(gc, cv));
+            float want = GradientClip.referenceSquaredNorm(java.util.List.of(a, b, c), java.util.List.of(av, bv, cv));
+            for (float maxNorm : new float[] {1e6f, 3f}) {
+                int[][] got = new int[4][];
+                try (var e = device.encoder()) {
+                    e.upload(ga, words(bits(a))).upload(gb, words(bits(b))).upload(gc, words(bits(c)));
+                    clip.squaredNorm(e, parts, gs);
+                    clip.clip(e, gs, maxNorm, parts);
+                    var rs = e.download(gs); var ra = e.download(ga); var rb = e.download(gb); var rc = e.download(gc);
+                    try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                    got[0] = words(rs.bytes()); got[1] = words(ra.bytes()); got[2] = words(rb.bytes()); got[3] = words(rc.bytes());
+                }
+                assertEquals(Float.floatToRawIntBits(want), got[0][0], "squared norm: want " + want + ", got " + Float.intBitsToFloat(got[0][0]));
+                double norm = Math.sqrt(want), f = norm > maxNorm ? maxNorm / norm : 1;
+                float[][] in = {a, b, c};
+                StridedView[] vs = {av, bv, cv};
+                for (int k = 0; k < 3; k++) {
+                    for (int i = 0; i < in[k].length; i++) {
+                        boolean inView = k != 1 || i % ld < cols;
+                        float g = Float.intBitsToFloat(got[k + 1][i]);
+                        if (!inView || f == 1) { assertEquals(Float.floatToRawIntBits(in[k][i]), got[k + 1][i], "untouched at " + k + "/" + i); continue; }
+                        float w = (float) (in[k][i] * f);
+                        if (Math.abs(w) < 0x1p-126) continue;
+                        long ulps = org.dynamisengine.gpu.api.compute.kit.AccuracyContract.ulpDistance(w, g);
+                        assertTrue(ulps <= 9, "clip at " + k + "/" + i + ": want " + w + ", got " + g + " (" + ulps + " ULP)");
+                    }
+                }
+            }
+        }
+    }
 }
