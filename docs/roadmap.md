@@ -343,7 +343,7 @@ backend.
 
 ### 1.9: Quantized weights and packing
 
-**Status: complete, to be released as 1.9.0.** Done:
+**Status: complete, released as 1.9.0.** Done:
 - **Formats** (`QuantizedMatrix`): Q8, Q4 and Q4M (the meanings of Q8_0, Q4_0 and Q4_1), blocks of 32 and 64, FP16
   parameters, with the CPU encoder and decoder.
 - **Quantize and dequantize kernels** (`Quantize`): bit for bit the CPU's on every device. Scales come from one
