@@ -150,6 +150,14 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   (`try (var local = MemoryStack.stackPush())`), never in the frame that spans a whole command list: the Vulkan
   backend failed past about 1,170 dispatches per submission until 1.8.0 (`ComputeConformance.runsLongCommandLists`).
   The error is LWJGL's `OutOfMemoryError("Out of stack space.")`, which kills the surefire fork.
+- **Don't index a vector by a runtime component** (`v[w & 3]` on a `uint4`) in a hot loop: the compiler spills the
+  vector to memory. The first quantized decode kernel ran at 52 GB/s for that reason; read scalar words instead.
+- **Size register arrays to what the dispatch needs.** A kernel that keeps 16 rows of accumulators for a one-row
+  decode runs with few threads in flight. Bound the arrays with a specialization constant (`QROWS` in
+  `gemm_q_skinny_body.slang`), and the driver drops the dead ones.
+- **Measuring bandwidth:** warm the GPU up first (its clocks ramp up under load; the first shape measured ran 1.7
+  times slow). Rotate through copies of the data larger than the system cache (256 MiB on an M4 Max is enough), or a
+  repeated matrix is served from the cache, faster than memory.
 - **Benchmarks record many dispatches per submission.** Long command lists are a good stress test; keep
   `-Dgemm.shapes=true` and `-Dgemm.benchmark=true` running on MoltenVK as well as Metal.
 
@@ -237,10 +245,11 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.7.0 are on GitHub.
+- **Published:** 1.0.x to 1.8.0 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
   - **1.7.0:** the kernel kit, and the `Elementwise`, `Reduce`, `Scan` and `NanCheck` primitives.
-- **1.8.0 (the GEMM family):** built on branch `feat/gemm-family`; see `docs/releases/1.8.0.md`.
-- **Next:** milestone 1.9 (quantized weights and packing).
+- **1.8.0:** the GEMM family.
+- **1.9.0 (quantized weights):** built on branch `feat/quantized-weights`; see `docs/releases/1.9.0.md`.
+- **Next:** milestone 1.10 (inference kernels).

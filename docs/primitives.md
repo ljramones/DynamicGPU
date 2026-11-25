@@ -13,6 +13,8 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `Reduce` | fixed-order sum, max, min and argmax along the last dimension | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
+| `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M): the CPU encoder and decoder, and the GPU's, bit for bit | 1.9.0 |
+| `QuantizedGemm` | matrix multiply with quantized weights, dequantized in the kernel, for decode and prefill | 1.9.0 |
 
 Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
 - **What it says:** the input types, the accumulation type, the output rounding, the order class and the bound.
@@ -242,6 +244,85 @@ runs the Slang kernels.
 - **Peak:** the tiled kernel reaches about a third of the GPU's FP32 peak, and the matrix kernel about three
   quarters.
 
+## Quantized weights (1.9.0)
+
+Decode is limited by memory bandwidth, so weights in fewer bytes are faster: 4-bit weights with block 32 take 0.28
+of FP16's bytes.
+
+### `QuantizedMatrix`: the block formats
+
+A `rows x cols` matrix (a linear layer's `n x k` weights) is quantized by blocks of 32 or 64 along its rows. Each
+block holds integer codes and FP16 parameters; the formats are compatible in meaning with the common Q8_0, Q4_0 and
+Q4_1 schemes.
+
+| Format | Value | Codes | Parameters | Bytes per weight (block 32) |
+|---|---|---|---|---|
+| `Q8` | `q d` | -127 .. 127 | `d = fp16(max abs x * (1/127))` | 1.0625 |
+| `Q4` | `q d` | -8 .. 7 | `d = fp16(v * (-1/8))`, `v` the value of largest magnitude, which maps to -8 | 0.5625 |
+| `Q4M` | `fl(q d + m)` | 0 .. 15 | `m = fp16(min)`, `d = fp16((max - min) * (1/15))` | 0.625 |
+
+- **Codes:** each is the integer nearest to `x / d` (Q4M: `fl(x - m) / d`), ties to even, then clamped. A block with
+  `d = 0` has codes 0.
+- **The same bits on every device:**
+  - **Scales:** one correctly rounded multiply, never a division (GPU division is not correctly rounded). The
+    reciprocal constants are Java's `1f / 127f` and `1f / 15f`.
+  - **Codes:** an estimate, corrected by comparing with the exact midpoints `(2c + 1) d / 2`.
+  - **FP16 rounding:** in integer arithmetic on the GPU, as `Float.floatToFloat16`.
+- **Layout:** codes row-major (Q8 one byte, Q4 and Q4M a nibble each, element `2t` low), then from a 16-byte boundary
+  the block parameters, row-major (`d`, or `d, m`). `bytes()`, `parameterOffset()` and `rowCodeBytes()` give it.
+- **Refusals:** values must be finite and each block's scale must fit FP16.
+- **Accuracy:** `errorBound()`: half a step inside the code range, plus Q4M's FP16 rounding of the minimum.
+- **Apple GPUs** flush FP32 subnormals, so `Quantize` flushes subnormal weights, which the CPU encoder does not.
+
+```java
+var w = new QuantizedMatrix(QuantizedMatrix.Format.Q4, 32, n, k);
+byte[] packed = w.quantize(weights);                       // or Quantize.pack on the GPU: the same bytes
+```
+
+### `Quantize`: on the GPU
+
+`pack(encoder, values, matrix, packed)` and `unpack(encoder, matrix, packed, values)` quantize FP32 weights already on
+the GPU and dequantize them, bit for bit as `QuantizedMatrix.quantize` and `dequantize`. A non-finite value, or a
+scale beyond FP16, fails the submission with `KERNEL_ERROR`.
+
+### `QuantizedGemm`
+
+`C = epilogue(alpha * A * W^T + beta * C)`, with A FP16 or BF16 activations and W a packed `QuantizedMatrix`,
+dequantized inside the kernel.
+
+```java
+try (var gemm = QuantizedGemm.create(device, GemmF16.Input.FP16, Precision.FP32)) {
+    gemm.encode(encoder, x, w, packedBuffer, y, GemmF16.Shape.ofTransposedB(tokens, n, k, 1f, 0f));
+}
+```
+
+- **Shapes:** a `GemmF16.Shape` with B transposed, whose `n` and `k` are W's. A batch of A and C shares W. The
+  epilogues are `GemmF16`'s.
+- **Algorithms:** `SKINNY` for `m <= 16` (decode) and `TILED` beyond (prefill).
+  - **SKINNY:** a row of W's blocks is dealt to 32 lanes, each lane adding its blocks in order, then a fixed tree.
+  - **TILED:** 64 x 64 tiles, k in steps of 32, each block's term added as the block ends.
+  - **Specialization:** the pipelines are compiled on first use per format, block size and (SKINNY) rows tier (1, 4
+    or 16). A decode step then holds one row of accumulators instead of sixteen.
+- **Accuracy: the same bits on every device,** native Metal, MoltenVK and lavapipe:
+  - **Exact products:** an activation (11 or 8 significant bits) times a code (at most 8) is exact in FP32. So each
+    block's `s = sum a q` depends only on its order, which both algorithms fix.
+  - **Unfused terms:** the block adds `fl(d s)`, and Q4M also `fl(m sum a)`, with the adds unfused.
+  - **The reference:** `QuantizedGemm.reference` computes the same bits. Against A times the dequantized W, the error
+    is within `(k + 2) 2^-24 sum |a w|`.
+- **Decode, measured** (`-Dquant.decode=true`): M4 Max, m = 1, GPU time per product. The quantized weights rotate
+  through copies over 256 MiB so the system cache cannot serve them.
+
+  | n x k | FP16 (`GemmF16` SKINNY) | Q8 | Q4 | Q4M |
+  |---|---|---|---|---|
+  | 4096 x 4096 | 83 us | 43 us (1.9x) | 29 us (2.9x) | 35 us (2.4x) |
+  | 11008 x 4096 | 250 us | 105 us (2.4x) | 62 us (4.0x) | 68 us (3.7x) |
+  | 4096 x 11008 | 228 us | 110 us (2.1x) | 70 us (3.3x) | 73 us (3.1x) |
+
+  - **More rows:** at m = 4 the quantized product runs 1.3 to 2.2 times faster than FP16. At m = 16 it is about
+    even (0.74 to 1.16).
+- **Prefill:** TILED runs about 4.6 TFLOP/s at 512 x 4096 x 4096, a little below the FP16 tiled kernel's 5.3. The matrix kernel's
+  12.7 TFLOP/s for FP16 weights has no quantized form yet.
+
 ## `Softmax`
 
 `y[j] = exp(s[j] - max) / sum exp(s[j'] - max)` over each row of an `m x n` matrix of FP32 scores. Masked columns
@@ -312,7 +393,8 @@ try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
 - **Flash attention:** fused attention that keeps the scores on chip, with memory linear in the sequence, and skips
   masked blocks.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
-- **Other primitives:** layer and RMS norms, and int8 and int4 weight formats (1.9).
+- **Other primitives:** layer and RMS norms (1.10).
+- **Quantized weights:** a quantized form of the matrix kernel for prefill.
 
 ## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)
 

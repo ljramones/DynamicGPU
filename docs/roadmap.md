@@ -343,6 +343,31 @@ backend.
 
 ### 1.9: Quantized weights and packing
 
+**Status: complete, to be released as 1.9.0.** Done:
+- **Formats** (`QuantizedMatrix`): Q8, Q4 and Q4M (the meanings of Q8_0, Q4_0 and Q4_1), blocks of 32 and 64, FP16
+  parameters, with the CPU encoder and decoder.
+- **Quantize and dequantize kernels** (`Quantize`): bit for bit the CPU's on every device. Scales come from one
+  correctly rounded multiply, and codes from exact midpoint comparisons.
+- **The quantized GEMM** (`QuantizedGemm`): FP16 or BF16 activations, dequantized in the kernel, for decode
+  (`SKINNY`) and prefill (`TILED`), with the epilogues. It is bit for bit `QuantizedGemm.reference` on every device,
+  lavapipe included: activation-code products are exact.
+- **Measured:** decode at m = 1 with Q4 weights streamed from memory runs 2.9 to 4.0 times faster than FP16 weights on
+  an M4 Max (Q8 1.9 to 2.4).
+- **Packing:** the packed layout is the format's (`QuantizedMatrix.quantize`, or `Quantize.pack` on the GPU), made
+  once at model load.
+
+Differences from the plan:
+- **The CPU formats live in DynamisGPU** (`QuantizedMatrix`), not Vectrix `nn.Formats`. The primitives do not depend
+  on Vectrix, and putting them there would have needed a Vectrix release first. Vectrix can adopt them in the
+  Vectrix flow; its int8 format (FP32 scales) is a different format.
+- **No FP16 tile packing:** the matrix kernel reads row-major `W^T` at full rate (12.7 TFLOP/s), so a tiled layout
+  has nothing to gain.
+
+Not done:
+- **A quantized matrix kernel** for prefill: `TILED` runs about 4.6 TFLOP/s against the FP16 matrix kernel's 12.7.
+
+The plan as agreed:
+
 - **Weight-only quantization:**
   - int8 and int4 weights in blocks with FP16 scales (and zero points for int4), dequantized inside the GEMM and GEMV
     kernels.
