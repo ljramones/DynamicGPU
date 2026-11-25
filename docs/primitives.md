@@ -7,11 +7,11 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | Primitive | Does | Since |
 |---|---|---|
 | `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
-| `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output; backward pass (1.12.0) | 1.4.0 |
+| `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output; backward pass (1.12.0); valid-length masks (1.14.0) | 1.4.0 |
 | `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0, batched decode since 1.11.1, training forward and backward since 1.12.0 | 1.4.0 |
 | `PagedKvCache` | a KV cache in fixed-size pages, shared across sequences with copy on write | 1.11.0 |
-| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0); their backward passes (1.12.0) | 1.7.0 |
-| `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1) | 1.7.0 |
+| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0); their backward passes (1.12.0); sigmoid and tanh with theirs (1.14.0) | 1.7.0 |
+| `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1); any axis, mean and the max's gradient (1.14.0) | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
 | `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M; the K formats Q4K, Q5K, Q6K): CPU and GPU encoders and decoders, bit for bit | 1.9.0 (K formats 1.9.1) |
@@ -19,10 +19,14 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `Norms` | RMSNorm and LayerNorm per row, with an optional fused residual add; backward pass (1.12.0) | 1.10.0 |
 | `CrossEntropy` | each row's cross-entropy against a GPU target, and its gradient (in place, ignore index) | 1.12.0 |
 | `Optimizer` | AdamW and SGD steps, FP32 or FP16 gradients, a GPU gradient scale, an FP16 weight copy; bit for bit | 1.12.0 |
-| `Rope` | rotary position embedding from a host table, positions on the GPU | 1.10.0 |
+| `Rope` | rotary position embedding from a host table, positions on the GPU; backward pass (1.14.0) | 1.10.0 |
 | `Embedding` | rows gathered by GPU-resident tokens from FP32, FP16 or quantized tables | 1.10.0 |
 | `Sampler` | greedy, temperature, top-k and top-p sampling on the GPU, seeded (multi-group 1.10.1) | 1.10.0 |
 | `QuantizedGemm` | matrix multiply with quantized weights, dequantized in the kernel, for decode and prefill | 1.9.0 |
+| `Logic` | comparisons into masks, logical operations, FP32 classification, int32 arithmetic and select, over 32-bit words; bit for bit | 1.14.0 |
+| `Cast` | conversions among FP32, FP16, BF16, INT32 and BOOL; bit for bit | 1.14.0 |
+| `Gather` | gather along any dimension by GPU-resident indices, and its gradient, a fixed-order scatter-add (the embedding's backward pass); bit for bit | 1.14.0 |
+| `GradientClip` | a fixed-order global squared norm over many tensors, and clipping by it on the GPU | 1.14.0 |
 
 Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
 - **What it says:** the input types, the accumulation type, the output rounding, the order class and the bound.
@@ -912,6 +916,93 @@ AdamW and SGD (momentum, Nesterov, weight decay) over FP32 parameters.
   - **What is left:** each matrix kernel still takes 3 to 4 times the forward pass's time, for 1.5 to 2 times its
     matrix work. The elementwise passes go through threadgroup memory.
 
+## Tensor programs (1.14.0)
+
+1.14.0 adds what NNJava's adapter needs to run whole tensor programs on the GPU (its requests G-T1 to G-T7, in
+NNJava's `docs/numerical-coverage.md`). Every kernel accumulates in a fixed order: none uses float atomics.
+
+### `Logic` and `Cast`
+
+Both work on the bits in integer arithmetic, so every result is bit for bit its Java reference on every device,
+subnormals included (devices flush subnormals in float arithmetic, not in integer).
+- **Masks:** uint32 words, 1 or 0; an input mask is true when nonzero. A BOOL tensor on the GPU is a word per element.
+- **`Logic`:**
+  - `compare` (EQUAL, NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL) on FP32 or INT32 words gives a mask. FP32
+    follows Java: NaN is unequal to everything, -0 equals +0.
+  - `logical` (AND, OR, XOR) and `not` combine masks; `classify` gives IS_FINITE, IS_NAN or IS_INF masks of FP32.
+  - `integer` does int32 ADD, SUB, MUL, MIN and MAX, wrapping as Java's int.
+  - `select(mask, a, b)` picks 32-bit words of any type, so a NaN in the unselected input never reaches the output.
+  - Inputs broadcast as `Elementwise`'s do.
+- **`Cast`:** FP32, FP16, BF16, INT32 and BOOL, every pair.
+  - FP32 to FP16 and BF16 round to nearest even; FP16 and BF16 widen exactly; FP32 to INT32 is Java's `(int)`
+    (toward zero, saturating, NaN to 0); INT32 to FP32 rounds to nearest even.
+  - Other pairs go through FP32 (one rounding between FP16 and BF16; INT32 to FP16 rounds twice, as
+    `Float.floatToFloat16((float) i)`).
+  - 16-bit elements are two to a word, little-endian. A 16-bit output must be contiguous; it is written a word per
+    thread, keeping a half outside the view.
+
+### `Reduce` along any axis
+
+- **`axis` and `argmaxAxis`:** reduce along any dimension by moving it last in the view (no copy), with the same fixed
+  tree as `rows`, so the result is bit for bit `Reduce.reference` on that view.
+- **`MEAN`:** that sum divided by the row length (within 2.5 ULP of the correctly rounded quotient on Vulkan,
+  correctly rounded on Metal). `Scan` refuses it.
+- **`maxBackward`:** routes each row's gradient to the index `argmaxAxis` chose (the first largest, the first NaN)
+  and writes +0 elsewhere.
+
+### `Gather`
+
+- **`gather`:** `y[.., j, ..] = x[.., indices[j], ..]` along any dimension, 32-bit elements copied exactly, indices
+  (uint32) on the GPU.
+- **`scatterAdd`:** its gradient: `dx[.., k, ..] (+)= sum of dy[.., j, ..] over indices[j] == k`, the rows of a
+  repeated index added in increasing j.
+  - **How:** integer-atomic counts of each index (exact in any order), then one group per row k that walks the
+    indices in chunks of 256, lists its matches with a fixed scan, and adds them in order. It stops once it has seen
+    all of k's matches; a k no index names only writes zeros.
+  - **Result:** bit for bit `Gather.referenceScatterAdd` on every device. The embedding's backward pass is
+    `scatterAdd` along the table's rows.
+- **Errors:** an index out of range fails the submission with `KERNEL_ERROR`.
+
+### Activations
+
+`Elementwise` gains `SIGMOID` and `TANH`, and `SIGMOID_BACKWARD` and `TANH_BACKWARD`.
+- **Backward from the input:** like the other activation gradients, they take the forward input (`a = x`,
+  `b = dy`), not the output. Vectrix's CPU versions take the output; the input form has no cancellation.
+- **tanh:** below |x| = 0.625 an odd polynomial (the Taylor series through x^25); above, `1 - 2 / (exp(2|x|) + 1)`
+  with x's sign, where the subtraction amplifies exp's error at most 0.8 times. Below 2^-12 it returns x, so -0 and
+  subnormals keep their bits.
+- **Gradients:** both derivatives are even, computed from `e = exp(-|x|)` (sigmoid: `e / (1 + e)^2`) and
+  `e = exp(-2|x|)` (tanh: `4e / (1 + e)^2`), so they stay relative for large |x|. Where e is below 2^-126 (|x| above
+  about 87, or 43.6 for tanh) a device that flushes subnormals gives 0.
+- **Measured** on an M4 Max, native Metal and MoltenVK, over 65,536 inputs in [-90, 90]: sigmoid 3 ULP, tanh 2,
+  both backward passes 5, within contracts of `(6 + 2|x|)`, `(8 + 4|x|)` and `(9 + 2|x|)` / `(9 + 4|x|)` ULP.
+- **Not done:** GELU's erf form; `GELU` remains the tanh form.
+
+### `GradientClip`
+
+- **`squaredNorm(parts, out)`:** the sum of squares of a list of FP32 tensors (any views) into one GPU value: chunks
+  of 4096 elements per group, fixed trees, then one group combines the partials, tensor after tensor. Bit for bit
+  `GradientClip.referenceSquaredNorm` on every device.
+- **`clip(sumSq, maxNorm, parts)`:** scales the tensors in place by `maxNorm / sqrt(s)` when `sqrt(s) > maxNorm`,
+  reading s on the GPU (no host round trip per step), and leaves them unchanged otherwise (also when s is NaN), as
+  Vectrix's `Optim.clipFactor`. Within 9 ULP: the device's sqrt and division, then one product.
+
+### Masks in `Softmax`
+
+- **Valid lengths:** `encode` and `backward` take an optional uint32 buffer of lengths. Matrix z also masks the
+  columns at or past `lengths[z / lengthGroup]`, so batched attention scores (sequences x heads, lengthGroup the head
+  count) ignore each sequence's padding keys. It combines with the causal mask.
+- **Fully masked rows:** a row with no unmasked column, and since 1.14.0 a row whose unmasked scores are all
+  -infinity (an additive mask), is all zeros, and its gradient is zero (a -0 where the mask was additive).
+- **Not in `AttentionF16`:** its fused kernels take only the causal mask. Padded attention composes from `GemmF16`
+  (scores), `Softmax` with lengths, and `GemmF16` (values), forward and backward.
+
+### `Rope` backward
+
+`encodeBackward` rotates the gradient by the negated angle, the rotation's gradient (it is orthogonal), for both
+layouts and partial rotary dimensions. `b (-sin)` is `-(b sin)` exactly, so it is bit for bit
+`Rope.referenceBackward` on every device. `GradientReferenceTest` checks it against the forward rotation's columns.
+
 ## Planned
 
 - **A faster attention backward:** the matrix path runs at about 7 times the forward pass's time.
@@ -919,6 +1010,8 @@ AdamW and SGD (momentum, Nesterov, weight decay) over FP32 parameters.
   chunks of several sequences into one dispatch is not covered.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
 - **Quantized weights:** a quantized form of the matrix kernel for prefill.
+- **Masks in fused attention:** padding (valid-length) masks in `AttentionF16`'s flash, decode and backward kernels.
+- **GELU's erf form,** convolution and pooling (NNJava's G-T8), and mixed-precision training support (G-T9).
 
 ## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)
 

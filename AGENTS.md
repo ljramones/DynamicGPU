@@ -25,7 +25,7 @@ DynamisGPU is the GPU layer of the Dynamis engine and of its throughput (neural-
 | `dynamis-gpu-vulkan` | `org.dynamisengine.gpu.vulkan` | `compute.VulkanProvider`, `VulkanComputeDriver`, `VulkanFeatures` (tiers, enabled features, SPIR-V capability check); legacy Vulkan helpers |
 | `dynamis-gpu-metal` | `org.dynamisengine.gpu.metal` | `MetalProvider`, `MetalDriver`, `MetalNative` (FFM binding), and the Objective-C bridge `src/main/native/dynamis_metal.m` (ABI 3) |
 | `dynamis-gpu-shaders` | `org.dynamisengine.gpu.shaders` | `ShaderBuild`: Slang to SPIR-V + Metal with the rounding rules, plus a manifest (build-time tool) |
-| `dynamis-gpu-primitives` | `org.dynamisengine.gpu.primitives` | `GemmF16`, `Softmax`, `AttentionF16`, `Precision` |
+| `dynamis-gpu-primitives` | `org.dynamisengine.gpu.primitives` | the throughput kernels (`GemmF16`, `AttentionF16`, `Softmax`, `Norms`, the kit primitives, `Logic`, `Cast`, `Gather`, `GradientClip`, ...); list in [docs/primitives.md](docs/primitives.md) |
 | `dynamis-gpu-vectrix` | `org.dynamisengine.gpu.vectrix` | GPU data written from Vectrix types (the only module depending on Vectrix) |
 | `dynamis-gpu-test` | `org.dynamisengine.gpu.test` | the mock backend, and the conformance suites every backend inherits (`ComputeConformance`, `CapabilityTierConformance`) |
 | `dynamis-gpu-bench` | | JMH benchmarks of the legacy upload paths |
@@ -152,6 +152,8 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
     Never copy a group variable and then overwrite it; give results their own group variable (`rowMax`, `rowSum`).
   - **Folding:** Slang folds `0.0f + v` even at -O0.
   - **No Metal forms:** Slang has no Metal `WaveActiveAllEqual`, no Metal `double`, and no Metal `CoopMat`.
+  - **MSL names:** don't name a variable `half` (an MSL type). SPIRV-Cross keeps the name, and MoltenVK fails pipeline
+    creation with `VkResult=-3`, while native Metal (Slang's own MSL) works. 1.14.0's `cast` kernel hit this.
     Cooperative matrices are SPIR-V only, with `using namespace linalg; CoopMat<...>`.
   - **Capabilities:** 16- and 8-bit buffers declare the `UniformAndStorageBuffer16/8BitAccess` capabilities.
   - **Constants:** build infinities from bits, for example `asfloat(0xFF800000u)`, not `1.0 / 0.0`.
@@ -301,7 +303,7 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - vectrix-gpu holds the exact (bit-for-bit) twins of Vectrix's CPU kernels.
   - DynamisGPU holds the throughput primitives and all reusable GPU plumbing.
 
-## State at the time of writing (2026-11-24)
+## State at the time of writing (2026-11-25)
 
 - **Published:** 1.0.x to 1.11.1 are on GitHub; 1.12.0 is prepared on `release/1.12.0`.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
@@ -318,4 +320,10 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.11.1:** batched decode.
 - **1.12.0:** training kernels.
 - **1.12.1 (matrix attention backward):** built on branch `feat/matrix-backward`; see `docs/releases/1.12.1.md`.
-- **Next:** flowing the stack into Vectrix, then NNJava planning (see `docs/roadmap.md`).
+- **1.13.0:** QuantizedMatrix on Vectrix 4.0's BlockQuant (published 2026-11-25).
+- **1.14.0 (NNJava's tensor programs):** `Logic`, `Cast`, `Gather`, `GradientClip`, reductions along any axis, sigmoid
+  and tanh, RoPE backward, Softmax valid-length masks; prepared on `feat/1.14`. See `docs/releases/1.14.0.md`.
+- **Next:** masks in fused attention, then the rest of NNJava's requests (see `docs/roadmap.md`).
+- **Incremental kernel builds:** `build-slang-kernels.sh` rebuilds every kernel (about 90 s). While iterating, building
+  a subset into a scratch directory and merging its lines into `kernels.properties` works, but run the full script
+  before committing: it also refreshes `source.sha256`, which `ShaderBuildTest.sourceHashMatchesTheManifest` checks.

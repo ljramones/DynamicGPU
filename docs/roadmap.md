@@ -530,10 +530,43 @@ The plan as agreed:
   - **`dynamis-gpu-vectrix`:** depends on `vectrix-render`, which brings `vectrix-core`.
   - **`dynamis-gpu-primitives`:** depends on `vectrix-ml`.
 
+## 1.14: NNJava's tensor programs
+
+**Status: complete, prepared as 1.14.0.** NNJava's design review (its `docs/numerical-coverage.md`, 2026-11-25) mapped
+every NNJava operation onto Vectrix, vectrix-gpu and these primitives, and filed what a GPU training step was missing
+as requests G-T1 to G-T9. Done:
+- **G-T1, tensor programs:** `Logic` (comparisons into uint32 masks, AND/OR/XOR/NOT, FP32 classification, int32
+  arithmetic, select) and `Cast` (FP32, FP16, BF16, INT32, BOOL). Integer arithmetic on the bits: bit for bit
+  everywhere.
+- **G-T2, reductions along any axis:** `Reduce.axis` and `argmaxAxis` (the axis moved last in the view), `MEAN`, and
+  `maxBackward` routing to the first largest (or first NaN).
+- **G-T3, gradient clipping:** `GradientClip.squaredNorm` (fixed order over a list of tensors, bit for bit) and `clip`
+  (in place, the norm read on the GPU).
+- **G-T4, gather and scatter-add:** `Gather.gather` along any dimension and `Gather.scatterAdd`, its gradient, with
+  repeated indices summed in increasing position: integer-atomic counts, then one group per output row walking the
+  indices in order. Bit for bit everywhere.
+- **G-T5, sigmoid and tanh:** with backward passes from the forward input, free of cancellation.
+- **G-T6, RoPE backward:** `Rope.encodeBackward`, the inverse rotation, bit for bit.
+- **G-T7, masks (partly):** valid-length masks in `Softmax`, forward and backward; a row of -infinity scores gives
+  zeros.
+
+Not done, and why:
+- **Masks in `AttentionF16`'s fused kernels** (the rest of G-T7): about twenty flash, decode and backward kernels.
+  Padded attention composes from `GemmF16` and `Softmax` with lengths meanwhile. Next milestone.
+- **GELU's erf form** (optional in G-T5).
+- **G-T8, convolution and pooling,** and **G-T9, mixed-precision training support:** later, as NNJava's roadmap
+  orders them (P2).
+
+Changed from the requests:
+- **Activation gradients from the input,** like the 1.12 ones, where NNJava's CPU (through Vectrix) uses the output.
+  The input form avoids `1 - y` cancelling; NNJava's adapter saves the input.
+- **BOOL is a uint32 word** on the GPU (NNJava's CPU tensors use a byte).
+
 ## After this
 
 - **NNJava:** planned on top of the finished stack: tensors, autograd and models, choosing exact (vectrix-gpu) or
-  throughput (primitives) kernels per operation.
+  throughput (primitives) kernels per operation. Its design review is done (2026-11-25), and 1.14 fills its throughput
+  requests; masks in fused attention, convolution and mixed precision follow.
 - **Graphics:**
   - images and samplers;
   - API consolidation (retiring the Vulkan-shaped `api.buffer` and `api.gpu`);
