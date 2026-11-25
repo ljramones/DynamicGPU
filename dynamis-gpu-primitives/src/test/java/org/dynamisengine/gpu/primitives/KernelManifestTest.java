@@ -1,6 +1,7 @@
 package org.dynamisengine.gpu.primitives;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.dynamisengine.gpu.api.compute.GpuCapabilities;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,16 @@ import org.junit.jupiter.api.Test;
  * 32 KiB).
  */
 class KernelManifestTest {
+    @Test void attentionFitsEightStorageBuffersPerStage() {
+        var kernels = GemmF16.KERNELS;
+        for (String kernel : kernels.kernels()) {
+            if (kernel.startsWith("attn_")) {
+                var buffers = kernels.buffers(kernel); // reflection also checks contiguous slots from zero
+                assertTrue(buffers.size() <= 8, kernel + " needs " + buffers.size() + " storage buffers: " + buffers);
+            }
+        }
+    }
+
     @Test void wideFlashUsesTheSameBindingsAndGroupMemory() {
         var kernels = GemmF16.KERNELS;
         for (String suffix : new String[] {"", "_f32"}) {
@@ -35,6 +46,20 @@ class KernelManifestTest {
             long limit = attention ? 32768 : GpuCapabilities.MIN_GROUP_SHARED_BYTES;
             assertEquals(true, bytes >= 0 && bytes <= limit, k + " declares " + bytes + " bytes");
         }
-        for (int variant : new int[] {64, 128, 256}) assertEquals(true, AttentionF16.groupBytes(variant) > 0);
+        // The 64-wide forward and backward kernels also work on devices at the portable 16 KiB minimum.
+        assertTrue(AttentionF16.groupBytes(64) <= GpuCapabilities.MIN_GROUP_SHARED_BYTES);
+        for (int variant : new int[] {64, 128, 256}) {
+            long forwardBytes = AttentionF16.groupBytes(variant);
+            assertTrue(forwardBytes > 0);
+            for (String suffix : new String[] {"", "_f32"}) {
+                String wave = "attn_decode_wave_" + variant + suffix;
+                assertTrue(GemmF16.KERNELS.groupSharedBytes(wave) <= forwardBytes, wave + " exceeds the fusedSupports budget");
+            }
+            long backwardLimit = switch (variant) { case 64 -> 16; case 128 -> 24; default -> 30; } * 1024L;
+            for (String pass : new String[] {"kv", "q"}) {
+                String kernel = "attn_bwd_" + pass + "_" + variant;
+                assertTrue(GemmF16.KERNELS.groupSharedBytes(kernel) <= backwardLimit, kernel + " exceeds " + backwardLimit + " bytes");
+            }
+        }
     }
 }

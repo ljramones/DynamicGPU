@@ -41,17 +41,86 @@ abstract class AttentionConformance {
     }
     static double f(short h) { return Float.float16ToFloat(h); }
 
+    private record Mask(int group, int... lengths) {
+        static final Mask NONE = new Mask(1);
+
+        int visible(Shape s, int head, int query) {
+            int causalLimit = s.causal() ? s.keys() - s.queries() + query + 1 : s.keys();
+            return lengths.length == 0 ? causalLimit
+                    : (int) Math.min(causalLimit, Integer.toUnsignedLong(lengths[head / group]));
+        }
+    }
+
+    private GpuBuffer uploadMask(GpuCommandEncoder e, Mask mask) {
+        if (mask.lengths.length == 0) return null;
+        var data = ByteBuffer.allocate(Integer.BYTES * mask.lengths.length).order(ByteOrder.nativeOrder());
+        for (int length : mask.lengths) data.putInt(length);
+        var gpu = buffer(data.capacity());
+        e.upload(gpu, data.array());
+        return gpu;
+    }
+
+    /** Guard the cache tail that no query head sharing this KV head sees. */
+    private static void poisonPadding(short[] k, short[] v, Shape s, Mask mask) {
+        int headsPerKv = s.heads() / s.kvHeads();
+        for (int kv = 0; kv < s.kvHeads(); kv++) {
+            int visible = 0;
+            for (int i = 0; i < headsPerKv; i++) {
+                visible = Math.max(visible, mask.visible(s, kv * headsPerKv + i, s.queries() - 1));
+            }
+            int start = (kv * s.cacheKeys() + visible) * s.headDim();
+            int end = (kv + 1) * s.cacheKeys() * s.headDim();
+            java.util.Arrays.fill(k, start, end, (short) 0x7e00);
+            java.util.Arrays.fill(v, start, end, (short) 0x7e00);
+        }
+    }
+
+    /** The public 1.14.0 composition for padded dense heads. Pipelines live across all measured submissions. */
+    private record MaskedComposition(GemmF16 qk, Softmax softmax, GemmF16 pv) implements AutoCloseable {
+        static MaskedComposition create(GpuDevice device, Precision output) {
+            var qk = GemmF16.create(device, Precision.FP32);
+            Softmax softmax = null;
+            try {
+                softmax = Softmax.create(device, Precision.FP16);
+                return new MaskedComposition(qk, softmax, GemmF16.create(device, qk.algorithm(), output));
+            } catch (RuntimeException | Error failure) {
+                if (softmax != null) softmax.close();
+                qk.close();
+                throw failure;
+            }
+        }
+
+        void encode(GpuCommandEncoder e, GpuBuffer q, GpuBuffer k, GpuBuffer v, GpuBuffer o, GpuBuffer scores,
+                GpuBuffer probs, Shape s, GpuBuffer lengths, int group) {
+            qk.encode(e, q, k, scores, s.scoresShape());
+            softmax.encode(e, scores, probs, s.softmaxShape(), lengths, group);
+            pv.encode(e, probs, v, o, s.outputShape());
+        }
+
+        @Override public void close() {
+            try (qk; softmax) { pv.close(); }
+        }
+    }
+
     /** Runs the attention and checks every element of O; returns the worst error / bound. */
     double check(AttentionF16 attention, Shape s, double spread, long seed) {
+        return check(attention, s, spread, seed, Mask.NONE);
+    }
+
+    double check(AttentionF16 attention, Shape s, double spread, long seed, Mask mask) {
         var r = new SplittableRandom(seed);
         int d = s.headDim(), nq = s.queries(), nk = s.keys();
         short[] q = halves(s.qBytes() / 2, spread, r), k = halves(s.kBytes() / 2, spread, r), v = halves(s.vBytes() / 2, 1, r);
         var out = attention.output(); boolean fp32 = out == Precision.FP32;
         ByteBuffer got;
         try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(out));
-             var gs = buffer(s.scoresBytes()); var gp = buffer(s.probsBytes()); var e = device.encoder()) {
+             var gs = buffer(s.scoresBytes()); var gp = buffer(s.probsBytes());
+             var composed = mask == Mask.NONE ? null : MaskedComposition.create(device, out);
+             var e = device.encoder(); var lens = uploadMask(e, mask)) {
             e.upload(gq, bytes(q)).upload(gk, bytes(k)).upload(gv, bytes(v));
-            attention.encode(e, gq, gk, gv, go, gs, gp, s); var read = e.download(go);
+            if (lens == null) attention.encode(e, gq, gk, gv, go, gs, gp, s);
+            else composed.encode(e, gq, gk, gv, go, gs, gp, s, lens, mask.group);
+            var read = e.download(go);
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
             got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
         }
@@ -59,7 +128,7 @@ abstract class AttentionConformance {
         double[] sc = new double[nk], dS = new double[nk], p = new double[nk], dP = new double[nk];
         for (int h = 0; h < s.heads(); h++) {
             for (int i = 0; i < nq; i++) {
-                int qb = (h * nq + i) * d, limit = s.causal() ? i + nk - nq + 1 : nk;
+                int qb = (h * nq + i) * d, limit = mask.visible(s, h, i);
                 double mx = Double.NEGATIVE_INFINITY, maxdS = 0;
                 for (int j = 0; j < limit; j++) {
                     int kb = (h * nk + j) * d; double sum = 0, abs = 0;
@@ -69,7 +138,7 @@ abstract class AttentionConformance {
                 }
                 double total = 0, weighted = 0;
                 for (int j = 0; j < limit; j++) { p[j] = Math.exp(sc[j] - mx); total += p[j]; weighted += p[j] * (mx - sc[j]); }
-                double xbar = weighted / total;
+                double xbar = limit == 0 ? 0 : weighted / total;
                 for (int j = 0; j < limit; j++) {
                     p[j] /= total;
                     double x = mx - sc[j] + 2 * maxdS;
@@ -87,6 +156,7 @@ abstract class AttentionConformance {
                     if (!fp32) bound += (Math.abs(o) + bound) * 0x1p-11 + 0x1p-25;
                     int idx = (h * nq + i) * d + c;
                     double gv = fp32 ? got.getFloat(4 * idx) : Float.float16ToFloat(got.getShort(2 * idx));
+                    if (limit == 0) assertEquals(0.0, gv, "empty composed row");
                     double e = Math.abs(gv - o);
                     assertTrue(e <= bound, "O[" + h + "][" + i + "][" + c + "] = " + gv + ", reference " + o + ", bound " + bound + " for " + s + " " + out);
                     worst = Math.max(worst, e / bound);
@@ -101,28 +171,31 @@ abstract class AttentionConformance {
      * returns the worst error / bound. K and V past {@code keys} of each head's cache are NaN: they must not be read.
      */
     double checkFused(AttentionF16 attention, Shape s, double spread, long seed) {
+        return checkFused(attention, s, spread, seed, Mask.NONE);
+    }
+
+    double checkFused(AttentionF16 attention, Shape s, double spread, long seed, Mask mask) {
         var r = new SplittableRandom(seed);
-        int d = s.headDim(), nq = s.queries(), nk = s.keys(), cache = s.cacheKeys(), hpk = s.heads() / s.kvHeads();
         short[] q = halves(s.qBytes() / 2, spread, r), k = halves(s.kBytes() / 2, spread, r), v = halves(s.vBytes() / 2, 1, r);
-        for (int h = 0; h < s.kvHeads(); h++) for (int j = nk; j < cache; j++) for (int t = 0; t < d; t++) {
-            k[(h * cache + j) * d + t] = (short) 0x7E00; v[(h * cache + j) * d + t] = (short) 0x7E00;
-        }
+        poisonPadding(k, v, s, mask);
         var out = attention.output(); boolean fp32 = out == Precision.FP32;
         ByteBuffer got;
-        try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(out)); var e = device.encoder()) {
+        try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(out)); var e = device.encoder(); var lens = uploadMask(e, mask)) {
             e.upload(gq, bytes(q)).upload(gk, bytes(k)).upload(gv, bytes(v));
-            attention.encode(e, gq, gk, gv, go, s); var read = e.download(go);
+            if (lens == null) attention.encode(e, gq, gk, gv, go, s);
+            else attention.encode(e, gq, gk, gv, go, s, lens, mask.group);
+            var read = e.download(go);
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
             got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
         }
-        return verifyFused(q, k, v, s, got, 0, attention.fusedKernel(s).equals("flash.simdgroup"), fp32, "fused");
+        return verifyFused(q, k, v, s, got, 0, attention.fusedKernel(s).equals("flash.simdgroup"), fp32, "fused", mask);
     }
 
     /**
      * Checks O for shape {@code s} (its elements from {@code outBase} of {@code got}) against the fused bound computed in
      * double precision from Q, and K and V as {@code [kvHeads][cacheKeys][headDim]}; returns the worst error / bound.
      */
-    double verifyFused(short[] q, short[] k, short[] v, Shape s, ByteBuffer got, int outBase, boolean halfWeights, boolean fp32, String label) {
+    double verifyFused(short[] q, short[] k, short[] v, Shape s, ByteBuffer got, int outBase, boolean halfWeights, boolean fp32, String label, Mask mask) {
         int d = s.headDim(), nq = s.queries(), nk = s.keys(), cache = s.cacheKeys(), hpk = s.heads() / s.kvHeads();
         double worst = 0, scale = s.scale();
         int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
@@ -131,7 +204,7 @@ abstract class AttentionConformance {
         for (int h = 0; h < s.heads(); h++) {
             int kvh = h / hpk;
             for (int i = 0; i < nq; i++) {
-                int qb = (h * nq + i) * d, limit = s.causal() ? i + nk - nq + 1 : nk;
+                int qb = (h * nq + i) * d, limit = mask.visible(s, outBase / (nq * d) + h, i);
                 double mx = Double.NEGATIVE_INFINITY, maxdS = 0;
                 for (int j = 0; j < limit; j++) {
                     int kb = (kvh * cache + j) * d; double sum = 0, abs = 0;
@@ -162,6 +235,7 @@ abstract class AttentionConformance {
                     if (!fp32) bound += (Math.abs(o) + bound) * 0x1p-11 + 0x1p-25;
                     int idx = outBase + (h * nq + i) * d + c;
                     double gv = fp32 ? got.getFloat(4 * idx) : Float.float16ToFloat(got.getShort(2 * idx));
+                    if (limit == 0) assertEquals(0.0, gv, label + " empty row");
                     double err2 = Math.abs(gv - o);
                     assertTrue(err2 <= bound, label + " O[" + h + "][" + i + "][" + c + "] = " + gv + ", reference " + o + ", bound " + bound + " for " + s + (fp32 ? " FP32" : " FP16"));
                     worst = Math.max(worst, err2 / bound);
@@ -199,6 +273,52 @@ abstract class AttentionConformance {
                 System.out.printf("attention fused %s %s worst error/bound %.3g (%s)%n", a.output(), s, worst, dispatchDescription(a, s));
             }
             checkFused(a, Shape.of(2, 64, 96, 64), 4, 48);   // sharp softmax
+        });
+    }
+
+    @Test void validLengthsInFusedAndComposedAttention() {
+        eachOutput(a -> {
+            // Unequal causal dimensions preserve the original row alignment. Heads 6 and 7 form a short last group.
+            var composed = Shape.of(8, 13, 17, 40).asCausal();
+            var groups = new Mask(3, 0, 8, -1);  // the uint32 maximum admits every key
+            check(a, composed, 1, 110, groups);
+            checkFused(a, composed, 1, 110, groups);
+
+            // A mask group straddles a KV head. Some rows in the same work group see zero, a prefix or all keys.
+            var mixed = new Mask(2, 0, 33, -1);
+            for (var shape : new Shape[] {
+                    Shape.of(6, 2, 97, 128).withKvHeads(2).asCausal(),             // short decode
+                    Shape.of(6, 2, 641, 64).withKvHeads(2).asCausal(),             // split decode + combine
+                    Shape.of(6, 17, 519, 128).withKvHeads(2).asCausal(),           // split matrix/portable flash + combine
+                    Shape.of(6, 43, 19, 256).withKvHeads(2)}) {                   // single-range portable flash
+                double worst = checkFused(a, shape, 1, 112, mixed);
+                System.out.printf("attention masked %s %s worst error/bound %.3g (%s)%n", a.output(), shape, worst, dispatchDescription(a, shape));
+            }
+            try (var fixed = AttentionF16.create(device, a.output())) {
+                fixed.useFixedTreeDecode();
+                checkFused(fixed, Shape.of(6, 2, 641, 64).withKvHeads(2).asCausal(), 1, 113, mixed);
+            }
+        });
+    }
+
+    @Test void unsignedFullLengthsPreserveUnmaskedResults() {
+        eachOutput(a -> {
+            var random = new SplittableRandom(115);
+            for (var shape : new Shape[] {Shape.of(4, 16, 35, 64), Shape.of(4, 1, 129, 128), Shape.of(4, 1, 517, 64)}) {
+                try (var q = buffer(shape.qBytes()); var k = buffer(shape.kBytes()); var v = buffer(shape.vBytes());
+                     var o = buffer(shape.oBytes(a.output())); var e = device.encoder(); var lengths = uploadMask(e, new Mask(4, -1))) {
+                    e.upload(q, bytes(halves(q.bytes() / 2, 1, random))).upload(k, bytes(halves(k.bytes() / 2, 1, random)))
+                            .upload(v, bytes(halves(v.bytes() / 2, 1, random)));
+                    assertThrows(IllegalArgumentException.class, () -> a.encode(e, q, k, v, o, shape, lengths, 0));
+                    assertThrows(IllegalArgumentException.class, () -> a.encode(e, q, k, v, o, shape, lengths, 3));
+                    a.encode(e, q, k, v, o, shape);
+                    var plain = e.download(o);
+                    a.encode(e, q, k, v, o, shape, lengths, 4);
+                    var masked = e.download(o);
+                    try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                    assertArrayEquals(plain.bytes(), masked.bytes(), "all keys visible: " + shape);
+                }
+            }
         });
     }
 
@@ -302,6 +422,14 @@ abstract class AttentionConformance {
                         byte[] contiguous = runFused(a, e -> { e.upload(gq, bytes(qh)).upload(gk, bytes(kk)).upload(gv, bytes(vv)); a.encode(e, gq, gk, gv, go, shape); }, go);
                         byte[] paged = runFused(a, e -> { e.upload(gq, bytes(qh)); a.encode(e, gq, cache, layer, seqs[w], go, shape); }, go);
                         assertArrayEquals(contiguous, paged, "paged attention, layer " + layer + ", sequence " + w + ", " + shape + " (" + a.fusedKernel(shape) + ")");
+                        if (layer == 0 && w == 1) {
+                            var mask = new Mask(2, 17, 0);
+                            byte[] masked = runFused(a, e -> {
+                                try (var lens = uploadMask(e, mask)) { a.encode(e, gq, cache, layer, seqs[w], go, shape, lens, mask.group); }
+                            }, go);
+                            verifyFused(qh, kk, vv, shape, ByteBuffer.wrap(masked).order(ByteOrder.nativeOrder()), 0,
+                                    a.fusedKernel(shape).equals("flash.simdgroup"), true, "masked paged", mask);
+                        }
                     }
                 }
             }
@@ -363,7 +491,25 @@ abstract class AttentionConformance {
         }
     }
 
+    @Test void validLengthsInBatchedPagedDecode() {
+        eachOutput(a -> {
+            var shape = new AttentionF16.DecodeBatch(4, 2, 2, 64, 0.125f, true);
+            // The middle group crosses the sequence boundary: masks index [sequence][query head].
+            var mask = new Mask(3, 0, 7, -1);
+            int[] tokens = {41, 513};
+            checkBatch(a, shape, tokens, false, 120, mask);
+            try (var fixed = AttentionF16.create(device, a.output())) {
+                fixed.useFixedTreeDecode();
+                checkBatch(fixed, shape, tokens, false, 120, mask);
+            }
+        });
+    }
+
     void checkBatch(AttentionF16 a, AttentionF16.DecodeBatch b, int[] lengths, boolean fork, long seed) {
+        checkBatch(a, b, lengths, fork, seed, Mask.NONE);
+    }
+
+    void checkBatch(AttentionF16 a, AttentionF16.DecodeBatch b, int[] lengths, boolean fork, long seed, Mask mask) {
         var r = new SplittableRandom(seed);
         int kvh = b.kvHeads(), d = b.headDim(), ps = 32, batch = lengths.length + (fork ? 1 : 0);
         int pages = 8;
@@ -405,9 +551,10 @@ abstract class AttentionConformance {
             short[] q = halves(b.qBytes(batch) / 2, 1, r);
             var out = a.output(); boolean fp32 = out == Precision.FP32;
             ByteBuffer got;
-            try (var gq = buffer(b.qBytes(batch)); var go = buffer(b.oBytes(out, batch)); var e = device.encoder()) {
+            try (var gq = buffer(b.qBytes(batch)); var go = buffer(b.oBytes(out, batch)); var e = device.encoder(); var lens = uploadMask(e, mask)) {
                 e.upload(gq, bytes(q));
-                a.encodeBatch(e, gq, cache, 0, seqs, go, b);
+                if (lens == null) a.encodeBatch(e, gq, cache, 0, seqs, go, b);
+                else a.encodeBatch(e, gq, cache, 0, seqs, go, b, lens, mask.group);
                 var read = e.download(go);
                 try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
                 got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
@@ -419,7 +566,7 @@ abstract class AttentionConformance {
             for (int i = 0; i < batch; i++) {
                 var s = b.shape(seqs.get(i).tokens());
                 short[] qi = java.util.Arrays.copyOfRange(q, i * perSeq, (i + 1) * perSeq);
-                worst = Math.max(worst, verifyFused(qi, ks.get(i), vs.get(i), s, got, i * perSeq, false, fp32, "batched decode, sequence " + i));
+                worst = Math.max(worst, verifyFused(qi, ks.get(i), vs.get(i), s, got, i * perSeq, false, fp32, "batched decode, sequence " + i, mask));
             }
             int[] sp = AttentionF16.batchSplit(b, batch, maxKeys);
             System.out.printf("attention batched decode %s %s, %d sequences up to %d keys: worst error/bound %.3g (splits %d of %d keys)%n",
@@ -524,36 +671,79 @@ abstract class AttentionConformance {
         }
     }
 
+    @Test void validLengthsInTrainingForwardAndBackward() {
+        eachOutput(a -> {
+            var mask = new Mask(2, 0, 9, 23);
+            for (var s : new Shape[] {
+                    Shape.of(6, 19, 37, 128).withKvHeads(2).asCausal().withCacheKeys(42),
+                    Shape.of(6, 13, 19, 40).withKvHeads(2).asCausal(),
+                    Shape.of(6, 9, 519, 64).withKvHeads(2)}) {
+                double worst = checkBackward(a, s, 117, mask);
+                System.out.printf("attention masked backward %s %s worst error/bound %.3g (%s)%n",
+                        a.output(), s, worst, a.matrixBackward(s) ? "matrix" : "portable");
+            }
+            if (a.matrixPath(128)) {
+                a.useScalarBackward();
+                checkBackward(a, Shape.of(6, 19, 37, 128).withKvHeads(2).asCausal(), 117, mask);
+            }
+        });
+    }
+
     double checkBackward(AttentionF16 a, Shape s, long seed) {
+        return checkBackward(a, s, seed, Mask.NONE);
+    }
+
+    double checkBackward(AttentionF16 a, Shape s, long seed, Mask mask) {
         var r = new SplittableRandom(seed);
         int d = s.headDim(), nq = s.queries(), nk = s.keys(), cache = s.cacheKeys(), hpk = s.heads() / s.kvHeads(), R = hpk * nq;
         short[] q = halves(s.qBytes() / 2, 1, r), k = halves(s.kBytes() / 2, 1, r), v = halves(s.vBytes() / 2, 1, r);
+        if (mask != Mask.NONE) poisonPadding(k, v, s, mask);
         int qn = s.heads() * nq * d, kn = s.kvHeads() * cache * d;
         float[] dO = new float[qn];
         for (int i = 0; i < qn; i++) dO[i] = (float) r.nextDouble(-1, 1);
         var out = a.output(); boolean fp32 = out == Precision.FP32;
-        ByteBuffer gq2, gk2, gv2;
+        ByteBuffer gq2, gk2, gv2, forwardO = null, savedLse = null;
         try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(out));
              var gl = buffer(4L * s.heads() * nq); var gdo = buffer(4L * qn); var gdq = buffer(4L * qn); var gdk = buffer(4L * kn); var gdv = buffer(4L * kn);
-             var e = device.encoder()) {
+             var e = device.encoder(); var lens = uploadMask(e, mask)) {
             var db = ByteBuffer.allocate(4 * qn).order(ByteOrder.nativeOrder()); for (float x : dO) db.putFloat(x);
             e.upload(gq, bytes(q)).upload(gk, bytes(k)).upload(gv, bytes(v)).upload(gdo, db.array()).fill(gdk, 0).fill(gdv, 0);
-            a.encode(e, gq, gk, gv, go, gl, s);
-            a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s);
+            if (lens == null) {
+                a.encode(e, gq, gk, gv, go, gl, s);
+                a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s);
+            } else {
+                // A missed output store should fail even for a fully masked row.
+                e.fill(go, 0x3c003c00).fill(gl, 0x3f800000).fill(gdq, 0x3f800000);
+                e.fill(gdk, 0x3f800000).fill(gdv, 0x3f800000);
+                a.encode(e, gq, gk, gv, go, gl, s, lens, mask.group);
+                a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s, lens, mask.group);
+            }
+            var ro = lens == null ? null : e.download(go);
+            var rl = lens == null ? null : e.download(gl);
             var rq = e.download(gdq); var rk = e.download(gdk); var rv = e.download(gdv);
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
+            if (ro != null) {
+                forwardO = ByteBuffer.wrap(ro.bytes()).order(ByteOrder.nativeOrder());
+                savedLse = ByteBuffer.wrap(rl.bytes()).order(ByteOrder.nativeOrder());
+            }
             gq2 = ByteBuffer.wrap(rq.bytes()).order(ByteOrder.nativeOrder());
             gk2 = ByteBuffer.wrap(rk.bytes()).order(ByteOrder.nativeOrder());
             gv2 = ByteBuffer.wrap(rv.bytes()).order(ByteOrder.nativeOrder());
         }
         boolean halfWeights = a.matrixPath(d), halfOps = a.matrixBackward(s);
+        if (forwardO != null) verifyFused(q, k, v, s, forwardO, 0, halfWeights, fp32, "training", mask);
         int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
         double E = 8 * U, scale = s.scale();
         double[] eK = new double[kn], bK = new double[kn], mK = new double[kn], eV = new double[kn], bV = new double[kn], mV = new double[kn];
         double worst = 0;
         double[] sc = new double[nk], sig = new double[nk], pj = new double[nk], dPj = new double[nk], dSj = new double[nk], ddS = new double[nk], dPf = new double[nk];
         for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int row = 0; row < R; row++) {
-            int h = kvh * hpk + row / nq, i = row % nq, qb = (h * nq + i) * d, limit = s.causal() ? i + nk - nq + 1 : nk;
+            int h = kvh * hpk + row / nq, i = row % nq, qb = (h * nq + i) * d, limit = mask.visible(s, h, i);
+            if (limit == 0) {
+                assertEquals(Float.NEGATIVE_INFINITY, savedLse.getFloat(4 * (h * nq + i)), "empty row LSE");
+                for (int c = 0; c < d; c++) assertEquals(0f, gq2.getFloat(4 * (qb + c)), "empty row dQ");
+                continue;
+            }
             double mx = Double.NEGATIVE_INFINITY, smax = 0;
             for (int j = 0; j < limit; j++) {
                 double sum = 0, abs = 0;
@@ -565,6 +755,10 @@ abstract class AttentionConformance {
             double L = mx + Math.log(total);
             double dL = 2 * smax + U * (Math.abs(L) + Math.abs(mx)) + (nk + 2 + 2 * blocks) * U + (blocks + 2) * E + 2 * (dev + 2 * smax) * U
                     + 4 * Math.ulp((float) Math.log(total));
+            if (savedLse != null) {
+                double got = savedLse.getFloat(4 * (h * nq + i));
+                assertTrue(Math.abs(got - L) <= dL, "masked LSE " + got + ", exact " + L + ", bound " + dL);
+            }
             // the forward pass's O and its error, the exact probabilities
             double epsMax = 0;
             double[] eps = new double[limit];
@@ -629,12 +823,20 @@ abstract class AttentionConformance {
             double exK = scale * eK[at], boundK = Math.abs(scale) * (bK[at] + (R + 2) * U * mK[at]) * 1.01 + U * Math.abs(exK) + 0x1p-126;
             double boundV = (bV[at] + (R + 2) * U * mV[at]) * 1.01 + 0x1p-126;
             double gotK = gk2.getFloat(4 * at), gotV = gv2.getFloat(4 * at);
+            if (mask != Mask.NONE && mV[at] == 0) {
+                assertEquals(0f, gotK, "masked column dK");
+                assertEquals(0f, gotV, "masked column dV");
+            }
             assertTrue(Math.abs(gotK - exK) <= boundK, "dK[" + kvh + "][" + j + "][" + c + "] = " + gotK + ", exact " + exK + ", bound " + boundK + " for " + s);
             assertTrue(Math.abs(gotV - eV[at]) <= boundV, "dV[" + kvh + "][" + j + "][" + c + "] = " + gotV + ", exact " + eV[at] + ", bound " + boundV + " for " + s);
             worst = Math.max(worst, Math.max(Math.abs(gotK - exK) / boundK, Math.abs(gotV - eV[at]) / boundV));
         }
-        for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int j = nk; j < cache; j++) for (int c = 0; c < d; c++)
-            assertEquals(0f, gk2.getFloat(4 * ((kvh * cache + j) * d + c)), "dK past the keys is not written");
+        for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int j = nk; j < cache; j++) for (int c = 0; c < d; c++) {
+            int offset = 4 * ((kvh * cache + j) * d + c);
+            float initial = mask == Mask.NONE ? 0f : 1f;
+            assertEquals(initial, gk2.getFloat(offset), "dK past the keys is not written");
+            assertEquals(initial, gv2.getFloat(offset), "dV past the keys is not written");
+        }
         return worst;
     }
 
@@ -771,6 +973,33 @@ abstract class AttentionConformance {
                         }
                     }
                     System.out.println("attention decode stages keys=" + keys + ": " + stages);
+                }
+            }
+        }
+    }
+
+    /** Padded causal prefill. Compare the two public paths on the same inputs and GPU-resident lengths. */
+    @Test void benchmarkMaskedPrefill() {
+        Assumptions.assumeTrue(Boolean.getBoolean("attentionMask.benchmark"), "set -DattentionMask.benchmark=true");
+        var s = Shape.of(16, 512, 512, 128).asCausal();
+        var r = new SplittableRandom(1141);
+        try (var a = AttentionF16.create(device, Precision.FP16); var composed = MaskedComposition.create(device, Precision.FP16);
+             var q = buffer(s.qBytes()); var k = buffer(s.kBytes());
+             var v = buffer(s.vBytes()); var o = buffer(s.oBytes(Precision.FP16)); var lengths = buffer(16);
+             var scores = buffer(s.scoresBytes()); var probs = buffer(s.probsBytes()); var init = device.encoder()) {
+            init.upload(q, bytes(halves(q.bytes() / 2, 1, r)));
+            init.upload(k, bytes(halves(k.bytes() / 2, 1, r)));
+            init.upload(v, bytes(halves(v.bytes() / 2, 1, r)));
+            init.upload(lengths, ByteBuffer.allocate(16).order(ByteOrder.nativeOrder())
+                    .putInt(512).putInt(384).putInt(128).putInt(0).array());
+            try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+            var timings = GpuBenchmark.rounds(device, List.of(
+                    e -> a.encode(e, q, k, v, o, s, lengths, 4),
+                    e -> composed.encode(e, q, k, v, o, scores, probs, s, lengths, 4)));
+            for (int mode = 0; mode < timings.length; mode++) {
+                for (var t : timings[mode]) {
+                    System.out.printf(Locale.ROOT, "masked-prefill %s %s gpuUs=%.2f hostEncodeUs=%.2f wallUs=%.2f%n",
+                            device.adapter().name(), mode == 0 ? "fused" : "composed", t.gpuMicros(), t.encodeMicros(), t.wallMicros());
                 }
             }
         }
