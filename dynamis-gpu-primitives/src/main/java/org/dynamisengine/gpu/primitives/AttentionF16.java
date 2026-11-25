@@ -260,11 +260,23 @@ public final class AttentionF16 implements AutoCloseable {
 
     private GpuComputePipeline decodePipeline(int variant, int rows) {
         int tier = rows == 1 ? 1 : rows <= 4 ? 4 : DECODE_ROWS;
-        boolean wave = device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC);
-        String family = wave ? "attn_decode_wave_" : "attn_decode_";
-        return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), key ->
-                device.pipeline(GemmF16.KERNELS.pipeline(family + variant + (output() == Precision.FP32 ? "_f32" : ""),
-                        FLASH_ACCESSES, Set.of(GpuCapabilities.FP32), wave ? Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC) : Set.of(), Map.of("ROW_TIER", tier))));
+        return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), this::compileDecodePipeline);
+    }
+
+    private GpuComputePipeline compileDecodePipeline(DecodeVariant variant) {
+        String suffix = variant.headDim() + (output() == Precision.FP32 ? "_f32" : "");
+        var constants = Map.<String, Object>of("ROW_TIER", variant.rowTier());
+        var types = Set.of(GpuCapabilities.FP32);
+        if (device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC)) {
+            try {
+                return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_wave_" + suffix, FLASH_ACCESSES, types,
+                        Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC), constants));
+            } catch (ComputeException e) {
+                // Metal checks the 128-thread limit on the compiled pipeline, independently for each row tier.
+                if (e.code() != ComputeException.Code.UNSUPPORTED || device.adapter().backend() != Backend.METAL) throw e;
+            }
+        }
+        return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_" + suffix, FLASH_ACCESSES, types, Set.of(), constants));
     }
 
     private boolean shortDecode(Shape s) {
