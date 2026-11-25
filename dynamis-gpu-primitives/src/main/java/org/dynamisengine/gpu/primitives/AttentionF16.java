@@ -205,8 +205,11 @@ public final class AttentionF16 implements AutoCloseable {
      * The key ranges a fused attention of {@code s} uses, {@code {splits, splitKeys}}: more than one when its rows
      * give few groups, and for the decode kernel at most {@code 1024 / rows} keys each.
      */
-    static int[] split(Shape s) {
-        if (decodes(s)) {
+    static int[] split(Shape s) { return split(s, decodes(s)); }
+
+    /** The key ranges for the decode kernel ({@code decode}) or the flash kernels. */
+    static int[] split(Shape s, boolean decode) {
+        if (decode) {
             int rows = s.heads() / s.kvHeads() * s.queries();
             int cap = DECODE_SCORES / rows / 128 * 128;
             int want = Math.ceilDiv(TARGET_GROUPS, s.kvHeads());
@@ -224,7 +227,11 @@ public final class AttentionF16 implements AutoCloseable {
         return new int[] {Math.ceilDiv(s.keys(), splitKeys), splitKeys};   // splits <= 256: within the combine's 1024
     }
 
-    private static final List<Access> FLASH_ACCESSES = List.of(Access.READ, Access.READ, Access.READ, Access.WRITE, Access.READ_WRITE, Access.READ_WRITE, Access.READ);
+    private static final List<Access> DECODE_ACCESSES = List.of(Access.READ, Access.READ, Access.READ, Access.WRITE, Access.READ_WRITE, Access.READ_WRITE, Access.READ);
+    /** The flash kernels' bindings: the decode kernels' and the log-sum-exp (1.12.0). */
+    private static final List<Access> FLASH_ACCESSES = List.of(Access.READ, Access.READ, Access.READ, Access.WRITE, Access.READ_WRITE, Access.READ_WRITE, Access.READ,
+            Access.READ_WRITE);
+    private static final List<Access> COMBINE_ACCESSES = List.of(Access.READ, Access.READ, Access.WRITE, Access.READ_WRITE);
 
     /** Whether the SIMD-group matrix flash kernel serves this device and head dimension: native Metal, 64 or 128. */
     boolean matrixPath(int headDim) {
@@ -246,7 +253,7 @@ public final class AttentionF16 implements AutoCloseable {
             String flashName = "attn_flash_" + d + (wide ? "_wide" : "") + suffix;
             var list = new java.util.ArrayList<>(List.of(
                     GemmF16.KERNELS.pipeline(flashName, FLASH_ACCESSES, types, Set.of()),
-                    GemmF16.KERNELS.pipeline("attn_combine" + suffix, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of())));
+                    GemmF16.KERNELS.pipeline("attn_combine" + suffix, COMBINE_ACCESSES, types, Set.of())));
             if (matrixPath(d)) {
                 var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
                 for (int i = 0; i < FLASH_ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, FLASH_ACCESSES.get(i), 4));
@@ -280,14 +287,14 @@ public final class AttentionF16 implements AutoCloseable {
         var types = Set.of(GpuCapabilities.FP32);
         if (subgroups && device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC)) {
             try {
-                return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_wave_" + suffix, FLASH_ACCESSES, types,
+                return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_wave_" + suffix, DECODE_ACCESSES, types,
                         Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC), constants));
             } catch (ComputeException e) {
                 // Metal checks the 128-thread limit on the compiled pipeline, independently for each row tier.
                 if (e.code() != ComputeException.Code.UNSUPPORTED || device.adapter().backend() != Backend.METAL) throw e;
             }
         }
-        return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_" + suffix, FLASH_ACCESSES, types, Set.of(), constants));
+        return device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_" + suffix, DECODE_ACCESSES, types, Set.of(), constants));
     }
 
     private boolean shortDecode(Shape s) {
@@ -349,7 +356,24 @@ public final class AttentionF16 implements AutoCloseable {
         Checks.range(k, 0, s.kBytes() / 2, 2, "k");
         Checks.range(v, 0, s.vBytes() / 2, 2, "v");
         try (var table = scratch(16, "attention-no-pages")) {
-            return fused(encoder, q, k, v, table, 0, o, s);
+            return fused(encoder, q, k, v, table, 0, o, null, s);
+        }
+    }
+
+    /**
+     * Records the fused attention of {@code s}, as {@link #encode(GpuCommandEncoder, GpuBuffer, GpuBuffer, GpuBuffer,
+     * GpuBuffer, Shape)}, and also each row's log-sum-exp of the scaled scores into {@code lse} (FP32,
+     * {@code [heads][queries]}): the forward pass of training, whose L the backward pass ({@link #backward}) takes
+     * (1.12.0). It always runs a flash kernel.
+     */
+    public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer q, GpuBuffer k, GpuBuffer v, GpuBuffer o, GpuBuffer lse, Shape s) {
+        requireFused(s);
+        Checks.notNull(lse, "lse");
+        Checks.range(k, 0, s.kBytes() / 2, 2, "k");
+        Checks.range(v, 0, s.vBytes() / 2, 2, "v");
+        Checks.range(lse, 0, (long) s.heads() * s.queries(), 4, "lse");
+        try (var table = scratch(16, "attention-no-pages")) {
+            return fused(encoder, q, k, v, table, 0, o, lse, s);
         }
     }
 
@@ -367,7 +391,7 @@ public final class AttentionF16 implements AutoCloseable {
             throw new IllegalArgumentException("the shape's kvHeads and headDim must be the cache's: " + s + ", " + c);
         if (s.keys() > sequence.tokens()) throw new IllegalArgumentException("the sequence has " + sequence.tokens() + " tokens, not " + s.keys());
         try (var table = cache.table(sequence)) {
-            return fused(encoder, q, cache.keys(layer), cache.values(layer), table, c.pageSize(), o, s);
+            return fused(encoder, q, cache.keys(layer), cache.values(layer), table, c.pageSize(), o, null, s);
         }
     }
 
@@ -379,35 +403,39 @@ public final class AttentionF16 implements AutoCloseable {
     }
 
     private GpuCommandEncoder fused(GpuCommandEncoder encoder, GpuBuffer q, GpuBuffer k, GpuBuffer v, GpuBuffer table, int pageSize,
-            GpuBuffer o, Shape s) {
+            GpuBuffer o, GpuBuffer lse, Shape s) {
         requireFused(s);
         Checks.range(q, 0, s.qBytes() / 2, 2, "q");
         Checks.range(o, 0, s.oBytes(output()) / output().bytes(), output().bytes(), "o");
         int variant = variant(s.headDim());
         var layout = ParameterLayout.of(GemmF16.KERNELS, "attn_flash_" + variant + (output() == Precision.FP32 ? "_f32" : ""));
-        boolean direct = shortDecode(s) && shortDecodePipeline(layout.bytes()) != null;
-        int[] sp = direct ? new int[]{1, s.keys()} : split(s);
+        boolean decode = lse == null && decodes(s);   // the log-sum-exp comes from the flash kernels
+        boolean direct = decode && shortDecode(s) && shortDecodePipeline(layout.bytes()) != null;
+        int[] sp = direct ? new int[]{1, s.keys()} : split(s, decode);
         int splits = sp[0], rowBlocks = Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), BR);
         long rows = (long) s.heads() * s.queries();
         var combineGrid = Grid.linear(device.capabilities(), rows);   // a group per row
         byte[] params = layout.block().u32("heads", s.heads()).u32("kvHeads", s.kvHeads()).u32("queries", s.queries()).u32("keys", s.keys())
                 .u32("headDim", s.headDim()).u32("cacheKeys", s.cacheKeys()).f32("scale", s.scale()).u32("causal", s.causal() ? 1 : 0)
-                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", direct || splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).u32("batch", 0).bytes();
+                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", direct || splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).u32("batch", 0)
+                .bool("writeLse", lse != null).bytes();
         if (direct)
             return encoder.dispatch(shortDecode, Map.of(0, q, 1, k, 2, v, 3, o, 4, table), params, combineGrid.groups(), "attention.decode.short");
         var set = fusedPipelines(variant);
         // per dispatch: closing the handles keeps them alive for the recorded commands
         try (var ml = scratch(splits > 1 ? 8L * splits * rows : 16, "attention-partial-ml");
              var acc = scratch(splits > 1 ? 4L * splits * rows * s.headDim() : 16, "attention-partial-acc")) {
-            if (decodes(s))
+            var lseBinding = lse != null ? lse : scratch(16, "attention-no-lse");
+            if (decode)
                 encoder.dispatch(decodePipeline(variant, s.heads() / s.kvHeads() * s.queries()), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(1, s.kvHeads(), splits), "attention.decode");
             else if (matrixPath(s.headDim()))
-                encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params,
+                encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table, 7, lseBinding), params,
                         new Dimensions(Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), MATRIX_ROWS), s.kvHeads(), splits), "attention.flash.simdgroup");
             else
-                encoder.dispatch(set.get(0), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(rowBlocks, s.kvHeads(), splits), "attention.flash");
+                encoder.dispatch(set.get(0), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table, 7, lseBinding), params, new Dimensions(rowBlocks, s.kvHeads(), splits), "attention.flash");
             if (splits > 1)
-                encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o), params, combineGrid.groups(), "attention.combine");
+                encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o, 3, lseBinding), params, combineGrid.groups(), "attention.combine");
+            if (lse == null) lseBinding.close();
         }
         return encoder;
     }
@@ -485,18 +513,93 @@ public final class AttentionF16 implements AutoCloseable {
         byte[] params = layout.block().u32("heads", b.heads()).u32("kvHeads", b.kvHeads()).u32("queries", b.queries()).u32("keys", maxKeys)
                 .u32("headDim", b.headDim()).u32("cacheKeys", maxKeys).f32("scale", b.scale()).u32("causal", b.causal() ? 1 : 0)
                 .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", combineGrid.gridX()).u32("pageSize", c.pageSize())
-                .u32("batch", batch).bytes();
+                .u32("batch", batch).bool("writeLse", false).bytes();
         var set = fusedPipelines(variant);
         try (var table = cache.batchTable(sequences);
              var ml = scratch(splits > 1 ? 8L * splits * rows : 16, "attention-partial-ml");
-             var acc = scratch(splits > 1 ? 4L * splits * rows * b.headDim() : 16, "attention-partial-acc")) {
+             var acc = scratch(splits > 1 ? 4L * splits * rows * b.headDim() : 16, "attention-partial-acc");
+             var noLse = scratch(16, "attention-no-lse")) {
             encoder.dispatch(decodePipeline(variant, b.heads() / b.kvHeads() * b.queries()),
                     Map.of(0, q, 1, cache.keys(layer), 2, cache.values(layer), 3, o, 4, ml, 5, acc, 6, table), params,
                     new Dimensions(batch, b.kvHeads(), splits), "attention.decode.batch");
             if (splits > 1)
-                encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o), params, combineGrid.groups(), "attention.combine");
+                encoder.dispatch(set.get(1), Map.of(0, ml, 1, acc, 2, o, 3, noLse), params, combineGrid.groups(), "attention.combine");
         }
         return encoder;
+    }
+
+    private final Map<Integer, PipelineSet> backwardPipelines = new HashMap<>();
+
+    private PipelineSet backwardPipelines(int variant) {
+        if (closed) throw new IllegalStateException("closed");
+        return backwardPipelines.computeIfAbsent(variant, d -> {
+            var types = Set.of(GpuCapabilities.FP32);
+            var main = List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE);
+            return PipelineSet.compile(device, List.of(
+                    GemmF16.KERNELS.pipeline(output() == Precision.FP32 ? "attn_bwd_dot" : "attn_bwd_dot_h", List.of(Access.READ, Access.READ, Access.READ_WRITE), types, Set.of()),
+                    GemmF16.KERNELS.pipeline("attn_bwd_kv_" + d, main, types, Set.of()),
+                    GemmF16.KERNELS.pipeline("attn_bwd_q_" + d, main.subList(0, 7), types, Set.of())));
+        });
+    }
+
+    /** Query rows per tile of the backward kernels for a variant. */
+    static int backwardRows(int variant) { return variant == 256 ? 8 : 16; }
+
+    /**
+     * Whether {@link #backward} takes {@code s} on this device: an even head dimension of at most 256, and group memory
+     * for its kernels. @since 1.12.0
+     */
+    public boolean backwardSupports(Shape s) {
+        if (s.headDim() % 2 != 0 || s.headDim() > MAX_FUSED_HEAD_DIM) return false;
+        int d = variant(s.headDim());
+        long bytes = Math.max(GemmF16.KERNELS.groupSharedBytes("attn_bwd_kv_" + d), GemmF16.KERNELS.groupSharedBytes("attn_bwd_q_" + d));
+        return bytes <= device.capabilities().maxGroupSharedBytes();
+    }
+
+    /**
+     * Records the backward pass of the fused attention of {@code s} (1.12.0), from the training forward pass's O (this
+     * instance's output type) and log-sum-exp {@code lse} ({@link #encode(GpuCommandEncoder, GpuBuffer, GpuBuffer,
+     * GpuBuffer, GpuBuffer, GpuBuffer, Shape)}) and the output gradient {@code dO} (FP32, the layout of O):
+     * {@code dQ} (FP32, the layout of Q) and {@code dK}, {@code dV} (FP32, the layout of K and V; keys past
+     * {@code s.keys()} are not written) receive the gradients.
+     * <p>
+     * P is recomputed from Q, K and L, in FP32. Two kernels, one walking each key block's queries for dK and dV and one
+     * walking each query block's keys for dQ, keep every sum in a fixed order (no atomics), so a device's result does
+     * not depend on scheduling. Bounded ({@link #backwardContract}).
+     */
+    public GpuCommandEncoder backward(GpuCommandEncoder encoder, GpuBuffer q, GpuBuffer k, GpuBuffer v, GpuBuffer o, GpuBuffer lse,
+            GpuBuffer dO, GpuBuffer dQ, GpuBuffer dK, GpuBuffer dV, Shape s) {
+        if (closed) throw new IllegalStateException("closed");
+        if (!backwardSupports(s))
+            throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the attention backward pass needs an even head dimension of at most "
+                    + MAX_FUSED_HEAD_DIM + " and group memory for its kernels: " + s);
+        long rows = (long) s.heads() * s.queries(), qElems = rows * s.headDim(), kElems = (long) s.kvHeads() * s.cacheKeys() * s.headDim();
+        Checks.range(q, 0, qElems, 2, "q"); Checks.range(k, 0, kElems, 2, "k"); Checks.range(v, 0, kElems, 2, "v");
+        Checks.range(o, 0, qElems, output().bytes(), "o"); Checks.range(lse, 0, rows, 4, "lse"); Checks.range(dO, 0, qElems, 4, "dO");
+        Checks.range(dQ, 0, qElems, 4, "dQ"); Checks.range(dK, 0, kElems, 4, "dK"); Checks.range(dV, 0, kElems, 4, "dV");
+        int variant = variant(s.headDim()), bq = backwardRows(variant);
+        var set = backwardPipelines(variant);
+        var dotGrid = Grid.forThreads(device.capabilities(), rows, 256);
+        byte[] params = ParameterLayout.of(GemmF16.KERNELS, "attn_bwd_kv_" + variant).block().u32("heads", s.heads()).u32("kvHeads", s.kvHeads())
+                .u32("queries", s.queries()).u32("keys", s.keys()).u32("headDim", s.headDim()).u32("cacheKeys", s.cacheKeys()).f32("scale", s.scale())
+                .bool("causal", s.causal()).u32("gridX", dotGrid.gridX()).u32("pad0", 0).u32("pad1", 0).u32("pad2", 0).bytes();
+        int rowsKv = s.heads() / s.kvHeads() * s.queries();
+        try (var dD = scratch(4 * rows, "attention-backward-d")) {
+            encoder.dispatch(set.get(0), Map.of(0, o, 1, dO, 2, dD), params, dotGrid.groups(), "attention.backward.dot");
+            encoder.dispatch(set.get(1), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dK, 7, dV), params,
+                    new Dimensions(Math.ceilDiv(s.keys(), 16), s.kvHeads(), 1), "attention.backward.kv");
+            encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, dO, 4, lse, 5, dD, 6, dQ), params,
+                    new Dimensions(Math.ceilDiv(rowsKv, bq), s.kvHeads(), 1), "attention.backward.q");
+        }
+        return encoder;
+    }
+
+    /** The backward pass's contract: bounded (the device's exp; sums in fixed orders). @since 1.12.0 */
+    public static AccuracyContract backwardContract() {
+        return new AccuracyContract("AttentionF16 backward", List.of("FP16 Q, K, V", "O", "FP32 L", "FP32 dO"), "FP32, fixed orders", "FP32",
+                AccuracyContract.Order.DEVICE, AccuracyContract.Bound.formula("P carries the scores' error, L's, the rounding of its exponent and "
+                        + "exp's; dS = P (dP - D) adds dP's (headDim + 2) 2^-24 sum|dO V| and D's error (O's own error through dO); dV, dK and "
+                        + "dQ sum (P or dS) times (dO, Q or K) over their rows or keys with (length + 2) 2^-24 of the magnitudes"), "");
     }
 
     /**
@@ -521,6 +624,7 @@ public final class AttentionF16 implements AutoCloseable {
         try {
             var resources = new java.util.ArrayList<AutoCloseable>(decodePipelines.values());
             resources.addAll(fused.values());
+            resources.addAll(backwardPipelines.values());
             resources.add(shortDecode);
             PipelineSet.closeAll(resources.toArray(new AutoCloseable[0]));
         } finally {

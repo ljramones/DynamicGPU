@@ -11,6 +11,7 @@
 #else
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> o;
 #endif
+[[vk::binding(3, 0)]] RWStructuredBuffer<float> lse;   // when writeLse (1.12.0)
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint THREADS = 128;
@@ -46,6 +47,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     DG_GROUP_REDUCE(red, t, THREADS, dg_op_add)
     DG_GROUP_BROADCAST(red, t, rowL)
     float l = rowL;
+    if (p.writeLse != 0 && t == 0) lse[row] = mx + log(l);
     for (uint pair = t; pair < d2; pair += THREADS)
     {
         float lo = 0.0f, hi = 0.0f;

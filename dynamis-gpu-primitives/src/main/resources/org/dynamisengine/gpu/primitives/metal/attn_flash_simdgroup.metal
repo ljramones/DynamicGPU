@@ -32,6 +32,7 @@ using namespace metal;
 struct AttnParams {
     uint heads; uint kvHeads; uint queries; uint keys; uint headDim; uint cacheKeys; float scale; uint causal;
     uint splits; uint splitKeys; uint rowBlocks; uint pageSize; uint batch;   // batch: 1.11.1, 0 here
+    uint writeLse;   // 1.12.0: write each row's log-sum-exp (unsplit; the combine writes split rows')
 };
 
 #ifndef ROW_TILES
@@ -42,7 +43,7 @@ constant constexpr uint RT = ROW_TILES, BC = 32, THREADS = 128, BR = 32 * RT, LP
 
 template <uint D, typename OutT>
 static void flash(device const half *q, device const half *k, device const half *v, device OutT *o,
-                  device float *partialML, device float *partialAcc, device const uint *table, constant AttnParams &p, uint3 group,
+                  device float *partialML, device float *partialAcc, device const uint *table, device float *lse, constant AttnParams &p, uint3 group,
                   uint tid, uint sg, uint lane, threadgroup float *sS, threadgroup half *sP, threadgroup float *sDiag,
                   threadgroup float *sM, threadgroup float *sL, threadgroup half *sK, threadgroup half *sV) {
     const uint kvHead = group.y, split = group.z;
@@ -163,6 +164,7 @@ static void flash(device const half *q, device const half *k, device const half 
 
     // O tile by tile through the SIMD-group's 8 x 8 scratch (its diagonal space)
     if (h16 == 0) { sM[row] = m; sL[row] = l; }
+    if (h16 == 0 && p.writeLse != 0 && p.splits <= 1 && r < rowsKv) lse[kvHead * rowsKv + r] = m + log(l);
     simdgroup_barrier(mem_flags::mem_threadgroup);
     threadgroup float *tile = sDiag + sg * RT * 64;
     for (uint t = 0; t < RT; t++) {
@@ -191,7 +193,8 @@ static void flash(device const half *q, device const half *k, device const half 
 kernel void NAME(device const half *q [[buffer(0)]], device const half *k [[buffer(1)]],                             \
                  device const half *v [[buffer(2)]], device OutT *o [[buffer(3)]],                                   \
                  device float *partialML [[buffer(4)]], device float *partialAcc [[buffer(5)]],                      \
-                 device const uint *table [[buffer(6)]], constant AttnParams &p [[buffer(7)]],                       \
+                 device const uint *table [[buffer(6)]], device float *lse [[buffer(7)]],                             \
+                 constant AttnParams &p [[buffer(8)]],                                                               \
                  uint3 group [[threadgroup_position_in_grid]],                                                       \
                  uint tid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]],              \
                  uint lane [[thread_index_in_simdgroup]]) {                                                         \
@@ -202,7 +205,7 @@ kernel void NAME(device const half *q [[buffer(0)]], device const half *k [[buff
     threadgroup float sL[BR];                                                                                    \
     threadgroup uint4 sKV[2 * BC * D / 8];   /* K and V copies; Q's copy first (BR x D halves) */               \
     threadgroup half *sK = (threadgroup half *) sKV, *sV = sK + BC * D;                                          \
-    flash<D, OutT>(q, k, v, o, partialML, partialAcc, table, p, group, tid, sg, lane, sS, sP, sDiag, sM, sL, sK, sV);    \
+    flash<D, OutT>(q, k, v, o, partialML, partialAcc, table, lse, p, group, tid, sg, lane, sS, sP, sDiag, sM, sL, sK, sV);    \
 }
 
 FLASH_ENTRY(attn_flash_64_simdgroup, 64, half)

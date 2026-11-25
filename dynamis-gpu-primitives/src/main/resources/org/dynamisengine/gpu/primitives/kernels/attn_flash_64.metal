@@ -129,6 +129,7 @@ struct AttnParams_0
     uint rowBlocks_0;
     uint pageSize_0;
     uint batch_0;
+    uint writeLse_0;
 };
 
 struct KernelContext_0
@@ -140,6 +141,7 @@ struct KernelContext_0
     uint device* v_0;
     float device* partialML_0;
     float device* partialAcc_0;
+    float device* lse_0;
     uint device* o_0;
     array<uint, int(528)> threadgroup* qs_0;
     array<uint, int(1056)> threadgroup* ks_0;
@@ -148,7 +150,7 @@ struct KernelContext_0
     array<float, int(512)> threadgroup* ps_0;
 };
 
-[[kernel]] void attn_flash_64(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], AttnParams_0 constant* p_1 [[buffer(7)]], uint device* q_1 [[buffer(0)]], uint device* table_1 [[buffer(6)]], uint device* k_1 [[buffer(1)]], uint device* v_1 [[buffer(2)]], float device* partialML_1 [[buffer(4)]], float device* partialAcc_1 [[buffer(5)]], uint device* o_1 [[buffer(3)]])
+[[kernel]] void attn_flash_64(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], AttnParams_0 constant* p_1 [[buffer(8)]], uint device* q_1 [[buffer(0)]], uint device* table_1 [[buffer(6)]], uint device* k_1 [[buffer(1)]], uint device* v_1 [[buffer(2)]], float device* partialML_1 [[buffer(4)]], float device* partialAcc_1 [[buffer(5)]], float device* lse_1 [[buffer(7)]], uint device* o_1 [[buffer(3)]])
 {
     uint _S3;
     uint _S4;
@@ -170,6 +172,7 @@ struct KernelContext_0
     (&kernelContext_0)->v_0 = v_1;
     (&kernelContext_0)->partialML_0 = partialML_1;
     (&kernelContext_0)->partialAcc_0 = partialAcc_1;
+    (&kernelContext_0)->lse_0 = lse_1;
     (&kernelContext_0)->o_0 = o_1;
     threadgroup array<uint, int(528)> qs_1;
     (&kernelContext_0)->qs_0 = &qs_1;
@@ -1512,6 +1515,18 @@ struct KernelContext_0
             *((&kernelContext_0)->partialAcc_0+(pr_30 * (&kernelContext_0)->p_0->headDim_0 + _S408 + 1U)) = accHi_0[3U];
         }
         return;
+    }
+    if(((&kernelContext_0)->p_0->writeLse_0) != 0U)
+    {
+        ok_0 = kk_0 == 0U;
+    }
+    else
+    {
+        ok_0 = false;
+    }
+    if(ok_0)
+    {
+        *((&kernelContext_0)->lse_0+row_1) = m_0 + log(l_0);
     }
     for(;;)
     {

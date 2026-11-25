@@ -89,12 +89,14 @@ struct AttnParams_0
     uint rowBlocks_0;
     uint pageSize_0;
     uint batch_0;
+    uint writeLse_0;
 };
 
 struct KernelContext_0
 {
     AttnParams_0 constant* p_0;
     float device* partialML_0;
+    float device* lse_0;
     float device* partialAcc_0;
     float device* o_0;
     array<float, int(128)> threadgroup* red_0;
@@ -103,11 +105,12 @@ struct KernelContext_0
     float threadgroup* rowL_0;
 };
 
-[[kernel]] void attn_combine_f32(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], AttnParams_0 constant* p_1 [[buffer(3)]], float device* partialML_1 [[buffer(0)]], float device* partialAcc_1 [[buffer(1)]], float device* o_1 [[buffer(2)]])
+[[kernel]] void attn_combine_f32(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], AttnParams_0 constant* p_1 [[buffer(4)]], float device* partialML_1 [[buffer(0)]], float device* lse_1 [[buffer(3)]], float device* partialAcc_1 [[buffer(1)]], float device* o_1 [[buffer(2)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
     (&kernelContext_0)->partialML_0 = partialML_1;
+    (&kernelContext_0)->lse_0 = lse_1;
     (&kernelContext_0)->partialAcc_0 = partialAcc_1;
     (&kernelContext_0)->o_0 = o_1;
     threadgroup array<float, int(128)> red_1;
@@ -193,7 +196,7 @@ struct KernelContext_0
     }
     float w_0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float _S16 = *(&kernelContext_0)->rowM_0;
+    float mx_0 = *(&kernelContext_0)->rowM_0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     s_0 = t_0;
     acc_0 = 0.0;
@@ -206,21 +209,21 @@ struct KernelContext_0
         {
             break;
         }
-        uint _S17 = 2U * (s_0 * rows_0 + row_0);
-        float device* _S18 = (&kernelContext_0)->partialML_0+_S17;
-        float ms_0 = *_S18;
-        if((*_S18) == _S6)
+        uint _S16 = 2U * (s_0 * rows_0 + row_0);
+        float device* _S17 = (&kernelContext_0)->partialML_0+_S16;
+        float ms_0 = *_S17;
+        if((*_S17) == _S6)
         {
             w_0 = 0.0;
         }
         else
         {
-            w_0 = exp(ms_0 - _S16);
+            w_0 = exp(ms_0 - mx_0);
         }
         (*(&kernelContext_0)->ws_0)[s_0] = w_0;
-        float _S19 = fma(*((&kernelContext_0)->partialML_0+(_S17 + 1U)), w_0, acc_0);
+        float _S18 = fma(*((&kernelContext_0)->partialML_0+(_S16 + 1U)), w_0, acc_0);
         s_0 = s_0 + 128U;
-        acc_0 = _S19;
+        acc_0 = _S18;
     }
     (*(&kernelContext_0)->red_0)[t_0] = acc_0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -264,7 +267,20 @@ struct KernelContext_0
         *(&kernelContext_0)->rowL_0 = (*(&kernelContext_0)->red_0)[int(0)];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float _S20 = *(&kernelContext_0)->rowL_0;
+    float l_0 = *(&kernelContext_0)->rowL_0;
+    bool _S19;
+    if(((&kernelContext_0)->p_0->writeLse_0) != 0U)
+    {
+        _S19 = _S15;
+    }
+    else
+    {
+        _S19 = false;
+    }
+    if(_S19)
+    {
+        *((&kernelContext_0)->lse_0+row_0) = mx_0 + log(l_0);
+    }
     uint pair_0 = t_0;
     for(;;)
     {
@@ -288,109 +304,109 @@ struct KernelContext_0
                 break;
             }
             thread array<float2, int(8)> a_3;
-            uint _S21 = 2U * pair_0;
-            uint at_0 = (s0_0 * rows_0 + row_0) * p_1->headDim_0 + _S21;
-            float2 _S22;
+            uint _S20 = 2U * pair_0;
+            uint at_0 = (s0_0 * rows_0 + row_0) * p_1->headDim_0 + _S20;
+            float2 _S21;
             if(s0_0 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S22 = float2(*((&kernelContext_0)->partialAcc_0+at_0), *((&kernelContext_0)->partialAcc_0+(at_0 + 1U)));
+                _S21 = float2(*((&kernelContext_0)->partialAcc_0+at_0), *((&kernelContext_0)->partialAcc_0+(at_0 + 1U)));
+            }
+            else
+            {
+                _S21 = float2(0.0, 0.0);
+            }
+            a_3[0U] = _S21;
+            uint s_1 = s0_0 + 1U;
+            uint at_1 = (s_1 * rows_0 + row_0) * p_1->headDim_0 + _S20;
+            float2 _S22;
+            if(s_1 < ((&kernelContext_0)->p_0->splits_0))
+            {
+                _S22 = float2(*((&kernelContext_0)->partialAcc_0+at_1), *((&kernelContext_0)->partialAcc_0+(at_1 + 1U)));
             }
             else
             {
                 _S22 = float2(0.0, 0.0);
             }
-            a_3[0U] = _S22;
-            uint s_1 = s0_0 + 1U;
-            uint at_1 = (s_1 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[1U] = _S22;
+            uint s_2 = s0_0 + 2U;
+            uint at_2 = (s_2 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S23;
-            if(s_1 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_2 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S23 = float2(*((&kernelContext_0)->partialAcc_0+at_1), *((&kernelContext_0)->partialAcc_0+(at_1 + 1U)));
+                _S23 = float2(*((&kernelContext_0)->partialAcc_0+at_2), *((&kernelContext_0)->partialAcc_0+(at_2 + 1U)));
             }
             else
             {
                 _S23 = float2(0.0, 0.0);
             }
-            a_3[1U] = _S23;
-            uint s_2 = s0_0 + 2U;
-            uint at_2 = (s_2 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[2U] = _S23;
+            uint s_3 = s0_0 + 3U;
+            uint at_3 = (s_3 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S24;
-            if(s_2 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_3 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S24 = float2(*((&kernelContext_0)->partialAcc_0+at_2), *((&kernelContext_0)->partialAcc_0+(at_2 + 1U)));
+                _S24 = float2(*((&kernelContext_0)->partialAcc_0+at_3), *((&kernelContext_0)->partialAcc_0+(at_3 + 1U)));
             }
             else
             {
                 _S24 = float2(0.0, 0.0);
             }
-            a_3[2U] = _S24;
-            uint s_3 = s0_0 + 3U;
-            uint at_3 = (s_3 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[3U] = _S24;
+            uint s_4 = s0_0 + 4U;
+            uint at_4 = (s_4 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S25;
-            if(s_3 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_4 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S25 = float2(*((&kernelContext_0)->partialAcc_0+at_3), *((&kernelContext_0)->partialAcc_0+(at_3 + 1U)));
+                _S25 = float2(*((&kernelContext_0)->partialAcc_0+at_4), *((&kernelContext_0)->partialAcc_0+(at_4 + 1U)));
             }
             else
             {
                 _S25 = float2(0.0, 0.0);
             }
-            a_3[3U] = _S25;
-            uint s_4 = s0_0 + 4U;
-            uint at_4 = (s_4 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[4U] = _S25;
+            uint s_5 = s0_0 + 5U;
+            uint at_5 = (s_5 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S26;
-            if(s_4 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_5 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S26 = float2(*((&kernelContext_0)->partialAcc_0+at_4), *((&kernelContext_0)->partialAcc_0+(at_4 + 1U)));
+                _S26 = float2(*((&kernelContext_0)->partialAcc_0+at_5), *((&kernelContext_0)->partialAcc_0+(at_5 + 1U)));
             }
             else
             {
                 _S26 = float2(0.0, 0.0);
             }
-            a_3[4U] = _S26;
-            uint s_5 = s0_0 + 5U;
-            uint at_5 = (s_5 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[5U] = _S26;
+            uint s_6 = s0_0 + 6U;
+            uint at_6 = (s_6 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S27;
-            if(s_5 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_6 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S27 = float2(*((&kernelContext_0)->partialAcc_0+at_5), *((&kernelContext_0)->partialAcc_0+(at_5 + 1U)));
+                _S27 = float2(*((&kernelContext_0)->partialAcc_0+at_6), *((&kernelContext_0)->partialAcc_0+(at_6 + 1U)));
             }
             else
             {
                 _S27 = float2(0.0, 0.0);
             }
-            a_3[5U] = _S27;
-            uint s_6 = s0_0 + 6U;
-            uint at_6 = (s_6 * rows_0 + row_0) * p_1->headDim_0 + _S21;
+            a_3[6U] = _S27;
+            uint s_7 = s0_0 + 7U;
+            uint at_7 = (s_7 * rows_0 + row_0) * p_1->headDim_0 + _S20;
             float2 _S28;
-            if(s_6 < ((&kernelContext_0)->p_0->splits_0))
+            if(s_7 < ((&kernelContext_0)->p_0->splits_0))
             {
-                _S28 = float2(*((&kernelContext_0)->partialAcc_0+at_6), *((&kernelContext_0)->partialAcc_0+(at_6 + 1U)));
+                _S28 = float2(*((&kernelContext_0)->partialAcc_0+at_7), *((&kernelContext_0)->partialAcc_0+(at_7 + 1U)));
             }
             else
             {
                 _S28 = float2(0.0, 0.0);
             }
-            a_3[6U] = _S28;
-            uint s_7 = s0_0 + 7U;
-            uint at_7 = (s_7 * rows_0 + row_0) * p_1->headDim_0 + _S21;
-            float2 _S29;
-            if(s_7 < ((&kernelContext_0)->p_0->splits_0))
-            {
-                _S29 = float2(*((&kernelContext_0)->partialAcc_0+at_7), *((&kernelContext_0)->partialAcc_0+(at_7 + 1U)));
-            }
-            else
-            {
-                _S29 = float2(0.0, 0.0);
-            }
-            a_3[7U] = _S29;
+            a_3[7U] = _S28;
             float lo_0;
             float hi_1;
             if(s0_0 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S30 = fma(a_3[0U].y, (*(&kernelContext_0)->ws_0)[s0_0], hi_0);
+                float _S29 = fma(a_3[0U].y, (*(&kernelContext_0)->ws_0)[s0_0], hi_0);
                 lo_0 = fma(a_3[0U].x, (*(&kernelContext_0)->ws_0)[s0_0], w_0);
-                hi_1 = _S30;
+                hi_1 = _S29;
             }
             else
             {
@@ -401,9 +417,9 @@ struct KernelContext_0
             float hi_2;
             if(s_1 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S31 = fma(a_3[1U].y, (*(&kernelContext_0)->ws_0)[s_1], hi_1);
+                float _S30 = fma(a_3[1U].y, (*(&kernelContext_0)->ws_0)[s_1], hi_1);
                 lo_1 = fma(a_3[1U].x, (*(&kernelContext_0)->ws_0)[s_1], lo_0);
-                hi_2 = _S31;
+                hi_2 = _S30;
             }
             else
             {
@@ -414,9 +430,9 @@ struct KernelContext_0
             float hi_3;
             if(s_2 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S32 = fma(a_3[2U].y, (*(&kernelContext_0)->ws_0)[s_2], hi_2);
+                float _S31 = fma(a_3[2U].y, (*(&kernelContext_0)->ws_0)[s_2], hi_2);
                 lo_2 = fma(a_3[2U].x, (*(&kernelContext_0)->ws_0)[s_2], lo_1);
-                hi_3 = _S32;
+                hi_3 = _S31;
             }
             else
             {
@@ -427,9 +443,9 @@ struct KernelContext_0
             float hi_4;
             if(s_3 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S33 = fma(a_3[3U].y, (*(&kernelContext_0)->ws_0)[s_3], hi_3);
+                float _S32 = fma(a_3[3U].y, (*(&kernelContext_0)->ws_0)[s_3], hi_3);
                 lo_3 = fma(a_3[3U].x, (*(&kernelContext_0)->ws_0)[s_3], lo_2);
-                hi_4 = _S33;
+                hi_4 = _S32;
             }
             else
             {
@@ -440,9 +456,9 @@ struct KernelContext_0
             float hi_5;
             if(s_4 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S34 = fma(a_3[4U].y, (*(&kernelContext_0)->ws_0)[s_4], hi_4);
+                float _S33 = fma(a_3[4U].y, (*(&kernelContext_0)->ws_0)[s_4], hi_4);
                 lo_4 = fma(a_3[4U].x, (*(&kernelContext_0)->ws_0)[s_4], lo_3);
-                hi_5 = _S34;
+                hi_5 = _S33;
             }
             else
             {
@@ -453,9 +469,9 @@ struct KernelContext_0
             float hi_6;
             if(s_5 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S35 = fma(a_3[5U].y, (*(&kernelContext_0)->ws_0)[s_5], hi_5);
+                float _S34 = fma(a_3[5U].y, (*(&kernelContext_0)->ws_0)[s_5], hi_5);
                 lo_5 = fma(a_3[5U].x, (*(&kernelContext_0)->ws_0)[s_5], lo_4);
-                hi_6 = _S35;
+                hi_6 = _S34;
             }
             else
             {
@@ -466,9 +482,9 @@ struct KernelContext_0
             float hi_7;
             if(s_6 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S36 = fma(a_3[6U].y, (*(&kernelContext_0)->ws_0)[s_6], hi_6);
+                float _S35 = fma(a_3[6U].y, (*(&kernelContext_0)->ws_0)[s_6], hi_6);
                 lo_6 = fma(a_3[6U].x, (*(&kernelContext_0)->ws_0)[s_6], lo_5);
-                hi_7 = _S36;
+                hi_7 = _S35;
             }
             else
             {
@@ -477,9 +493,9 @@ struct KernelContext_0
             }
             if(s_7 < ((&kernelContext_0)->p_0->splits_0))
             {
-                float _S37 = fma(a_3[7U].y, (*(&kernelContext_0)->ws_0)[s_7], hi_7);
+                float _S36 = fma(a_3[7U].y, (*(&kernelContext_0)->ws_0)[s_7], hi_7);
                 w_0 = fma(a_3[7U].x, (*(&kernelContext_0)->ws_0)[s_7], lo_6);
-                hi_0 = _S37;
+                hi_0 = _S36;
             }
             else
             {
@@ -488,10 +504,10 @@ struct KernelContext_0
             }
             s0_0 = s0_0 + 8U;
         }
-        float hi_8 = hi_0 / _S20;
-        uint _S38 = 2U * pair_0;
-        *((&kernelContext_0)->o_0+(row_0 * p_1->headDim_0 + _S38)) = w_0 / _S20;
-        *((&kernelContext_0)->o_0+(row_0 * p_1->headDim_0 + _S38 + 1U)) = hi_8;
+        float hi_8 = hi_0 / l_0;
+        uint _S37 = 2U * pair_0;
+        *((&kernelContext_0)->o_0+(row_0 * p_1->headDim_0 + _S37)) = w_0 / l_0;
+        *((&kernelContext_0)->o_0+(row_0 * p_1->headDim_0 + _S37 + 1U)) = hi_8;
         pair_0 = pair_0 + 128U;
     }
     return;

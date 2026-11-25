@@ -100,3 +100,11 @@ norm_backward_columns norm_backward_columns.slang norm_backward_columns
 cross_entropy cross_entropy.slang cross_entropy
 optimizer_f32 optimizer_f32.slang optimizer_f32
 optimizer_f16 optimizer_f16.slang optimizer_f16
+attn_bwd_kv_64 attn_bwd_kv_64.slang attn_bwd_kv_64
+attn_bwd_q_64 attn_bwd_q_64.slang attn_bwd_q_64
+attn_bwd_kv_128 attn_bwd_kv_128.slang attn_bwd_kv_128
+attn_bwd_q_128 attn_bwd_q_128.slang attn_bwd_q_128
+attn_bwd_kv_256 attn_bwd_kv_256.slang attn_bwd_kv_256
+attn_bwd_q_256 attn_bwd_q_256.slang attn_bwd_q_256
+attn_bwd_dot attn_bwd_dot_f32.slang attn_bwd_dot
+attn_bwd_dot_h attn_bwd_dot_h.slang attn_bwd_dot_h

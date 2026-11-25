@@ -32,6 +32,7 @@
 [[vk::binding(4, 0)]] RWStructuredBuffer<float> partialML;    // per split and row: m, l (splits > 1)
 [[vk::binding(5, 0)]] RWStructuredBuffer<float> partialAcc;   // per split and row: headDim accumulators
 [[vk::binding(6, 0)]] RWStructuredBuffer<uint> table;        // paged K and V: the sequence's pages
+[[vk::binding(7, 0)]] RWStructuredBuffer<float> lse;         // [heads][queries], when writeLse (1.12.0)
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint BR = 16;
@@ -198,6 +199,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         }
         return;
     }
+    if (p.writeLse != 0 && kk == 0) lse[row] = m + log(l);
     [ForceUnroll]
     for (uint u = 0; u < PPT; u++)
     {

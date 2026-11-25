@@ -450,6 +450,184 @@ abstract class AttentionConformance {
         }
     }
 
+    /**
+     * The training forward pass (1.12.0): each row's log-sum-exp of the scaled scores within its bound of the exact
+     * value from the same half inputs, and, for shapes that already take a flash kernel, the same O bits as without it.
+     */
+    @Test void forwardWritesTheLogSumExp() {
+        eachOutput(a -> {
+            for (var s : new Shape[] {Shape.of(4, 64, 64, 64).asCausal(), Shape.of(3, 37, 50, 40), Shape.of(8, 128, 128, 128).asCausal(),
+                    Shape.of(2, 16, 300, 64).asCausal(), Shape.of(8, 5, 300, 128).withKvHeads(2).asCausal(), Shape.of(2, 33, 70, 256),
+                    Shape.of(4, 1, 3000, 128).asCausal()}) {
+                var r = new SplittableRandom(91);
+                int d = s.headDim(), nq = s.queries(), nk = s.keys(), hpk = s.heads() / s.kvHeads();
+                short[] q = halves(s.qBytes() / 2, 1, r), k = halves(s.kBytes() / 2, 1, r), v = halves(s.vBytes() / 2, 1, r);
+                byte[] withLse, plain, lseBytes;
+                try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(a.output()));
+                     var gl = buffer(4L * s.heads() * nq)) {
+                    try (var e = device.encoder()) {
+                        e.upload(gq, bytes(q)).upload(gk, bytes(k)).upload(gv, bytes(v));
+                        a.encode(e, gq, gk, gv, go, gl, s);
+                        var ro = e.download(go); var rl = e.download(gl);
+                        try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                        withLse = ro.bytes(); lseBytes = rl.bytes();
+                    }
+                    plain = runFused(a, e -> a.encode(e, gq, gk, gv, go, s), go);
+                }
+                if (!AttentionF16.decodes(s)) assertArrayEquals(plain, withLse, "O with and without the log-sum-exp: " + s);
+                var lb = ByteBuffer.wrap(lseBytes).order(ByteOrder.nativeOrder());
+                int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
+                double worst = 0;
+                for (int h = 0; h < s.heads(); h++) for (int i = 0; i < nq; i++) {
+                    int kvh = h / hpk, limit = s.causal() ? i + nk - nq + 1 : nk, qb = (h * nq + i) * d;
+                    double mx = Double.NEGATIVE_INFINITY, maxdS = 0;
+                    double[] sc = new double[limit];
+                    for (int j = 0; j < limit; j++) {
+                        double sum = 0, abs = 0;
+                        for (int t = 0; t < d; t++) { double pr = f(q[qb + t]) * f(k[(kvh * nk + j) * d + t]); sum += pr; abs += Math.abs(pr); }
+                        sc[j] = s.scale() * sum; mx = Math.max(mx, sc[j]); maxdS = Math.max(maxdS, (d + 2) * U * Math.abs(s.scale()) * abs);
+                    }
+                    double sum = 0, dev = 0;
+                    for (int j = 0; j < limit; j++) { sum += Math.exp(sc[j] - mx); dev = Math.max(dev, mx - sc[j]); }
+                    double exact = mx + Math.log(sum);
+                    double bound = 2 * maxdS + U * (Math.abs(exact) + Math.abs(mx)) + (nk + 2 + 2 * blocks) * U + (blocks + 2) * 8 * U
+                            + 2 * (dev + 2 * maxdS) * U + 4 * Math.ulp((float) Math.log(sum));
+                    double got = lb.getFloat(4 * (h * nq + i)), err = Math.abs(got - exact);
+                    assertTrue(err <= bound, "lse[" + h + "][" + i + "] = " + got + ", exact " + exact + ", bound " + bound + " for " + s);
+                    worst = Math.max(worst, err / bound);
+                }
+                System.out.printf("attention log-sum-exp %s %s worst error/bound %.3g (%s)%n", a.output(), s, worst, a.fusedKernel(s));
+            }
+        });
+    }
+
+    /**
+     * The backward pass (1.12.0) after the training forward pass on the GPU: dQ, dK and dV against the exact gradients in
+     * double from the same half inputs, each within a bound that carries the forward pass's errors (O and L) and the
+     * backward's own through every step.
+     */
+    @Test void backwardMatchesTheReference() {
+        eachOutput(a -> {
+            for (var s : new Shape[] {Shape.of(4, 64, 64, 64).asCausal(), Shape.of(3, 37, 50, 40), Shape.of(8, 20, 45, 128).withKvHeads(2).asCausal(),
+                    Shape.of(2, 9, 33, 256), Shape.of(2, 1, 300, 64), Shape.of(2, 30, 30, 2).asCausal(), Shape.of(4, 17, 40, 128).withKvHeads(4).withCacheKeys(48)}) {
+                assertTrue(a.backwardSupports(s), s.toString());
+                double worst = checkBackward(a, s, 95);
+                System.out.printf("attention backward %s O %s worst error/bound %.3g%n", a.output(), s, worst);
+            }
+        });
+    }
+
+    double checkBackward(AttentionF16 a, Shape s, long seed) {
+        var r = new SplittableRandom(seed);
+        int d = s.headDim(), nq = s.queries(), nk = s.keys(), cache = s.cacheKeys(), hpk = s.heads() / s.kvHeads(), R = hpk * nq;
+        short[] q = halves(s.qBytes() / 2, 1, r), k = halves(s.kBytes() / 2, 1, r), v = halves(s.vBytes() / 2, 1, r);
+        int qn = s.heads() * nq * d, kn = s.kvHeads() * cache * d;
+        float[] dO = new float[qn];
+        for (int i = 0; i < qn; i++) dO[i] = (float) r.nextDouble(-1, 1);
+        var out = a.output(); boolean fp32 = out == Precision.FP32;
+        ByteBuffer gq2, gk2, gv2;
+        try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(out));
+             var gl = buffer(4L * s.heads() * nq); var gdo = buffer(4L * qn); var gdq = buffer(4L * qn); var gdk = buffer(4L * kn); var gdv = buffer(4L * kn);
+             var e = device.encoder()) {
+            var db = ByteBuffer.allocate(4 * qn).order(ByteOrder.nativeOrder()); for (float x : dO) db.putFloat(x);
+            e.upload(gq, bytes(q)).upload(gk, bytes(k)).upload(gv, bytes(v)).upload(gdo, db.array()).fill(gdk, 0).fill(gdv, 0);
+            a.encode(e, gq, gk, gv, go, gl, s);
+            a.backward(e, gq, gk, gv, go, gl, gdo, gdq, gdk, gdv, s);
+            var rq = e.download(gdq); var rk = e.download(gdk); var rv = e.download(gdv);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
+            gq2 = ByteBuffer.wrap(rq.bytes()).order(ByteOrder.nativeOrder());
+            gk2 = ByteBuffer.wrap(rk.bytes()).order(ByteOrder.nativeOrder());
+            gv2 = ByteBuffer.wrap(rv.bytes()).order(ByteOrder.nativeOrder());
+        }
+        boolean halfWeights = a.matrixPath(d);
+        int blocks = Math.ceilDiv(nk, AttentionF16.keyBlock(AttentionF16.variant(d))) + 2;
+        double E = 8 * U, scale = s.scale();
+        double[] eK = new double[kn], bK = new double[kn], mK = new double[kn], eV = new double[kn], bV = new double[kn], mV = new double[kn];
+        double worst = 0;
+        double[] sc = new double[nk], sig = new double[nk], pj = new double[nk], dPj = new double[nk], dSj = new double[nk], ddS = new double[nk], dPf = new double[nk];
+        for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int row = 0; row < R; row++) {
+            int h = kvh * hpk + row / nq, i = row % nq, qb = (h * nq + i) * d, limit = s.causal() ? i + nk - nq + 1 : nk;
+            double mx = Double.NEGATIVE_INFINITY, smax = 0;
+            for (int j = 0; j < limit; j++) {
+                double sum = 0, abs = 0;
+                for (int t = 0; t < d; t++) { double pr = f(q[qb + t]) * f(k[(kvh * cache + j) * d + t]); sum += pr; abs += Math.abs(pr); }
+                sc[j] = scale * sum; sig[j] = (d + 2) * U * Math.abs(scale) * abs; mx = Math.max(mx, sc[j]); smax = Math.max(smax, sig[j]);
+            }
+            double total = 0, dev = 0;
+            for (int j = 0; j < limit; j++) { total += Math.exp(sc[j] - mx); dev = Math.max(dev, mx - sc[j]); }
+            double L = mx + Math.log(total);
+            double dL = 2 * smax + U * (Math.abs(L) + Math.abs(mx)) + (nk + 2 + 2 * blocks) * U + (blocks + 2) * E + 2 * (dev + 2 * smax) * U
+                    + 4 * Math.ulp((float) Math.log(total));
+            // the forward pass's O and its error, the exact probabilities
+            double epsMax = 0;
+            double[] eps = new double[limit];
+            for (int j = 0; j < limit; j++) {
+                pj[j] = Math.exp(sc[j] - L);
+                eps[j] = 2 * (mx - sc[j] + 2 * smax) * U + (blocks + 2) * E + blocks * U; epsMax = Math.max(epsMax, eps[j]);
+            }
+            for (int j = 0; j < limit; j++) {
+                dPf[j] = (2 * smax + eps[j] + epsMax) * pj[j] * 1.01 + 0x1p-126;
+                if (halfWeights) dPf[j] += pj[j] * 0x1p-11 * 1.01 + 0x1p-25;
+            }
+            double D = 0, dD = 0, magD = 0;
+            for (int c = 0; c < d; c++) {
+                double o = 0, err = 0, mag = 0;
+                for (int j = 0; j < limit; j++) {
+                    double vv = f(v[(kvh * cache + j) * d + c]);
+                    o += pj[j] * vv; err += dPf[j] * Math.abs(vv); mag += (pj[j] + dPf[j]) * Math.abs(vv);
+                }
+                double dO_ = err + 2 * (nk + 2 + 2 * blocks) * U * mag + 0x1p-126;
+                dO_ += 2 * U * (Math.abs(o) + dO_);
+                if (!fp32) dO_ += (Math.abs(o) + dO_) * 0x1p-11 + 0x1p-25;
+                double g = dO[qb + c];
+                D += g * o; dD += Math.abs(g) * dO_; magD += Math.abs(g * o);
+            }
+            dD += (d + 2) * U * magD;
+            for (int j = 0; j < limit; j++) {
+                double dp = 0, magP = 0;
+                for (int c = 0; c < d; c++) { double t = dO[qb + c] * f(v[(kvh * cache + j) * d + c]); dp += t; magP += Math.abs(t); }
+                double x = sc[j] - L;
+                double eP = sig[j] + dL + U * (Math.abs(sc[j]) + Math.abs(x)) + (8 + 4 * Math.abs(x)) * U;
+                double dPv = pj[j] * eP * 1.01 + 0x1p-126;
+                dPj[j] = dPv;
+                dSj[j] = pj[j] * (dp - D);
+                ddS[j] = dPv * Math.abs(dp - D) + pj[j] * ((d + 2) * U * magP + dD + U * Math.abs(dp - D)) + U * Math.abs(dSj[j]) + 0x1p-126;
+            }
+            // dQ for this row
+            for (int c = 0; c < d; c++) {
+                double exact = 0, err = 0, mag = 0;
+                for (int j = 0; j < limit; j++) {
+                    double kv = f(k[(kvh * cache + j) * d + c]);
+                    exact += dSj[j] * kv; err += ddS[j] * Math.abs(kv); mag += Math.abs(dSj[j] * kv);
+                }
+                exact *= scale;
+                double bound = Math.abs(scale) * (err + (nk + 2) * U * mag) * 1.01 + U * Math.abs(exact) + 0x1p-126;
+                double got = gq2.getFloat(4 * (qb + c)), e = Math.abs(got - exact);
+                assertTrue(e <= bound, "dQ[" + h + "][" + i + "][" + c + "] = " + got + ", exact " + exact + ", bound " + bound + " for " + s);
+                worst = Math.max(worst, e / bound);
+            }
+            // contributions to dK and dV
+            for (int j = 0; j < limit; j++) for (int c = 0; c < d; c++) {
+                int at = (kvh * cache + j) * d + c;
+                double g = dO[qb + c], qq = f(q[qb + c]);
+                eV[at] += pj[j] * g; bV[at] += dPj[j] * Math.abs(g); mV[at] += pj[j] * Math.abs(g);
+                eK[at] += dSj[j] * qq; bK[at] += ddS[j] * Math.abs(qq); mK[at] += Math.abs(dSj[j] * qq);
+            }
+        }
+        for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int j = 0; j < nk; j++) for (int c = 0; c < d; c++) {
+            int at = (kvh * cache + j) * d + c;
+            double exK = scale * eK[at], boundK = Math.abs(scale) * (bK[at] + (R + 2) * U * mK[at]) * 1.01 + U * Math.abs(exK) + 0x1p-126;
+            double boundV = (bV[at] + (R + 2) * U * mV[at]) * 1.01 + 0x1p-126;
+            double gotK = gk2.getFloat(4 * at), gotV = gv2.getFloat(4 * at);
+            assertTrue(Math.abs(gotK - exK) <= boundK, "dK[" + kvh + "][" + j + "][" + c + "] = " + gotK + ", exact " + exK + ", bound " + boundK + " for " + s);
+            assertTrue(Math.abs(gotV - eV[at]) <= boundV, "dV[" + kvh + "][" + j + "][" + c + "] = " + gotV + ", exact " + eV[at] + ", bound " + boundV + " for " + s);
+            worst = Math.max(worst, Math.max(Math.abs(gotK - exK) / boundK, Math.abs(gotV - eV[at]) / boundV));
+        }
+        for (int kvh = 0; kvh < s.kvHeads(); kvh++) for (int j = nk; j < cache; j++) for (int c = 0; c < d; c++)
+            assertEquals(0f, gk2.getFloat(4 * ((kvh * cache + j) * d + c)), "dK past the keys is not written");
+        return worst;
+    }
+
     @Test void fusedRefusesWhatItCannotTake() {
         eachOutput(a -> {
             assertFalse(a.fusedSupports(Shape.of(1, 1, 1, 7)));

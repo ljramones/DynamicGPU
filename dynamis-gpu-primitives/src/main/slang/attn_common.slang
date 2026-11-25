@@ -21,6 +21,8 @@ struct AttnParams
     uint batch;       // 0: one sequence; else batched decode (1.11.1): `batch` paged sequences, group x the
                       // sequence. The table starts with a header of (tokens, page offset) per sequence; sequence b's
                       // pages follow at 2 batch + its offset. Q and O are [batch][heads][queries][headDim].
+    uint writeLse;    // 1.12.0: the flash kernels and the combine write each row's log-sum-exp of the scaled scores
+                      // (lse[row] = m + log l), which the backward pass needs; not the decode kernels
 };
 
 // The word (pair of halves) index of pair pr of key `key` of KV head kvHead, contiguous or through the page table
