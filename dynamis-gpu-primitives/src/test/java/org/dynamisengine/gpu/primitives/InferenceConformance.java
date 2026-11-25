@@ -341,6 +341,60 @@ abstract class InferenceConformance {
     // --- activations and log-sum-exp -------------------------------------------------------------------------------
 
     /**
+     * Optimizer (1.12.0): three AdamW and SGD steps on the GPU bit for bit the Java references, for FP32 and FP16
+     * gradients, with and without a GPU-side gradient scale, and the FP16 copy of the parameters (odd n: the last word).
+     * Values stay normal (Apple GPUs flush subnormals).
+     */
+    @Test void optimizerMatchesItsReferenceBitForBit() {
+        int n = 100003;
+        boolean fp16 = device.capabilities().dataTypes().contains(GpuCapabilities.FP16);
+        try (var opt = Optimizer.create(device)) {
+            for (var gt : fp16 ? Precision.values() : new Precision[] {Precision.FP32}) for (int kind = 0; kind < 3; kind++) for (boolean scaled : new boolean[] {false, true}) {
+                var r = new SplittableRandom(90 + kind * 4 + (scaled ? 1 : 0) + gt.ordinal() * 16);
+                float[] p = normals(n, r, 2), m = new float[n], v = new float[n];
+                float scale = scaled ? 0.37f : 1f;
+                var adam = Optimizer.AdamW.of(1e-3f, 0.01f);
+                var sgd = new Optimizer.Sgd(0.05f, 0.9f, kind == 1 ? 0f : 1e-4f, kind == 2);
+                try (var gp = buffer(4L * n); var gg = buffer((long) gt.bytes() * n); var gm = buffer(4L * n); var gv = buffer(4L * n);
+                     var gs = buffer(4); var gsh = buffer(2L * n + 2)) {
+                    run(e -> { e.upload(gp, encode(p, Precision.FP32)).fill(gm, 0).fill(gv, 0).upload(gs, encode(new float[] {scale}, Precision.FP32)); return e.download(gs); });
+                    for (int step = 1; step <= 3; step++) {
+                        float[] g = normals(n, r, 1);
+                        if (gt == Precision.FP16) for (int i = 0; i < n; i++) g[i] = Float.float16ToFloat(Float.floatToFloat16(g[i]));
+                        if (kind == 0) Optimizer.adamWReference(p, g, m, v, scale, adam, step); else Optimizer.sgdReference(p, g, m, scale, sgd);
+                        final int st = step;
+                        byte[][] got = new byte[4][];
+                        try (var e = device.encoder()) {
+                            e.upload(gg, encode(g, gt));
+                            if (kind == 0) opt.adamW(e, gp, gg, gt, gm, gv, scaled ? gs : null, gsh, n, adam, st);
+                            else opt.sgd(e, gp, gg, gt, gm, scaled ? gs : null, gsh, n, sgd);
+                            var a = e.download(gp); var b = e.download(gm); var c = e.download(gv); var d = e.download(gsh);
+                            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                            got[0] = a.bytes(); got[1] = b.bytes(); got[2] = c.bytes(); got[3] = d.bytes();
+                        }
+                        float[] P = decode(got[0], Precision.FP32, n), M = decode(got[1], Precision.FP32, n), V = decode(got[2], Precision.FP32, n);
+                        var sh = ByteBuffer.wrap(got[3]).order(ByteOrder.nativeOrder());
+                        String what = (kind == 0 ? "AdamW" : kind == 1 ? "SGD" : "SGD nesterov") + " " + gt + " grads" + (scaled ? ", scaled" : "") + ", step " + step;
+                        for (int i = 0; i < n; i++) {
+                            assertEquals(Float.floatToIntBits(p[i]), Float.floatToIntBits(P[i]), what + ": p[" + i + "]");
+                            assertEquals(Float.floatToIntBits(m[i]), Float.floatToIntBits(M[i]), what + ": m[" + i + "]");
+                            if (kind == 0) assertEquals(Float.floatToIntBits(v[i]), Float.floatToIntBits(V[i]), what + ": v[" + i + "]");
+                            assertEquals(Float.floatToFloat16(p[i]), sh.getShort(2 * i), what + ": the FP16 copy of p[" + i + "]");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Values of magnitude in [2^-8 spread, spread], random signs: normal through an optimizer's arithmetic. */
+    static float[] normals(int n, SplittableRandom r, double spread) {
+        float[] v = new float[n];
+        for (int i = 0; i < n; i++) v[i] = (float) ((r.nextBoolean() ? 1 : -1) * spread * (0x1p-8 + r.nextDouble() * (1 - 0x1p-8)));
+        return v;
+    }
+
+    /**
      * CrossEntropy (1.12.0): the loss of each row and the gradient, against double from the same logits, within the
      * log-sum-exp's bound carried through; ignored rows exactly 0; in place and loss-only; a bad target fails.
      */

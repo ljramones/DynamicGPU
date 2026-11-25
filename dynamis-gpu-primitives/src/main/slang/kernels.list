@@ -98,3 +98,5 @@ norm_backward_f32 norm_backward_f32.slang norm_backward_f32
 norm_backward_f16 norm_backward_f16.slang norm_backward_f16
 norm_backward_columns norm_backward_columns.slang norm_backward_columns
 cross_entropy cross_entropy.slang cross_entropy
+optimizer_f32 optimizer_f32.slang optimizer_f32
+optimizer_f16 optimizer_f16.slang optimizer_f16
