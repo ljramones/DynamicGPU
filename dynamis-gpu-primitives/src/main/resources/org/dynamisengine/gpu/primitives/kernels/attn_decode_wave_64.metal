@@ -4,6 +4,8 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant uint fc_USE_LENGTHS_0 [[function_constant(1)]];
+constant uint USE_LENGTHS_0 = is_function_constant_defined(fc_USE_LENGTHS_0) ? fc_USE_LENGTHS_0 : 1U;
 constant uint fc_ROW_TIER_0 [[function_constant(0)]];
 constant uint ROW_TIER_0 = is_function_constant_defined(fc_ROW_TIER_0) ? fc_ROW_TIER_0 : 8U;
 uint attnKeyEnd_0(uint device* lens_0, uint lengthGroup_0, uint firstHead_0, uint lastHead_0, uint end_0)
@@ -239,225 +241,231 @@ struct KernelContext_0
     uint _S11 = (&kernelContext_0)->p_0->headDim_0 / 2U;
     uint _S12 = keys_1 - (&kernelContext_0)->p_0->queries_0;
     uint kStart_0 = split_0 * (&kernelContext_0)->p_0->splitKeys_0;
-    uint _S13 = kvHead_0 * hpk_0;
-    uint firstHead_1 = seq_0 * p_1->heads_0 + _S13;
-    uint kEnd_0 = attnKeyEnd_0((&kernelContext_0)->lens_1, (&kernelContext_0)->p_0->lengthGroup_1, firstHead_1, firstHead_1 + hpk_0 - 1U, min(keys_1, kStart_0 + (&kernelContext_0)->p_0->splitKeys_0));
-    uint _S14;
+    uint _S13 = min(keys_1, kStart_0 + (&kernelContext_0)->p_0->splitKeys_0);
+    uint _S14 = kvHead_0 * hpk_0;
+    uint firstHead_1 = seq_0 * p_1->heads_0 + _S14;
+    bool _S15 = USE_LENGTHS_0 != 0U;
+    uint kEnd_0;
+    if(_S15)
+    {
+        uint _S16 = attnKeyEnd_0((&kernelContext_0)->lens_1, (&kernelContext_0)->p_0->lengthGroup_1, firstHead_1, firstHead_1 + hpk_0 - 1U, _S13);
+        kEnd_0 = _S16;
+    }
+    else
+    {
+        kEnd_0 = _S13;
+    }
+    uint _S17;
     if(kEnd_0 > kStart_0)
     {
-        _S14 = kEnd_0 - kStart_0;
+        _S17 = kEnd_0 - kStart_0;
     }
     else
     {
-        _S14 = 0U;
+        _S17 = 0U;
     }
-    uint _S15 = 1024U / max(_S8, 1U);
-    uint _S16 = max(128U, _S15 / 128U * 128U);
+    uint _S18 = 1024U / max(_S8, 1U);
+    uint _S19 = max(128U, _S18 / 128U * 128U);
     thread array<uint, int(8)> limit_0;
     uint e_1;
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
+    bool visible_0;
+    if(_S15)
     {
-        uint _S17 = 0U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S17 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[0U] = e_1;
-    bool _S18 = 0U < _S8;
-    bool _S19;
-    if(_S18)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S20 = limit_0[0U];
-        uint _S21 = firstHead_1 / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[0U] = min(_S20, *((&kernelContext_0)->lens_1+_S21));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S22 = 1U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S22 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[1U] = e_1;
-    bool _S23 = 1U < _S8;
-    if(_S23)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S24 = limit_0[1U];
-        uint _S25 = 1U / (&kernelContext_0)->p_0->queries_0;
-        uint _S26 = (firstHead_1 + _S25) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[1U] = min(_S24, *((&kernelContext_0)->lens_1+_S26));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S27 = 2U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S27 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[2U] = e_1;
-    bool _S28 = 2U < _S8;
-    if(_S28)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S29 = limit_0[2U];
-        uint _S30 = 2U / (&kernelContext_0)->p_0->queries_0;
-        uint _S31 = (firstHead_1 + _S30) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[2U] = min(_S29, *((&kernelContext_0)->lens_1+_S31));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S32 = 3U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S32 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[3U] = e_1;
-    bool _S33 = 3U < _S8;
-    if(_S33)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S34 = limit_0[3U];
-        uint _S35 = 3U / (&kernelContext_0)->p_0->queries_0;
-        uint _S36 = (firstHead_1 + _S35) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[3U] = min(_S34, *((&kernelContext_0)->lens_1+_S36));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S37 = 4U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S37 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[4U] = e_1;
-    bool _S38 = 4U < _S8;
-    if(_S38)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S39 = limit_0[4U];
-        uint _S40 = 4U / (&kernelContext_0)->p_0->queries_0;
-        uint _S41 = (firstHead_1 + _S40) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[4U] = min(_S39, *((&kernelContext_0)->lens_1+_S41));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S42 = 5U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S42 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[5U] = e_1;
-    bool _S43 = 5U < _S8;
-    if(_S43)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S44 = limit_0[5U];
-        uint _S45 = 5U / (&kernelContext_0)->p_0->queries_0;
-        uint _S46 = (firstHead_1 + _S45) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[5U] = min(_S44, *((&kernelContext_0)->lens_1+_S46));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S47 = 6U % (&kernelContext_0)->p_0->queries_0;
-        e_1 = _S47 + _S12 + 1U;
-    }
-    else
-    {
-        e_1 = keys_1;
-    }
-    limit_0[6U] = e_1;
-    bool _S48 = 6U < _S8;
-    if(_S48)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S49 = limit_0[6U];
-        uint _S50 = 6U / (&kernelContext_0)->p_0->queries_0;
-        uint _S51 = (firstHead_1 + _S50) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[6U] = min(_S49, *((&kernelContext_0)->lens_1+_S51));
-    }
-    if(((&kernelContext_0)->p_0->causal_0) != 0U)
-    {
-        uint _S52 = 7U % (&kernelContext_0)->p_0->queries_0;
-        keys_1 = _S52 + _S12 + 1U;
-    }
-    limit_0[7U] = keys_1;
-    bool _S53 = 7U < _S8;
-    if(_S53)
-    {
-        _S19 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
-    }
-    else
-    {
-        _S19 = false;
-    }
-    if(_S19)
-    {
-        uint _S54 = limit_0[7U];
-        uint _S55 = 7U / (&kernelContext_0)->p_0->queries_0;
-        uint _S56 = (firstHead_1 + _S55) / (&kernelContext_0)->p_0->lengthGroup_1;
-        limit_0[7U] = min(_S54, *((&kernelContext_0)->lens_1+_S56));
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S20 = 0U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S20 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[0U] = e_1;
+        if(0U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S21 = limit_0[0U];
+            uint _S22 = firstHead_1 / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[0U] = min(_S21, *((&kernelContext_0)->lens_1+_S22));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S23 = 1U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S23 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[1U] = e_1;
+        if(1U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S24 = limit_0[1U];
+            uint _S25 = 1U / (&kernelContext_0)->p_0->queries_0;
+            uint _S26 = (firstHead_1 + _S25) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[1U] = min(_S24, *((&kernelContext_0)->lens_1+_S26));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S27 = 2U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S27 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[2U] = e_1;
+        if(2U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S28 = limit_0[2U];
+            uint _S29 = 2U / (&kernelContext_0)->p_0->queries_0;
+            uint _S30 = (firstHead_1 + _S29) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[2U] = min(_S28, *((&kernelContext_0)->lens_1+_S30));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S31 = 3U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S31 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[3U] = e_1;
+        if(3U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S32 = limit_0[3U];
+            uint _S33 = 3U / (&kernelContext_0)->p_0->queries_0;
+            uint _S34 = (firstHead_1 + _S33) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[3U] = min(_S32, *((&kernelContext_0)->lens_1+_S34));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S35 = 4U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S35 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[4U] = e_1;
+        if(4U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S36 = limit_0[4U];
+            uint _S37 = 4U / (&kernelContext_0)->p_0->queries_0;
+            uint _S38 = (firstHead_1 + _S37) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[4U] = min(_S36, *((&kernelContext_0)->lens_1+_S38));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S39 = 5U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S39 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[5U] = e_1;
+        if(5U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S40 = limit_0[5U];
+            uint _S41 = 5U / (&kernelContext_0)->p_0->queries_0;
+            uint _S42 = (firstHead_1 + _S41) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[5U] = min(_S40, *((&kernelContext_0)->lens_1+_S42));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S43 = 6U % (&kernelContext_0)->p_0->queries_0;
+            e_1 = _S43 + _S12 + 1U;
+        }
+        else
+        {
+            e_1 = keys_1;
+        }
+        limit_0[6U] = e_1;
+        if(6U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S44 = limit_0[6U];
+            uint _S45 = 6U / (&kernelContext_0)->p_0->queries_0;
+            uint _S46 = (firstHead_1 + _S45) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[6U] = min(_S44, *((&kernelContext_0)->lens_1+_S46));
+        }
+        if(((&kernelContext_0)->p_0->causal_0) != 0U)
+        {
+            uint _S47 = 7U % (&kernelContext_0)->p_0->queries_0;
+            keys_1 = _S47 + _S12 + 1U;
+        }
+        limit_0[7U] = keys_1;
+        if(7U < _S8)
+        {
+            visible_0 = ((&kernelContext_0)->p_0->lengthGroup_1) != 0U;
+        }
+        else
+        {
+            visible_0 = false;
+        }
+        if(visible_0)
+        {
+            uint _S48 = limit_0[7U];
+            uint _S49 = 7U / (&kernelContext_0)->p_0->queries_0;
+            uint _S50 = (firstHead_1 + _S49) / (&kernelContext_0)->p_0->lengthGroup_1;
+            limit_0[7U] = min(_S48, *((&kernelContext_0)->lens_1+_S50));
+        }
     }
     if(t_0 == 0U)
     {
@@ -483,16 +491,16 @@ struct KernelContext_0
         uint pr_0 = e_1 % 32U;
         if(r_1 < _S8)
         {
-            _S19 = pr_0 < _S11;
+            visible_0 = pr_0 < _S11;
         }
         else
         {
-            _S19 = false;
+            visible_0 = false;
         }
-        if(_S19)
+        if(visible_0)
         {
-            uint _S57 = r_1 / (&kernelContext_0)->p_0->queries_0;
-            uint h_3 = _S13 + _S57;
+            uint _S51 = r_1 / (&kernelContext_0)->p_0->queries_0;
+            uint h_3 = _S14 + _S51;
             uint i_1 = r_1 % (&kernelContext_0)->p_0->queries_0;
             w_2 = *((&kernelContext_0)->q_0+((_S9 + h_3 * (&kernelContext_0)->p_0->queries_0 + i_1) * _S11 + pr_0));
         }
@@ -504,21 +512,21 @@ struct KernelContext_0
         e_1 = e_1 + 128U;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint _S58 = simd_sum(1U);
+    uint _S52 = simd_sum(1U);
     uint lane_0 = simd_prefix_exclusive_sum(1U);
-    bool _S59 = lane_0 == 0U;
-    if(_S59)
+    bool _S53 = lane_0 == 0U;
+    if(_S53)
     {
-        uint _S60 = atomic_fetch_add_explicit(((atomic_uint threadgroup*)((&kernelContext_0)->waves_0)), 1U, memory_order_relaxed);
-        w_2 = _S60;
+        uint _S54 = atomic_fetch_add_explicit(((atomic_uint threadgroup*)((&kernelContext_0)->waves_0)), 1U, memory_order_relaxed);
+        w_2 = _S54;
     }
     else
     {
         w_2 = 0U;
     }
-    uint _S61 = simd_sum(w_2);
-    uint _S62 = t_0 % 32U;
-    uint _S63 = t_0 / 32U;
+    uint _S55 = simd_sum(w_2);
+    uint _S56 = t_0 % 32U;
+    uint _S57 = t_0 / 32U;
     thread array<float, int(8)> lo_1;
     thread array<float, int(8)> hi_1;
     float w_3;
@@ -550,6 +558,12 @@ struct KernelContext_0
         {
             break;
         }
+        int _S58;
+        int _S59;
+        int _S60;
+        int _S61;
+        int _S62;
+        int _S63;
         int _S64;
         int _S65;
         int _S66;
@@ -560,12 +574,6 @@ struct KernelContext_0
         int _S71;
         int _S72;
         int _S73;
-        int _S74;
-        int _S75;
-        int _S76;
-        int _S77;
-        int _S78;
-        int _S79;
         uint kw_0;
         uint kw_1;
         uint kw_2;
@@ -573,11 +581,11 @@ struct KernelContext_0
         uint kw_4;
         uint kw_5;
         uint p0_0;
-        uint _S80 = min(_S16, kEnd_0 - c0_0);
+        uint _S74 = min(_S19, kEnd_0 - c0_0);
         uint j_0 = t_0;
         for(;;)
         {
-            if(j_0 < _S80)
+            if(j_0 < _S74)
             {
             }
             else
@@ -591,10 +599,10 @@ struct KernelContext_0
             }
             else
             {
-                uint _S81 = key_0 / (&kernelContext_0)->p_0->pageSize_0;
-                uint _S82 = (*((&kernelContext_0)->table_0+(r_0 + _S81)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                uint _S83 = key_0 % (&kernelContext_0)->p_0->pageSize_0;
-                keys_1 = (_S82 + _S83) * _S11;
+                uint _S75 = key_0 / (&kernelContext_0)->p_0->pageSize_0;
+                uint _S76 = (*((&kernelContext_0)->table_0+(r_0 + _S75)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                uint _S77 = key_0 % (&kernelContext_0)->p_0->pageSize_0;
+                keys_1 = (_S76 + _S77) * _S11;
             }
             thread array<float, int(8)> s_0;
             s_0[0U] = 0.0;
@@ -623,39 +631,39 @@ struct KernelContext_0
                 {
                     kw_5 = 0U;
                 }
-                float _S84 = attnLo_0(kw_5);
-                float _S85 = attnHi_0(kw_5);
+                float _S78 = attnLo_0(kw_5);
+                float _S79 = attnHi_0(kw_5);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[p0_0]), _S84, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[p0_0]), _S78, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S84, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S78, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S84, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S78, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S84, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S78, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S84, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S78, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S84, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S78, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S84, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S78, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S84, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S79, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S78, s_0[7U]));
                 }
                 uint pr_1 = p0_0 + 1U;
                 if(pr_1 < _S11)
@@ -666,39 +674,39 @@ struct KernelContext_0
                 {
                     kw_4 = 0U;
                 }
-                float _S86 = attnLo_0(kw_4);
-                float _S87 = attnHi_0(kw_4);
+                float _S80 = attnLo_0(kw_4);
+                float _S81 = attnHi_0(kw_4);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_1]), _S86, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_1]), _S80, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S86, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S80, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S86, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S80, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S86, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S80, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S86, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S80, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S86, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S80, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S86, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S80, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S86, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S81, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S80, s_0[7U]));
                 }
                 uint pr_2 = p0_0 + 2U;
                 if(pr_2 < _S11)
@@ -709,39 +717,39 @@ struct KernelContext_0
                 {
                     kw_3 = 0U;
                 }
-                float _S88 = attnLo_0(kw_3);
-                float _S89 = attnHi_0(kw_3);
+                float _S82 = attnLo_0(kw_3);
+                float _S83 = attnHi_0(kw_3);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_2]), _S88, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_2]), _S82, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S88, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S82, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S88, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S82, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S88, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S82, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S88, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S82, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S88, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S82, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S88, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S82, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S88, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S83, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S82, s_0[7U]));
                 }
                 uint pr_3 = p0_0 + 3U;
                 if(pr_3 < _S11)
@@ -752,39 +760,39 @@ struct KernelContext_0
                 {
                     kw_2 = 0U;
                 }
-                float _S90 = attnLo_0(kw_2);
-                float _S91 = attnHi_0(kw_2);
+                float _S84 = attnLo_0(kw_2);
+                float _S85 = attnHi_0(kw_2);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_3]), _S90, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_3]), _S84, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S90, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S84, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S90, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S84, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S90, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S84, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S90, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S84, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S90, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S84, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S90, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S84, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S90, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S85, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S84, s_0[7U]));
                 }
                 uint pr_4 = p0_0 + 4U;
                 if(pr_4 < _S11)
@@ -795,39 +803,39 @@ struct KernelContext_0
                 {
                     kw_1 = 0U;
                 }
-                float _S92 = attnLo_0(kw_1);
-                float _S93 = attnHi_0(kw_1);
+                float _S86 = attnLo_0(kw_1);
+                float _S87 = attnHi_0(kw_1);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_4]), _S92, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_4]), _S86, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S92, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S86, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S92, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S86, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S92, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S86, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S92, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S86, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S92, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S86, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S92, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S86, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S92, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S87, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S86, s_0[7U]));
                 }
                 uint pr_5 = p0_0 + 5U;
                 if(pr_5 < _S11)
@@ -838,39 +846,39 @@ struct KernelContext_0
                 {
                     kw_0 = 0U;
                 }
-                float _S94 = attnLo_0(kw_0);
-                float _S95 = attnHi_0(kw_0);
+                float _S88 = attnLo_0(kw_0);
+                float _S89 = attnHi_0(kw_0);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_5]), _S94, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_5]), _S88, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S94, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S88, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S94, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S88, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S94, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S88, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S94, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S88, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S94, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S88, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S94, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S88, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S95, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S94, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S89, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S88, s_0[7U]));
                 }
                 uint pr_6 = p0_0 + 6U;
                 uint kw_6;
@@ -882,39 +890,39 @@ struct KernelContext_0
                 {
                     kw_6 = 0U;
                 }
-                float _S96 = attnLo_0(kw_6);
-                float _S97 = attnHi_0(kw_6);
+                float _S90 = attnLo_0(kw_6);
+                float _S91 = attnHi_0(kw_6);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_6]), _S96, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_6]), _S90, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S96, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S90, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S96, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S90, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S96, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S90, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S96, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S90, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S96, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S90, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S96, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S90, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S97, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S96, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S91, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S90, s_0[7U]));
                 }
                 uint pr_7 = p0_0 + 7U;
                 uint kw_7;
@@ -926,39 +934,39 @@ struct KernelContext_0
                 {
                     kw_7 = 0U;
                 }
-                float _S98 = attnLo_0(kw_7);
-                float _S99 = attnHi_0(kw_7);
+                float _S92 = attnLo_0(kw_7);
+                float _S93 = attnHi_0(kw_7);
                 if(0U < ROW_TIER_0)
                 {
-                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_7]), _S98, s_0[0U]));
+                    s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_7]), _S92, s_0[0U]));
                 }
                 if(1U < ROW_TIER_0)
                 {
-                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S98, s_0[1U]));
+                    s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S92, s_0[1U]));
                 }
                 if(2U < ROW_TIER_0)
                 {
-                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S98, s_0[2U]));
+                    s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S92, s_0[2U]));
                 }
                 if(3U < ROW_TIER_0)
                 {
-                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S98, s_0[3U]));
+                    s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S92, s_0[3U]));
                 }
                 if(4U < ROW_TIER_0)
                 {
-                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S98, s_0[4U]));
+                    s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S92, s_0[4U]));
                 }
                 if(5U < ROW_TIER_0)
                 {
-                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S98, s_0[5U]));
+                    s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S92, s_0[5U]));
                 }
                 if(6U < ROW_TIER_0)
                 {
-                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S98, s_0[6U]));
+                    s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S92, s_0[6U]));
                 }
                 if(7U < ROW_TIER_0)
                 {
-                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S99, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S98, s_0[7U]));
+                    s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S93, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S92, s_0[7U]));
                 }
                 p0_0 = p0_0 + 8U;
             }
@@ -970,10 +978,26 @@ struct KernelContext_0
                     {
                         if(0U >= _S8)
                         {
-                            _S79 = int(2);
+                            _S73 = int(2);
                             break;
                         }
-                        if(key_0 < limit_0[0U])
+                        if(USE_LENGTHS_0 != 0U)
+                        {
+                            visible_0 = key_0 < limit_0[0U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S94 = 0U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S94 + _S12);
+                            }
+                        }
+                        if(visible_0)
                         {
                             m_0 = s_0[0U] * (&kernelContext_0)->p_0->scale_0;
                         }
@@ -982,105 +1006,6 @@ struct KernelContext_0
                             m_0 = dg_negative_infinity_0();
                         }
                         (*(&kernelContext_0)->ss_0)[j_0] = m_0;
-                        _S79 = int(4);
-                        break;
-                    }
-                    if(_S79 != int(4))
-                    {
-                        _S78 = _S79;
-                        break;
-                    }
-                    _S78 = int(3);
-                    break;
-                }
-                if(_S78 != int(3))
-                {
-                    break;
-                }
-                for(;;)
-                {
-                    for(;;)
-                    {
-                        if(1U >= _S8)
-                        {
-                            _S77 = int(2);
-                            break;
-                        }
-                        if(key_0 < limit_0[1U])
-                        {
-                            m_0 = s_0[1U] * (&kernelContext_0)->p_0->scale_0;
-                        }
-                        else
-                        {
-                            m_0 = dg_negative_infinity_0();
-                        }
-                        (*(&kernelContext_0)->ss_0)[_S16 + j_0] = m_0;
-                        _S77 = int(4);
-                        break;
-                    }
-                    if(_S77 != int(4))
-                    {
-                        _S76 = _S77;
-                        break;
-                    }
-                    _S76 = int(3);
-                    break;
-                }
-                if(_S76 != int(3))
-                {
-                    break;
-                }
-                for(;;)
-                {
-                    for(;;)
-                    {
-                        if(2U >= _S8)
-                        {
-                            _S75 = int(2);
-                            break;
-                        }
-                        if(key_0 < limit_0[2U])
-                        {
-                            m_0 = s_0[2U] * (&kernelContext_0)->p_0->scale_0;
-                        }
-                        else
-                        {
-                            m_0 = dg_negative_infinity_0();
-                        }
-                        (*(&kernelContext_0)->ss_0)[2U * _S16 + j_0] = m_0;
-                        _S75 = int(4);
-                        break;
-                    }
-                    if(_S75 != int(4))
-                    {
-                        _S74 = _S75;
-                        break;
-                    }
-                    _S74 = int(3);
-                    break;
-                }
-                if(_S74 != int(3))
-                {
-                    break;
-                }
-                for(;;)
-                {
-                    for(;;)
-                    {
-                        if(3U >= _S8)
-                        {
-                            _S73 = int(2);
-                            break;
-                        }
-                        if(key_0 < limit_0[3U])
-                        {
-                            m_0 = s_0[3U] * (&kernelContext_0)->p_0->scale_0;
-                        }
-                        else
-                        {
-                            m_0 = dg_negative_infinity_0();
-                        }
-                        (*(&kernelContext_0)->ss_0)[3U * _S16 + j_0] = m_0;
                         _S73 = int(4);
                         break;
                     }
@@ -1100,20 +1025,36 @@ struct KernelContext_0
                 {
                     for(;;)
                     {
-                        if(4U >= _S8)
+                        if(1U >= _S8)
                         {
                             _S71 = int(2);
                             break;
                         }
-                        if(key_0 < limit_0[4U])
+                        if(USE_LENGTHS_0 != 0U)
                         {
-                            m_0 = s_0[4U] * (&kernelContext_0)->p_0->scale_0;
+                            visible_0 = key_0 < limit_0[1U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S95 = 1U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S95 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[1U] * (&kernelContext_0)->p_0->scale_0;
                         }
                         else
                         {
                             m_0 = dg_negative_infinity_0();
                         }
-                        (*(&kernelContext_0)->ss_0)[4U * _S16 + j_0] = m_0;
+                        (*(&kernelContext_0)->ss_0)[_S19 + j_0] = m_0;
                         _S71 = int(4);
                         break;
                     }
@@ -1133,20 +1074,36 @@ struct KernelContext_0
                 {
                     for(;;)
                     {
-                        if(5U >= _S8)
+                        if(2U >= _S8)
                         {
                             _S69 = int(2);
                             break;
                         }
-                        if(key_0 < limit_0[5U])
+                        if(USE_LENGTHS_0 != 0U)
                         {
-                            m_0 = s_0[5U] * (&kernelContext_0)->p_0->scale_0;
+                            visible_0 = key_0 < limit_0[2U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S96 = 2U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S96 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[2U] * (&kernelContext_0)->p_0->scale_0;
                         }
                         else
                         {
                             m_0 = dg_negative_infinity_0();
                         }
-                        (*(&kernelContext_0)->ss_0)[5U * _S16 + j_0] = m_0;
+                        (*(&kernelContext_0)->ss_0)[2U * _S19 + j_0] = m_0;
                         _S69 = int(4);
                         break;
                     }
@@ -1166,20 +1123,36 @@ struct KernelContext_0
                 {
                     for(;;)
                     {
-                        if(6U >= _S8)
+                        if(3U >= _S8)
                         {
                             _S67 = int(2);
                             break;
                         }
-                        if(key_0 < limit_0[6U])
+                        if(USE_LENGTHS_0 != 0U)
                         {
-                            m_0 = s_0[6U] * (&kernelContext_0)->p_0->scale_0;
+                            visible_0 = key_0 < limit_0[3U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S97 = 3U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S97 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[3U] * (&kernelContext_0)->p_0->scale_0;
                         }
                         else
                         {
                             m_0 = dg_negative_infinity_0();
                         }
-                        (*(&kernelContext_0)->ss_0)[6U * _S16 + j_0] = m_0;
+                        (*(&kernelContext_0)->ss_0)[3U * _S19 + j_0] = m_0;
                         _S67 = int(4);
                         break;
                     }
@@ -1199,20 +1172,36 @@ struct KernelContext_0
                 {
                     for(;;)
                     {
-                        if(7U >= _S8)
+                        if(4U >= _S8)
                         {
                             _S65 = int(2);
                             break;
                         }
-                        if(key_0 < limit_0[7U])
+                        if(USE_LENGTHS_0 != 0U)
                         {
-                            m_0 = s_0[7U] * (&kernelContext_0)->p_0->scale_0;
+                            visible_0 = key_0 < limit_0[4U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S98 = 4U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S98 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[4U] * (&kernelContext_0)->p_0->scale_0;
                         }
                         else
                         {
                             m_0 = dg_negative_infinity_0();
                         }
-                        (*(&kernelContext_0)->ss_0)[7U * _S16 + j_0] = m_0;
+                        (*(&kernelContext_0)->ss_0)[4U * _S19 + j_0] = m_0;
                         _S65 = int(4);
                         break;
                     }
@@ -1228,12 +1217,159 @@ struct KernelContext_0
                 {
                     break;
                 }
+                for(;;)
+                {
+                    for(;;)
+                    {
+                        if(5U >= _S8)
+                        {
+                            _S63 = int(2);
+                            break;
+                        }
+                        if(USE_LENGTHS_0 != 0U)
+                        {
+                            visible_0 = key_0 < limit_0[5U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S99 = 5U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S99 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[5U] * (&kernelContext_0)->p_0->scale_0;
+                        }
+                        else
+                        {
+                            m_0 = dg_negative_infinity_0();
+                        }
+                        (*(&kernelContext_0)->ss_0)[5U * _S19 + j_0] = m_0;
+                        _S63 = int(4);
+                        break;
+                    }
+                    if(_S63 != int(4))
+                    {
+                        _S62 = _S63;
+                        break;
+                    }
+                    _S62 = int(3);
+                    break;
+                }
+                if(_S62 != int(3))
+                {
+                    break;
+                }
+                for(;;)
+                {
+                    for(;;)
+                    {
+                        if(6U >= _S8)
+                        {
+                            _S61 = int(2);
+                            break;
+                        }
+                        if(USE_LENGTHS_0 != 0U)
+                        {
+                            visible_0 = key_0 < limit_0[6U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S100 = 6U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S100 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[6U] * (&kernelContext_0)->p_0->scale_0;
+                        }
+                        else
+                        {
+                            m_0 = dg_negative_infinity_0();
+                        }
+                        (*(&kernelContext_0)->ss_0)[6U * _S19 + j_0] = m_0;
+                        _S61 = int(4);
+                        break;
+                    }
+                    if(_S61 != int(4))
+                    {
+                        _S60 = _S61;
+                        break;
+                    }
+                    _S60 = int(3);
+                    break;
+                }
+                if(_S60 != int(3))
+                {
+                    break;
+                }
+                for(;;)
+                {
+                    for(;;)
+                    {
+                        if(7U >= _S8)
+                        {
+                            _S59 = int(2);
+                            break;
+                        }
+                        if(USE_LENGTHS_0 != 0U)
+                        {
+                            visible_0 = key_0 < limit_0[7U];
+                        }
+                        else
+                        {
+                            if(((&kernelContext_0)->p_0->causal_0) == 0U)
+                            {
+                                visible_0 = true;
+                            }
+                            else
+                            {
+                                uint _S101 = 7U % (&kernelContext_0)->p_0->queries_0;
+                                visible_0 = key_0 <= (_S101 + _S12);
+                            }
+                        }
+                        if(visible_0)
+                        {
+                            m_0 = s_0[7U] * (&kernelContext_0)->p_0->scale_0;
+                        }
+                        else
+                        {
+                            m_0 = dg_negative_infinity_0();
+                        }
+                        (*(&kernelContext_0)->ss_0)[7U * _S19 + j_0] = m_0;
+                        _S59 = int(4);
+                        break;
+                    }
+                    if(_S59 != int(4))
+                    {
+                        _S58 = _S59;
+                        break;
+                    }
+                    _S58 = int(3);
+                    break;
+                }
+                if(_S58 != int(3))
+                {
+                    break;
+                }
                 break;
             }
             j_0 = j_0 + 128U;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        p0_0 = _S61;
+        p0_0 = _S55;
         for(;;)
         {
             if(p0_0 < _S8)
@@ -1243,123 +1379,123 @@ struct KernelContext_0
             {
                 break;
             }
-            float _S100 = dg_negative_infinity_0();
+            float _S102 = dg_negative_infinity_0();
             kw_5 = lane_0;
-            m_0 = _S100;
+            m_0 = _S102;
             for(;;)
             {
-                if(kw_5 < _S80)
+                if(kw_5 < _S74)
                 {
                 }
                 else
                 {
                     break;
                 }
-                float _S101 = max(m_0, (*(&kernelContext_0)->ss_0)[p0_0 * _S16 + kw_5]);
-                kw_5 = kw_5 + _S58;
-                m_0 = _S101;
+                float _S103 = max(m_0, (*(&kernelContext_0)->ss_0)[p0_0 * _S19 + kw_5]);
+                kw_5 = kw_5 + _S52;
+                m_0 = _S103;
             }
             float m_1 = simd_max(m_0);
             float mOld_0 = (*(&kernelContext_0)->rowM_0)[p0_0];
-            float _S102 = max((*(&kernelContext_0)->rowM_0)[p0_0], m_1);
+            float _S104 = max((*(&kernelContext_0)->rowM_0)[p0_0], m_1);
             kw_4 = lane_0;
             sum_0 = 0.0;
             for(;;)
             {
-                if(kw_4 < _S80)
+                if(kw_4 < _S74)
                 {
                 }
                 else
                 {
                     break;
                 }
-                float sv_0 = (*(&kernelContext_0)->ss_0)[p0_0 * _S16 + kw_4];
-                if(((*(&kernelContext_0)->ss_0)[p0_0 * _S16 + kw_4]) == _S100)
+                float sv_0 = (*(&kernelContext_0)->ss_0)[p0_0 * _S19 + kw_4];
+                if(((*(&kernelContext_0)->ss_0)[p0_0 * _S19 + kw_4]) == _S102)
                 {
                     w_3 = 0.0;
                 }
                 else
                 {
-                    w_3 = exp(sv_0 - _S102);
+                    w_3 = exp(sv_0 - _S104);
                 }
-                (*(&kernelContext_0)->ss_0)[p0_0 * _S16 + kw_4] = w_3;
+                (*(&kernelContext_0)->ss_0)[p0_0 * _S19 + kw_4] = w_3;
                 float sum_1 = sum_0 + w_3;
-                kw_4 = kw_4 + _S58;
+                kw_4 = kw_4 + _S52;
                 sum_0 = sum_1;
             }
             float sum_2 = simd_sum(sum_0);
-            if(mOld_0 == _S100)
+            if(mOld_0 == _S102)
             {
                 w_3 = 0.0;
             }
             else
             {
-                w_3 = exp(mOld_0 - _S102);
+                w_3 = exp(mOld_0 - _S104);
             }
-            if(_S59)
+            if(_S53)
             {
                 (*(&kernelContext_0)->rowA_0)[p0_0] = w_3;
                 (*(&kernelContext_0)->rowL_0)[p0_0] = (*(&kernelContext_0)->rowL_0)[p0_0] * w_3 + sum_2;
-                (*(&kernelContext_0)->rowM_0)[p0_0] = _S102;
+                (*(&kernelContext_0)->rowM_0)[p0_0] = _S104;
             }
             p0_0 = p0_0 + *(&kernelContext_0)->waves_0;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if(_S18)
+        if(0U < _S8)
         {
             float a_0 = (*(&kernelContext_0)->rowA_0)[0U];
             lo_1[0U] = lo_1[0U] * (*(&kernelContext_0)->rowA_0)[0U];
             hi_1[0U] = hi_1[0U] * a_0;
         }
-        if(_S23)
+        if(1U < _S8)
         {
             float a_1 = (*(&kernelContext_0)->rowA_0)[1U];
             lo_1[1U] = lo_1[1U] * (*(&kernelContext_0)->rowA_0)[1U];
             hi_1[1U] = hi_1[1U] * a_1;
         }
-        if(_S28)
+        if(2U < _S8)
         {
             float a_2 = (*(&kernelContext_0)->rowA_0)[2U];
             lo_1[2U] = lo_1[2U] * (*(&kernelContext_0)->rowA_0)[2U];
             hi_1[2U] = hi_1[2U] * a_2;
         }
-        if(_S33)
+        if(3U < _S8)
         {
             float a_3 = (*(&kernelContext_0)->rowA_0)[3U];
             lo_1[3U] = lo_1[3U] * (*(&kernelContext_0)->rowA_0)[3U];
             hi_1[3U] = hi_1[3U] * a_3;
         }
-        if(_S38)
+        if(4U < _S8)
         {
             float a_4 = (*(&kernelContext_0)->rowA_0)[4U];
             lo_1[4U] = lo_1[4U] * (*(&kernelContext_0)->rowA_0)[4U];
             hi_1[4U] = hi_1[4U] * a_4;
         }
-        if(_S43)
+        if(5U < _S8)
         {
             float a_5 = (*(&kernelContext_0)->rowA_0)[5U];
             lo_1[5U] = lo_1[5U] * (*(&kernelContext_0)->rowA_0)[5U];
             hi_1[5U] = hi_1[5U] * a_5;
         }
-        if(_S48)
+        if(6U < _S8)
         {
             float a_6 = (*(&kernelContext_0)->rowA_0)[6U];
             lo_1[6U] = lo_1[6U] * (*(&kernelContext_0)->rowA_0)[6U];
             hi_1[6U] = hi_1[6U] * a_6;
         }
-        if(_S53)
+        if(7U < _S8)
         {
             float a_7 = (*(&kernelContext_0)->rowA_0)[7U];
             lo_1[7U] = lo_1[7U] * (*(&kernelContext_0)->rowA_0)[7U];
             hi_1[7U] = hi_1[7U] * a_7;
         }
-        if(_S62 < _S11)
+        if(_S56 < _S11)
         {
-            kw_5 = _S63;
+            kw_5 = _S57;
             for(;;)
             {
-                bool _S103 = kw_5 < _S80;
-                if(_S103)
+                bool _S105 = kw_5 < _S74;
+                if(_S105)
                 {
                 }
                 else
@@ -1367,19 +1503,19 @@ struct KernelContext_0
                     break;
                 }
                 thread array<uint, int(8)> vw_0;
-                if(_S103)
+                if(_S105)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        keys_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + kw_5)) * _S11 + _S62;
+                        keys_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + kw_5)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S104 = c0_0 + kw_5;
-                        uint _S105 = _S104 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S106 = (*((&kernelContext_0)->table_0+(r_0 + _S105)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S107 = _S104 % (&kernelContext_0)->p_0->pageSize_0;
-                        keys_1 = (_S106 + _S107) * _S11 + _S62;
+                        uint _S106 = c0_0 + kw_5;
+                        uint _S107 = _S106 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S108 = (*((&kernelContext_0)->table_0+(r_0 + _S107)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S109 = _S106 % (&kernelContext_0)->p_0->pageSize_0;
+                        keys_1 = (_S108 + _S109) * _S11 + _S56;
                     }
                     keys_1 = *((&kernelContext_0)->v_0+keys_1);
                 }
@@ -1389,19 +1525,19 @@ struct KernelContext_0
                 }
                 vw_0[0U] = keys_1;
                 uint j_1 = kw_5 + 4U;
-                if(j_1 < _S80)
+                if(j_1 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        e_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_1)) * _S11 + _S62;
+                        e_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_1)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S108 = c0_0 + j_1;
-                        uint _S109 = _S108 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S110 = (*((&kernelContext_0)->table_0+(r_0 + _S109)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S111 = _S108 % (&kernelContext_0)->p_0->pageSize_0;
-                        e_1 = (_S110 + _S111) * _S11 + _S62;
+                        uint _S110 = c0_0 + j_1;
+                        uint _S111 = _S110 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S112 = (*((&kernelContext_0)->table_0+(r_0 + _S111)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S113 = _S110 % (&kernelContext_0)->p_0->pageSize_0;
+                        e_1 = (_S112 + _S113) * _S11 + _S56;
                     }
                     e_1 = *((&kernelContext_0)->v_0+e_1);
                 }
@@ -1411,19 +1547,19 @@ struct KernelContext_0
                 }
                 vw_0[1U] = e_1;
                 uint j_2 = kw_5 + 8U;
-                if(j_2 < _S80)
+                if(j_2 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        w_2 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_2)) * _S11 + _S62;
+                        w_2 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_2)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S112 = c0_0 + j_2;
-                        uint _S113 = _S112 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S114 = (*((&kernelContext_0)->table_0+(r_0 + _S113)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S115 = _S112 % (&kernelContext_0)->p_0->pageSize_0;
-                        w_2 = (_S114 + _S115) * _S11 + _S62;
+                        uint _S114 = c0_0 + j_2;
+                        uint _S115 = _S114 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S116 = (*((&kernelContext_0)->table_0+(r_0 + _S115)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S117 = _S114 % (&kernelContext_0)->p_0->pageSize_0;
+                        w_2 = (_S116 + _S117) * _S11 + _S56;
                     }
                     w_2 = *((&kernelContext_0)->v_0+w_2);
                 }
@@ -1433,19 +1569,19 @@ struct KernelContext_0
                 }
                 vw_0[2U] = w_2;
                 uint j_3 = kw_5 + 12U;
-                if(j_3 < _S80)
+                if(j_3 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        kw_4 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_3)) * _S11 + _S62;
+                        kw_4 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_3)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S116 = c0_0 + j_3;
-                        uint _S117 = _S116 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S118 = (*((&kernelContext_0)->table_0+(r_0 + _S117)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S119 = _S116 % (&kernelContext_0)->p_0->pageSize_0;
-                        kw_4 = (_S118 + _S119) * _S11 + _S62;
+                        uint _S118 = c0_0 + j_3;
+                        uint _S119 = _S118 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S120 = (*((&kernelContext_0)->table_0+(r_0 + _S119)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S121 = _S118 % (&kernelContext_0)->p_0->pageSize_0;
+                        kw_4 = (_S120 + _S121) * _S11 + _S56;
                     }
                     kw_4 = *((&kernelContext_0)->v_0+kw_4);
                 }
@@ -1455,19 +1591,19 @@ struct KernelContext_0
                 }
                 vw_0[3U] = kw_4;
                 uint j_4 = kw_5 + 16U;
-                if(j_4 < _S80)
+                if(j_4 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        kw_3 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_4)) * _S11 + _S62;
+                        kw_3 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_4)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S120 = c0_0 + j_4;
-                        uint _S121 = _S120 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S122 = (*((&kernelContext_0)->table_0+(r_0 + _S121)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S123 = _S120 % (&kernelContext_0)->p_0->pageSize_0;
-                        kw_3 = (_S122 + _S123) * _S11 + _S62;
+                        uint _S122 = c0_0 + j_4;
+                        uint _S123 = _S122 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S124 = (*((&kernelContext_0)->table_0+(r_0 + _S123)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S125 = _S122 % (&kernelContext_0)->p_0->pageSize_0;
+                        kw_3 = (_S124 + _S125) * _S11 + _S56;
                     }
                     kw_3 = *((&kernelContext_0)->v_0+kw_3);
                 }
@@ -1477,19 +1613,19 @@ struct KernelContext_0
                 }
                 vw_0[4U] = kw_3;
                 uint j_5 = kw_5 + 20U;
-                if(j_5 < _S80)
+                if(j_5 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        kw_2 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_5)) * _S11 + _S62;
+                        kw_2 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_5)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S124 = c0_0 + j_5;
-                        uint _S125 = _S124 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S126 = (*((&kernelContext_0)->table_0+(r_0 + _S125)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S127 = _S124 % (&kernelContext_0)->p_0->pageSize_0;
-                        kw_2 = (_S126 + _S127) * _S11 + _S62;
+                        uint _S126 = c0_0 + j_5;
+                        uint _S127 = _S126 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S128 = (*((&kernelContext_0)->table_0+(r_0 + _S127)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S129 = _S126 % (&kernelContext_0)->p_0->pageSize_0;
+                        kw_2 = (_S128 + _S129) * _S11 + _S56;
                     }
                     kw_2 = *((&kernelContext_0)->v_0+kw_2);
                 }
@@ -1499,19 +1635,19 @@ struct KernelContext_0
                 }
                 vw_0[5U] = kw_2;
                 uint j_6 = kw_5 + 24U;
-                if(j_6 < _S80)
+                if(j_6 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        kw_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_6)) * _S11 + _S62;
+                        kw_1 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_6)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S128 = c0_0 + j_6;
-                        uint _S129 = _S128 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S130 = (*((&kernelContext_0)->table_0+(r_0 + _S129)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S131 = _S128 % (&kernelContext_0)->p_0->pageSize_0;
-                        kw_1 = (_S130 + _S131) * _S11 + _S62;
+                        uint _S130 = c0_0 + j_6;
+                        uint _S131 = _S130 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S132 = (*((&kernelContext_0)->table_0+(r_0 + _S131)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S133 = _S130 % (&kernelContext_0)->p_0->pageSize_0;
+                        kw_1 = (_S132 + _S133) * _S11 + _S56;
                     }
                     kw_1 = *((&kernelContext_0)->v_0+kw_1);
                 }
@@ -1521,19 +1657,19 @@ struct KernelContext_0
                 }
                 vw_0[6U] = kw_1;
                 uint j_7 = kw_5 + 28U;
-                if(j_7 < _S80)
+                if(j_7 < _S74)
                 {
                     if(((&kernelContext_0)->p_0->pageSize_0) == 0U)
                     {
-                        kw_0 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_7)) * _S11 + _S62;
+                        kw_0 = (kvHead_0 * (&kernelContext_0)->p_0->cacheKeys_0 + (c0_0 + j_7)) * _S11 + _S56;
                     }
                     else
                     {
-                        uint _S132 = c0_0 + j_7;
-                        uint _S133 = _S132 / (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S134 = (*((&kernelContext_0)->table_0+(r_0 + _S133)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
-                        uint _S135 = _S132 % (&kernelContext_0)->p_0->pageSize_0;
-                        kw_0 = (_S134 + _S135) * _S11 + _S62;
+                        uint _S134 = c0_0 + j_7;
+                        uint _S135 = _S134 / (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S136 = (*((&kernelContext_0)->table_0+(r_0 + _S135)) * p_1->kvHeads_0 + kvHead_0) * (&kernelContext_0)->p_0->pageSize_0;
+                        uint _S137 = _S134 % (&kernelContext_0)->p_0->pageSize_0;
+                        kw_0 = (_S136 + _S137) * _S11 + _S56;
                     }
                     kw_0 = *((&kernelContext_0)->v_0+kw_0);
                 }
@@ -1548,775 +1684,30 @@ struct KernelContext_0
                     {
                         for(;;)
                         {
-                            if(kw_5 >= _S80)
+                            if(kw_5 >= _S74)
                             {
-                                _S79 = int(2);
-                                _S19 = false;
+                                _S73 = int(2);
+                                visible_0 = false;
                                 break;
                             }
-                            float _S136 = attnLo_0(vw_0[0U]);
-                            float _S137 = attnHi_0(vw_0[0U]);
+                            float _S138 = attnLo_0(vw_0[0U]);
+                            float _S139 = attnHi_0(vw_0[0U]);
                             for(;;)
                             {
                                 for(;;)
                                 {
                                     for(;;)
                                     {
-                                        bool _S138 = 0U >= _S8;
-                                        _S7 = _S138;
-                                        if(_S138)
+                                        bool _S140 = 0U >= _S8;
+                                        _S7 = _S140;
+                                        if(_S140)
                                         {
-                                            _S79 = int(5);
+                                            _S73 = int(5);
                                             break;
                                         }
                                         float pj_0 = (*(&kernelContext_0)->ss_0)[kw_5];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[kw_5], _S136, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_0, _S137, hi_1[0U]);
-                                        _S79 = int(7);
-                                        break;
-                                    }
-                                    if(_S79 != int(7))
-                                    {
-                                        _S78 = _S79;
-                                        break;
-                                    }
-                                    _S78 = int(6);
-                                    break;
-                                }
-                                if(_S78 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(1U >= _S8)
-                                        {
-                                            _S77 = int(5);
-                                            break;
-                                        }
-                                        float pj_1 = (*(&kernelContext_0)->ss_0)[_S16 + kw_5];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + kw_5], _S136, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_1, _S137, hi_1[1U]);
-                                        _S77 = int(7);
-                                        break;
-                                    }
-                                    if(_S77 != int(7))
-                                    {
-                                        _S76 = _S77;
-                                        break;
-                                    }
-                                    _S76 = int(6);
-                                    break;
-                                }
-                                if(_S76 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(2U >= _S8)
-                                        {
-                                            _S75 = int(5);
-                                            break;
-                                        }
-                                        float pj_2 = (*(&kernelContext_0)->ss_0)[2U * _S16 + kw_5];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + kw_5], _S136, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_2, _S137, hi_1[2U]);
-                                        _S75 = int(7);
-                                        break;
-                                    }
-                                    if(_S75 != int(7))
-                                    {
-                                        _S74 = _S75;
-                                        break;
-                                    }
-                                    _S74 = int(6);
-                                    break;
-                                }
-                                if(_S74 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(3U >= _S8)
-                                        {
-                                            _S73 = int(5);
-                                            break;
-                                        }
-                                        float pj_3 = (*(&kernelContext_0)->ss_0)[3U * _S16 + kw_5];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + kw_5], _S136, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_3, _S137, hi_1[3U]);
-                                        _S73 = int(7);
-                                        break;
-                                    }
-                                    if(_S73 != int(7))
-                                    {
-                                        _S72 = _S73;
-                                        break;
-                                    }
-                                    _S72 = int(6);
-                                    break;
-                                }
-                                if(_S72 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(4U >= _S8)
-                                        {
-                                            _S71 = int(5);
-                                            break;
-                                        }
-                                        float pj_4 = (*(&kernelContext_0)->ss_0)[4U * _S16 + kw_5];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + kw_5], _S136, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_4, _S137, hi_1[4U]);
-                                        _S71 = int(7);
-                                        break;
-                                    }
-                                    if(_S71 != int(7))
-                                    {
-                                        _S70 = _S71;
-                                        break;
-                                    }
-                                    _S70 = int(6);
-                                    break;
-                                }
-                                if(_S70 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(5U >= _S8)
-                                        {
-                                            _S69 = int(5);
-                                            break;
-                                        }
-                                        float pj_5 = (*(&kernelContext_0)->ss_0)[5U * _S16 + kw_5];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + kw_5], _S136, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_5, _S137, hi_1[5U]);
-                                        _S69 = int(7);
-                                        break;
-                                    }
-                                    if(_S69 != int(7))
-                                    {
-                                        _S68 = _S69;
-                                        break;
-                                    }
-                                    _S68 = int(6);
-                                    break;
-                                }
-                                if(_S68 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(6U >= _S8)
-                                        {
-                                            _S67 = int(5);
-                                            break;
-                                        }
-                                        float pj_6 = (*(&kernelContext_0)->ss_0)[6U * _S16 + kw_5];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + kw_5], _S136, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_6, _S137, hi_1[6U]);
-                                        _S67 = int(7);
-                                        break;
-                                    }
-                                    if(_S67 != int(7))
-                                    {
-                                        _S66 = _S67;
-                                        break;
-                                    }
-                                    _S66 = int(6);
-                                    break;
-                                }
-                                if(_S66 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(7U >= _S8)
-                                        {
-                                            _S65 = int(5);
-                                            break;
-                                        }
-                                        float pj_7 = (*(&kernelContext_0)->ss_0)[7U * _S16 + kw_5];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + kw_5], _S136, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_7, _S137, hi_1[7U]);
-                                        _S65 = int(7);
-                                        break;
-                                    }
-                                    if(_S65 != int(7))
-                                    {
-                                        _S64 = _S65;
-                                        break;
-                                    }
-                                    _S64 = int(6);
-                                    break;
-                                }
-                                if(_S64 != int(6))
-                                {
-                                    break;
-                                }
-                                break;
-                            }
-                            _S79 = int(4);
-                            _S19 = _S7;
-                            break;
-                        }
-                        if(_S79 != int(4))
-                        {
-                            _S78 = _S79;
-                            break;
-                        }
-                        _S78 = int(3);
-                        break;
-                    }
-                    if(_S78 != int(3))
-                    {
-                        break;
-                    }
-                    int _S139;
-                    int _S140;
-                    for(;;)
-                    {
-                        for(;;)
-                        {
-                            if(j_1 >= _S80)
-                            {
-                                _S77 = int(2);
-                                break;
-                            }
-                            float _S141 = attnLo_0(vw_0[1U]);
-                            float _S142 = attnHi_0(vw_0[1U]);
-                            for(;;)
-                            {
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(_S19)
-                                        {
-                                            _S77 = int(5);
-                                            break;
-                                        }
-                                        float pj_8 = (*(&kernelContext_0)->ss_0)[j_1];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_1], _S141, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_8, _S142, hi_1[0U]);
-                                        _S77 = int(7);
-                                        break;
-                                    }
-                                    if(_S77 != int(7))
-                                    {
-                                        _S76 = _S77;
-                                        break;
-                                    }
-                                    _S76 = int(6);
-                                    break;
-                                }
-                                if(_S76 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(1U >= _S8)
-                                        {
-                                            _S75 = int(5);
-                                            break;
-                                        }
-                                        float pj_9 = (*(&kernelContext_0)->ss_0)[_S16 + j_1];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_1], _S141, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_9, _S142, hi_1[1U]);
-                                        _S75 = int(7);
-                                        break;
-                                    }
-                                    if(_S75 != int(7))
-                                    {
-                                        _S74 = _S75;
-                                        break;
-                                    }
-                                    _S74 = int(6);
-                                    break;
-                                }
-                                if(_S74 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(2U >= _S8)
-                                        {
-                                            _S73 = int(5);
-                                            break;
-                                        }
-                                        float pj_10 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_1];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_1], _S141, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_10, _S142, hi_1[2U]);
-                                        _S73 = int(7);
-                                        break;
-                                    }
-                                    if(_S73 != int(7))
-                                    {
-                                        _S72 = _S73;
-                                        break;
-                                    }
-                                    _S72 = int(6);
-                                    break;
-                                }
-                                if(_S72 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(3U >= _S8)
-                                        {
-                                            _S71 = int(5);
-                                            break;
-                                        }
-                                        float pj_11 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_1];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_1], _S141, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_11, _S142, hi_1[3U]);
-                                        _S71 = int(7);
-                                        break;
-                                    }
-                                    if(_S71 != int(7))
-                                    {
-                                        _S70 = _S71;
-                                        break;
-                                    }
-                                    _S70 = int(6);
-                                    break;
-                                }
-                                if(_S70 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(4U >= _S8)
-                                        {
-                                            _S69 = int(5);
-                                            break;
-                                        }
-                                        float pj_12 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_1];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_1], _S141, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_12, _S142, hi_1[4U]);
-                                        _S69 = int(7);
-                                        break;
-                                    }
-                                    if(_S69 != int(7))
-                                    {
-                                        _S68 = _S69;
-                                        break;
-                                    }
-                                    _S68 = int(6);
-                                    break;
-                                }
-                                if(_S68 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(5U >= _S8)
-                                        {
-                                            _S67 = int(5);
-                                            break;
-                                        }
-                                        float pj_13 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_1];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_1], _S141, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_13, _S142, hi_1[5U]);
-                                        _S67 = int(7);
-                                        break;
-                                    }
-                                    if(_S67 != int(7))
-                                    {
-                                        _S66 = _S67;
-                                        break;
-                                    }
-                                    _S66 = int(6);
-                                    break;
-                                }
-                                if(_S66 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(6U >= _S8)
-                                        {
-                                            _S65 = int(5);
-                                            break;
-                                        }
-                                        float pj_14 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_1];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_1], _S141, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_14, _S142, hi_1[6U]);
-                                        _S65 = int(7);
-                                        break;
-                                    }
-                                    if(_S65 != int(7))
-                                    {
-                                        _S64 = _S65;
-                                        break;
-                                    }
-                                    _S64 = int(6);
-                                    break;
-                                }
-                                if(_S64 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(7U >= _S8)
-                                        {
-                                            _S140 = int(5);
-                                            break;
-                                        }
-                                        float pj_15 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_1];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_1], _S141, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_15, _S142, hi_1[7U]);
-                                        _S140 = int(7);
-                                        break;
-                                    }
-                                    if(_S140 != int(7))
-                                    {
-                                        _S139 = _S140;
-                                        break;
-                                    }
-                                    _S139 = int(6);
-                                    break;
-                                }
-                                if(_S139 != int(6))
-                                {
-                                    break;
-                                }
-                                break;
-                            }
-                            _S77 = int(4);
-                            break;
-                        }
-                        if(_S77 != int(4))
-                        {
-                            _S76 = _S77;
-                            break;
-                        }
-                        _S76 = int(3);
-                        break;
-                    }
-                    if(_S76 != int(3))
-                    {
-                        break;
-                    }
-                    int _S143;
-                    int _S144;
-                    for(;;)
-                    {
-                        for(;;)
-                        {
-                            if(j_2 >= _S80)
-                            {
-                                _S75 = int(2);
-                                break;
-                            }
-                            float _S145 = attnLo_0(vw_0[2U]);
-                            float _S146 = attnHi_0(vw_0[2U]);
-                            for(;;)
-                            {
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(_S19)
-                                        {
-                                            _S75 = int(5);
-                                            break;
-                                        }
-                                        float pj_16 = (*(&kernelContext_0)->ss_0)[j_2];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_2], _S145, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_16, _S146, hi_1[0U]);
-                                        _S75 = int(7);
-                                        break;
-                                    }
-                                    if(_S75 != int(7))
-                                    {
-                                        _S74 = _S75;
-                                        break;
-                                    }
-                                    _S74 = int(6);
-                                    break;
-                                }
-                                if(_S74 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(1U >= _S8)
-                                        {
-                                            _S73 = int(5);
-                                            break;
-                                        }
-                                        float pj_17 = (*(&kernelContext_0)->ss_0)[_S16 + j_2];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_2], _S145, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_17, _S146, hi_1[1U]);
-                                        _S73 = int(7);
-                                        break;
-                                    }
-                                    if(_S73 != int(7))
-                                    {
-                                        _S72 = _S73;
-                                        break;
-                                    }
-                                    _S72 = int(6);
-                                    break;
-                                }
-                                if(_S72 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(2U >= _S8)
-                                        {
-                                            _S71 = int(5);
-                                            break;
-                                        }
-                                        float pj_18 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_2];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_2], _S145, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_18, _S146, hi_1[2U]);
-                                        _S71 = int(7);
-                                        break;
-                                    }
-                                    if(_S71 != int(7))
-                                    {
-                                        _S70 = _S71;
-                                        break;
-                                    }
-                                    _S70 = int(6);
-                                    break;
-                                }
-                                if(_S70 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(3U >= _S8)
-                                        {
-                                            _S69 = int(5);
-                                            break;
-                                        }
-                                        float pj_19 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_2];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_2], _S145, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_19, _S146, hi_1[3U]);
-                                        _S69 = int(7);
-                                        break;
-                                    }
-                                    if(_S69 != int(7))
-                                    {
-                                        _S68 = _S69;
-                                        break;
-                                    }
-                                    _S68 = int(6);
-                                    break;
-                                }
-                                if(_S68 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(4U >= _S8)
-                                        {
-                                            _S67 = int(5);
-                                            break;
-                                        }
-                                        float pj_20 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_2];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_2], _S145, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_20, _S146, hi_1[4U]);
-                                        _S67 = int(7);
-                                        break;
-                                    }
-                                    if(_S67 != int(7))
-                                    {
-                                        _S66 = _S67;
-                                        break;
-                                    }
-                                    _S66 = int(6);
-                                    break;
-                                }
-                                if(_S66 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(5U >= _S8)
-                                        {
-                                            _S65 = int(5);
-                                            break;
-                                        }
-                                        float pj_21 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_2];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_2], _S145, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_21, _S146, hi_1[5U]);
-                                        _S65 = int(7);
-                                        break;
-                                    }
-                                    if(_S65 != int(7))
-                                    {
-                                        _S64 = _S65;
-                                        break;
-                                    }
-                                    _S64 = int(6);
-                                    break;
-                                }
-                                if(_S64 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(6U >= _S8)
-                                        {
-                                            _S140 = int(5);
-                                            break;
-                                        }
-                                        float pj_22 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_2];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_2], _S145, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_22, _S146, hi_1[6U]);
-                                        _S140 = int(7);
-                                        break;
-                                    }
-                                    if(_S140 != int(7))
-                                    {
-                                        _S139 = _S140;
-                                        break;
-                                    }
-                                    _S139 = int(6);
-                                    break;
-                                }
-                                if(_S139 != int(6))
-                                {
-                                    break;
-                                }
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(7U >= _S8)
-                                        {
-                                            _S144 = int(5);
-                                            break;
-                                        }
-                                        float pj_23 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_2];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_2], _S145, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_23, _S146, hi_1[7U]);
-                                        _S144 = int(7);
-                                        break;
-                                    }
-                                    if(_S144 != int(7))
-                                    {
-                                        _S143 = _S144;
-                                        break;
-                                    }
-                                    _S143 = int(6);
-                                    break;
-                                }
-                                if(_S143 != int(6))
-                                {
-                                    break;
-                                }
-                                break;
-                            }
-                            _S75 = int(4);
-                            break;
-                        }
-                        if(_S75 != int(4))
-                        {
-                            _S74 = _S75;
-                            break;
-                        }
-                        _S74 = int(3);
-                        break;
-                    }
-                    if(_S74 != int(3))
-                    {
-                        break;
-                    }
-                    int _S147;
-                    int _S148;
-                    for(;;)
-                    {
-                        for(;;)
-                        {
-                            if(j_3 >= _S80)
-                            {
-                                _S73 = int(2);
-                                break;
-                            }
-                            float _S149 = attnLo_0(vw_0[3U]);
-                            float _S150 = attnHi_0(vw_0[3U]);
-                            for(;;)
-                            {
-                                for(;;)
-                                {
-                                    for(;;)
-                                    {
-                                        if(_S19)
-                                        {
-                                            _S73 = int(5);
-                                            break;
-                                        }
-                                        float pj_24 = (*(&kernelContext_0)->ss_0)[j_3];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_3], _S149, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_24, _S150, hi_1[0U]);
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[kw_5], _S138, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_0, _S139, hi_1[0U]);
                                         _S73 = int(7);
                                         break;
                                     }
@@ -2341,9 +1732,9 @@ struct KernelContext_0
                                             _S71 = int(5);
                                             break;
                                         }
-                                        float pj_25 = (*(&kernelContext_0)->ss_0)[_S16 + j_3];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_3], _S149, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_25, _S150, hi_1[1U]);
+                                        float pj_1 = (*(&kernelContext_0)->ss_0)[_S19 + kw_5];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + kw_5], _S138, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_1, _S139, hi_1[1U]);
                                         _S71 = int(7);
                                         break;
                                     }
@@ -2368,9 +1759,9 @@ struct KernelContext_0
                                             _S69 = int(5);
                                             break;
                                         }
-                                        float pj_26 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_3];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_3], _S149, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_26, _S150, hi_1[2U]);
+                                        float pj_2 = (*(&kernelContext_0)->ss_0)[2U * _S19 + kw_5];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + kw_5], _S138, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_2, _S139, hi_1[2U]);
                                         _S69 = int(7);
                                         break;
                                     }
@@ -2395,9 +1786,9 @@ struct KernelContext_0
                                             _S67 = int(5);
                                             break;
                                         }
-                                        float pj_27 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_3];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_3], _S149, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_27, _S150, hi_1[3U]);
+                                        float pj_3 = (*(&kernelContext_0)->ss_0)[3U * _S19 + kw_5];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + kw_5], _S138, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_3, _S139, hi_1[3U]);
                                         _S67 = int(7);
                                         break;
                                     }
@@ -2422,9 +1813,9 @@ struct KernelContext_0
                                             _S65 = int(5);
                                             break;
                                         }
-                                        float pj_28 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_3];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_3], _S149, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_28, _S150, hi_1[4U]);
+                                        float pj_4 = (*(&kernelContext_0)->ss_0)[4U * _S19 + kw_5];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + kw_5], _S138, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_4, _S139, hi_1[4U]);
                                         _S65 = int(7);
                                         break;
                                     }
@@ -2446,24 +1837,24 @@ struct KernelContext_0
                                     {
                                         if(5U >= _S8)
                                         {
-                                            _S140 = int(5);
+                                            _S63 = int(5);
                                             break;
                                         }
-                                        float pj_29 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_3];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_3], _S149, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_29, _S150, hi_1[5U]);
-                                        _S140 = int(7);
+                                        float pj_5 = (*(&kernelContext_0)->ss_0)[5U * _S19 + kw_5];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + kw_5], _S138, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_5, _S139, hi_1[5U]);
+                                        _S63 = int(7);
                                         break;
                                     }
-                                    if(_S140 != int(7))
+                                    if(_S63 != int(7))
                                     {
-                                        _S139 = _S140;
+                                        _S62 = _S63;
                                         break;
                                     }
-                                    _S139 = int(6);
+                                    _S62 = int(6);
                                     break;
                                 }
-                                if(_S139 != int(6))
+                                if(_S62 != int(6))
                                 {
                                     break;
                                 }
@@ -2473,24 +1864,24 @@ struct KernelContext_0
                                     {
                                         if(6U >= _S8)
                                         {
-                                            _S144 = int(5);
+                                            _S61 = int(5);
                                             break;
                                         }
-                                        float pj_30 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_3];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_3], _S149, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_30, _S150, hi_1[6U]);
-                                        _S144 = int(7);
+                                        float pj_6 = (*(&kernelContext_0)->ss_0)[6U * _S19 + kw_5];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + kw_5], _S138, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_6, _S139, hi_1[6U]);
+                                        _S61 = int(7);
                                         break;
                                     }
-                                    if(_S144 != int(7))
+                                    if(_S61 != int(7))
                                     {
-                                        _S143 = _S144;
+                                        _S60 = _S61;
                                         break;
                                     }
-                                    _S143 = int(6);
+                                    _S60 = int(6);
                                     break;
                                 }
-                                if(_S143 != int(6))
+                                if(_S60 != int(6))
                                 {
                                     break;
                                 }
@@ -2500,30 +1891,31 @@ struct KernelContext_0
                                     {
                                         if(7U >= _S8)
                                         {
-                                            _S148 = int(5);
+                                            _S59 = int(5);
                                             break;
                                         }
-                                        float pj_31 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_3];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_3], _S149, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_31, _S150, hi_1[7U]);
-                                        _S148 = int(7);
+                                        float pj_7 = (*(&kernelContext_0)->ss_0)[7U * _S19 + kw_5];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + kw_5], _S138, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_7, _S139, hi_1[7U]);
+                                        _S59 = int(7);
                                         break;
                                     }
-                                    if(_S148 != int(7))
+                                    if(_S59 != int(7))
                                     {
-                                        _S147 = _S148;
+                                        _S58 = _S59;
                                         break;
                                     }
-                                    _S147 = int(6);
+                                    _S58 = int(6);
                                     break;
                                 }
-                                if(_S147 != int(6))
+                                if(_S58 != int(6))
                                 {
                                     break;
                                 }
                                 break;
                             }
                             _S73 = int(4);
+                            visible_0 = _S7;
                             break;
                         }
                         if(_S73 != int(4))
@@ -2538,33 +1930,33 @@ struct KernelContext_0
                     {
                         break;
                     }
-                    int _S151;
-                    int _S152;
+                    int _S141;
+                    int _S142;
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(j_4 >= _S80)
+                            if(j_1 >= _S74)
                             {
                                 _S71 = int(2);
                                 break;
                             }
-                            float _S153 = attnLo_0(vw_0[4U]);
-                            float _S154 = attnHi_0(vw_0[4U]);
+                            float _S143 = attnLo_0(vw_0[1U]);
+                            float _S144 = attnHi_0(vw_0[1U]);
                             for(;;)
                             {
                                 for(;;)
                                 {
                                     for(;;)
                                     {
-                                        if(_S19)
+                                        if(visible_0)
                                         {
                                             _S71 = int(5);
                                             break;
                                         }
-                                        float pj_32 = (*(&kernelContext_0)->ss_0)[j_4];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_4], _S153, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_32, _S154, hi_1[0U]);
+                                        float pj_8 = (*(&kernelContext_0)->ss_0)[j_1];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_1], _S143, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_8, _S144, hi_1[0U]);
                                         _S71 = int(7);
                                         break;
                                     }
@@ -2589,9 +1981,9 @@ struct KernelContext_0
                                             _S69 = int(5);
                                             break;
                                         }
-                                        float pj_33 = (*(&kernelContext_0)->ss_0)[_S16 + j_4];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_4], _S153, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_33, _S154, hi_1[1U]);
+                                        float pj_9 = (*(&kernelContext_0)->ss_0)[_S19 + j_1];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_1], _S143, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_9, _S144, hi_1[1U]);
                                         _S69 = int(7);
                                         break;
                                     }
@@ -2616,9 +2008,9 @@ struct KernelContext_0
                                             _S67 = int(5);
                                             break;
                                         }
-                                        float pj_34 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_4];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_4], _S153, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_34, _S154, hi_1[2U]);
+                                        float pj_10 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_1];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_1], _S143, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_10, _S144, hi_1[2U]);
                                         _S67 = int(7);
                                         break;
                                     }
@@ -2643,9 +2035,9 @@ struct KernelContext_0
                                             _S65 = int(5);
                                             break;
                                         }
-                                        float pj_35 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_4];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_4], _S153, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_35, _S154, hi_1[3U]);
+                                        float pj_11 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_1];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_1], _S143, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_11, _S144, hi_1[3U]);
                                         _S65 = int(7);
                                         break;
                                     }
@@ -2667,24 +2059,24 @@ struct KernelContext_0
                                     {
                                         if(4U >= _S8)
                                         {
-                                            _S140 = int(5);
+                                            _S63 = int(5);
                                             break;
                                         }
-                                        float pj_36 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_4];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_4], _S153, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_36, _S154, hi_1[4U]);
-                                        _S140 = int(7);
+                                        float pj_12 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_1];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_1], _S143, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_12, _S144, hi_1[4U]);
+                                        _S63 = int(7);
                                         break;
                                     }
-                                    if(_S140 != int(7))
+                                    if(_S63 != int(7))
                                     {
-                                        _S139 = _S140;
+                                        _S62 = _S63;
                                         break;
                                     }
-                                    _S139 = int(6);
+                                    _S62 = int(6);
                                     break;
                                 }
-                                if(_S139 != int(6))
+                                if(_S62 != int(6))
                                 {
                                     break;
                                 }
@@ -2694,24 +2086,24 @@ struct KernelContext_0
                                     {
                                         if(5U >= _S8)
                                         {
-                                            _S144 = int(5);
+                                            _S61 = int(5);
                                             break;
                                         }
-                                        float pj_37 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_4];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_4], _S153, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_37, _S154, hi_1[5U]);
-                                        _S144 = int(7);
+                                        float pj_13 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_1];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_1], _S143, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_13, _S144, hi_1[5U]);
+                                        _S61 = int(7);
                                         break;
                                     }
-                                    if(_S144 != int(7))
+                                    if(_S61 != int(7))
                                     {
-                                        _S143 = _S144;
+                                        _S60 = _S61;
                                         break;
                                     }
-                                    _S143 = int(6);
+                                    _S60 = int(6);
                                     break;
                                 }
-                                if(_S143 != int(6))
+                                if(_S60 != int(6))
                                 {
                                     break;
                                 }
@@ -2721,24 +2113,24 @@ struct KernelContext_0
                                     {
                                         if(6U >= _S8)
                                         {
-                                            _S148 = int(5);
+                                            _S59 = int(5);
                                             break;
                                         }
-                                        float pj_38 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_4];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_4], _S153, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_38, _S154, hi_1[6U]);
-                                        _S148 = int(7);
+                                        float pj_14 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_1];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_1], _S143, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_14, _S144, hi_1[6U]);
+                                        _S59 = int(7);
                                         break;
                                     }
-                                    if(_S148 != int(7))
+                                    if(_S59 != int(7))
                                     {
-                                        _S147 = _S148;
+                                        _S58 = _S59;
                                         break;
                                     }
-                                    _S147 = int(6);
+                                    _S58 = int(6);
                                     break;
                                 }
-                                if(_S147 != int(6))
+                                if(_S58 != int(6))
                                 {
                                     break;
                                 }
@@ -2748,24 +2140,24 @@ struct KernelContext_0
                                     {
                                         if(7U >= _S8)
                                         {
-                                            _S152 = int(5);
+                                            _S142 = int(5);
                                             break;
                                         }
-                                        float pj_39 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_4];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_4], _S153, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_39, _S154, hi_1[7U]);
-                                        _S152 = int(7);
+                                        float pj_15 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_1];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_1], _S143, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_15, _S144, hi_1[7U]);
+                                        _S142 = int(7);
                                         break;
                                     }
-                                    if(_S152 != int(7))
+                                    if(_S142 != int(7))
                                     {
-                                        _S151 = _S152;
+                                        _S141 = _S142;
                                         break;
                                     }
-                                    _S151 = int(6);
+                                    _S141 = int(6);
                                     break;
                                 }
-                                if(_S151 != int(6))
+                                if(_S141 != int(6))
                                 {
                                     break;
                                 }
@@ -2786,33 +2178,33 @@ struct KernelContext_0
                     {
                         break;
                     }
-                    int _S155;
-                    int _S156;
+                    int _S145;
+                    int _S146;
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(j_5 >= _S80)
+                            if(j_2 >= _S74)
                             {
                                 _S69 = int(2);
                                 break;
                             }
-                            float _S157 = attnLo_0(vw_0[5U]);
-                            float _S158 = attnHi_0(vw_0[5U]);
+                            float _S147 = attnLo_0(vw_0[2U]);
+                            float _S148 = attnHi_0(vw_0[2U]);
                             for(;;)
                             {
                                 for(;;)
                                 {
                                     for(;;)
                                     {
-                                        if(_S19)
+                                        if(visible_0)
                                         {
                                             _S69 = int(5);
                                             break;
                                         }
-                                        float pj_40 = (*(&kernelContext_0)->ss_0)[j_5];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_5], _S157, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_40, _S158, hi_1[0U]);
+                                        float pj_16 = (*(&kernelContext_0)->ss_0)[j_2];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_2], _S147, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_16, _S148, hi_1[0U]);
                                         _S69 = int(7);
                                         break;
                                     }
@@ -2837,9 +2229,9 @@ struct KernelContext_0
                                             _S67 = int(5);
                                             break;
                                         }
-                                        float pj_41 = (*(&kernelContext_0)->ss_0)[_S16 + j_5];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_5], _S157, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_41, _S158, hi_1[1U]);
+                                        float pj_17 = (*(&kernelContext_0)->ss_0)[_S19 + j_2];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_2], _S147, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_17, _S148, hi_1[1U]);
                                         _S67 = int(7);
                                         break;
                                     }
@@ -2864,9 +2256,9 @@ struct KernelContext_0
                                             _S65 = int(5);
                                             break;
                                         }
-                                        float pj_42 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_5];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_5], _S157, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_42, _S158, hi_1[2U]);
+                                        float pj_18 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_2];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_2], _S147, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_18, _S148, hi_1[2U]);
                                         _S65 = int(7);
                                         break;
                                     }
@@ -2888,24 +2280,24 @@ struct KernelContext_0
                                     {
                                         if(3U >= _S8)
                                         {
-                                            _S140 = int(5);
+                                            _S63 = int(5);
                                             break;
                                         }
-                                        float pj_43 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_5];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_5], _S157, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_43, _S158, hi_1[3U]);
-                                        _S140 = int(7);
+                                        float pj_19 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_2];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_2], _S147, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_19, _S148, hi_1[3U]);
+                                        _S63 = int(7);
                                         break;
                                     }
-                                    if(_S140 != int(7))
+                                    if(_S63 != int(7))
                                     {
-                                        _S139 = _S140;
+                                        _S62 = _S63;
                                         break;
                                     }
-                                    _S139 = int(6);
+                                    _S62 = int(6);
                                     break;
                                 }
-                                if(_S139 != int(6))
+                                if(_S62 != int(6))
                                 {
                                     break;
                                 }
@@ -2915,24 +2307,24 @@ struct KernelContext_0
                                     {
                                         if(4U >= _S8)
                                         {
-                                            _S144 = int(5);
+                                            _S61 = int(5);
                                             break;
                                         }
-                                        float pj_44 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_5];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_5], _S157, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_44, _S158, hi_1[4U]);
-                                        _S144 = int(7);
+                                        float pj_20 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_2];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_2], _S147, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_20, _S148, hi_1[4U]);
+                                        _S61 = int(7);
                                         break;
                                     }
-                                    if(_S144 != int(7))
+                                    if(_S61 != int(7))
                                     {
-                                        _S143 = _S144;
+                                        _S60 = _S61;
                                         break;
                                     }
-                                    _S143 = int(6);
+                                    _S60 = int(6);
                                     break;
                                 }
-                                if(_S143 != int(6))
+                                if(_S60 != int(6))
                                 {
                                     break;
                                 }
@@ -2942,24 +2334,24 @@ struct KernelContext_0
                                     {
                                         if(5U >= _S8)
                                         {
-                                            _S148 = int(5);
+                                            _S59 = int(5);
                                             break;
                                         }
-                                        float pj_45 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_5];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_5], _S157, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_45, _S158, hi_1[5U]);
-                                        _S148 = int(7);
+                                        float pj_21 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_2];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_2], _S147, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_21, _S148, hi_1[5U]);
+                                        _S59 = int(7);
                                         break;
                                     }
-                                    if(_S148 != int(7))
+                                    if(_S59 != int(7))
                                     {
-                                        _S147 = _S148;
+                                        _S58 = _S59;
                                         break;
                                     }
-                                    _S147 = int(6);
+                                    _S58 = int(6);
                                     break;
                                 }
-                                if(_S147 != int(6))
+                                if(_S58 != int(6))
                                 {
                                     break;
                                 }
@@ -2969,24 +2361,24 @@ struct KernelContext_0
                                     {
                                         if(6U >= _S8)
                                         {
-                                            _S152 = int(5);
+                                            _S142 = int(5);
                                             break;
                                         }
-                                        float pj_46 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_5];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_5], _S157, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_46, _S158, hi_1[6U]);
-                                        _S152 = int(7);
+                                        float pj_22 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_2];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_2], _S147, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_22, _S148, hi_1[6U]);
+                                        _S142 = int(7);
                                         break;
                                     }
-                                    if(_S152 != int(7))
+                                    if(_S142 != int(7))
                                     {
-                                        _S151 = _S152;
+                                        _S141 = _S142;
                                         break;
                                     }
-                                    _S151 = int(6);
+                                    _S141 = int(6);
                                     break;
                                 }
-                                if(_S151 != int(6))
+                                if(_S141 != int(6))
                                 {
                                     break;
                                 }
@@ -2996,24 +2388,24 @@ struct KernelContext_0
                                     {
                                         if(7U >= _S8)
                                         {
-                                            _S156 = int(5);
+                                            _S146 = int(5);
                                             break;
                                         }
-                                        float pj_47 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_5];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_5], _S157, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_47, _S158, hi_1[7U]);
-                                        _S156 = int(7);
+                                        float pj_23 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_2];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_2], _S147, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_23, _S148, hi_1[7U]);
+                                        _S146 = int(7);
                                         break;
                                     }
-                                    if(_S156 != int(7))
+                                    if(_S146 != int(7))
                                     {
-                                        _S155 = _S156;
+                                        _S145 = _S146;
                                         break;
                                     }
-                                    _S155 = int(6);
+                                    _S145 = int(6);
                                     break;
                                 }
-                                if(_S155 != int(6))
+                                if(_S145 != int(6))
                                 {
                                     break;
                                 }
@@ -3034,33 +2426,33 @@ struct KernelContext_0
                     {
                         break;
                     }
-                    int _S159;
-                    int _S160;
+                    int _S149;
+                    int _S150;
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(j_6 >= _S80)
+                            if(j_3 >= _S74)
                             {
                                 _S67 = int(2);
                                 break;
                             }
-                            float _S161 = attnLo_0(vw_0[6U]);
-                            float _S162 = attnHi_0(vw_0[6U]);
+                            float _S151 = attnLo_0(vw_0[3U]);
+                            float _S152 = attnHi_0(vw_0[3U]);
                             for(;;)
                             {
                                 for(;;)
                                 {
                                     for(;;)
                                     {
-                                        if(_S19)
+                                        if(visible_0)
                                         {
                                             _S67 = int(5);
                                             break;
                                         }
-                                        float pj_48 = (*(&kernelContext_0)->ss_0)[j_6];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_6], _S161, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_48, _S162, hi_1[0U]);
+                                        float pj_24 = (*(&kernelContext_0)->ss_0)[j_3];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_3], _S151, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_24, _S152, hi_1[0U]);
                                         _S67 = int(7);
                                         break;
                                     }
@@ -3085,9 +2477,9 @@ struct KernelContext_0
                                             _S65 = int(5);
                                             break;
                                         }
-                                        float pj_49 = (*(&kernelContext_0)->ss_0)[_S16 + j_6];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_6], _S161, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_49, _S162, hi_1[1U]);
+                                        float pj_25 = (*(&kernelContext_0)->ss_0)[_S19 + j_3];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_3], _S151, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_25, _S152, hi_1[1U]);
                                         _S65 = int(7);
                                         break;
                                     }
@@ -3109,24 +2501,24 @@ struct KernelContext_0
                                     {
                                         if(2U >= _S8)
                                         {
-                                            _S140 = int(5);
+                                            _S63 = int(5);
                                             break;
                                         }
-                                        float pj_50 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_6];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_6], _S161, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_50, _S162, hi_1[2U]);
-                                        _S140 = int(7);
+                                        float pj_26 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_3];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_3], _S151, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_26, _S152, hi_1[2U]);
+                                        _S63 = int(7);
                                         break;
                                     }
-                                    if(_S140 != int(7))
+                                    if(_S63 != int(7))
                                     {
-                                        _S139 = _S140;
+                                        _S62 = _S63;
                                         break;
                                     }
-                                    _S139 = int(6);
+                                    _S62 = int(6);
                                     break;
                                 }
-                                if(_S139 != int(6))
+                                if(_S62 != int(6))
                                 {
                                     break;
                                 }
@@ -3136,24 +2528,24 @@ struct KernelContext_0
                                     {
                                         if(3U >= _S8)
                                         {
-                                            _S144 = int(5);
+                                            _S61 = int(5);
                                             break;
                                         }
-                                        float pj_51 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_6];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_6], _S161, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_51, _S162, hi_1[3U]);
-                                        _S144 = int(7);
+                                        float pj_27 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_3];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_3], _S151, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_27, _S152, hi_1[3U]);
+                                        _S61 = int(7);
                                         break;
                                     }
-                                    if(_S144 != int(7))
+                                    if(_S61 != int(7))
                                     {
-                                        _S143 = _S144;
+                                        _S60 = _S61;
                                         break;
                                     }
-                                    _S143 = int(6);
+                                    _S60 = int(6);
                                     break;
                                 }
-                                if(_S143 != int(6))
+                                if(_S60 != int(6))
                                 {
                                     break;
                                 }
@@ -3163,24 +2555,24 @@ struct KernelContext_0
                                     {
                                         if(4U >= _S8)
                                         {
-                                            _S148 = int(5);
+                                            _S59 = int(5);
                                             break;
                                         }
-                                        float pj_52 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_6];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_6], _S161, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_52, _S162, hi_1[4U]);
-                                        _S148 = int(7);
+                                        float pj_28 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_3];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_3], _S151, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_28, _S152, hi_1[4U]);
+                                        _S59 = int(7);
                                         break;
                                     }
-                                    if(_S148 != int(7))
+                                    if(_S59 != int(7))
                                     {
-                                        _S147 = _S148;
+                                        _S58 = _S59;
                                         break;
                                     }
-                                    _S147 = int(6);
+                                    _S58 = int(6);
                                     break;
                                 }
-                                if(_S147 != int(6))
+                                if(_S58 != int(6))
                                 {
                                     break;
                                 }
@@ -3190,24 +2582,24 @@ struct KernelContext_0
                                     {
                                         if(5U >= _S8)
                                         {
-                                            _S152 = int(5);
+                                            _S142 = int(5);
                                             break;
                                         }
-                                        float pj_53 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_6];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_6], _S161, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_53, _S162, hi_1[5U]);
-                                        _S152 = int(7);
+                                        float pj_29 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_3];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_3], _S151, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_29, _S152, hi_1[5U]);
+                                        _S142 = int(7);
                                         break;
                                     }
-                                    if(_S152 != int(7))
+                                    if(_S142 != int(7))
                                     {
-                                        _S151 = _S152;
+                                        _S141 = _S142;
                                         break;
                                     }
-                                    _S151 = int(6);
+                                    _S141 = int(6);
                                     break;
                                 }
-                                if(_S151 != int(6))
+                                if(_S141 != int(6))
                                 {
                                     break;
                                 }
@@ -3217,24 +2609,24 @@ struct KernelContext_0
                                     {
                                         if(6U >= _S8)
                                         {
-                                            _S156 = int(5);
+                                            _S146 = int(5);
                                             break;
                                         }
-                                        float pj_54 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_6];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_6], _S161, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_54, _S162, hi_1[6U]);
-                                        _S156 = int(7);
+                                        float pj_30 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_3];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_3], _S151, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_30, _S152, hi_1[6U]);
+                                        _S146 = int(7);
                                         break;
                                     }
-                                    if(_S156 != int(7))
+                                    if(_S146 != int(7))
                                     {
-                                        _S155 = _S156;
+                                        _S145 = _S146;
                                         break;
                                     }
-                                    _S155 = int(6);
+                                    _S145 = int(6);
                                     break;
                                 }
-                                if(_S155 != int(6))
+                                if(_S145 != int(6))
                                 {
                                     break;
                                 }
@@ -3244,24 +2636,24 @@ struct KernelContext_0
                                     {
                                         if(7U >= _S8)
                                         {
-                                            _S160 = int(5);
+                                            _S150 = int(5);
                                             break;
                                         }
-                                        float pj_55 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_6];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_6], _S161, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_55, _S162, hi_1[7U]);
-                                        _S160 = int(7);
+                                        float pj_31 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_3];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_3], _S151, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_31, _S152, hi_1[7U]);
+                                        _S150 = int(7);
                                         break;
                                     }
-                                    if(_S160 != int(7))
+                                    if(_S150 != int(7))
                                     {
-                                        _S159 = _S160;
+                                        _S149 = _S150;
                                         break;
                                     }
-                                    _S159 = int(6);
+                                    _S149 = int(6);
                                     break;
                                 }
-                                if(_S159 != int(6))
+                                if(_S149 != int(6))
                                 {
                                     break;
                                 }
@@ -3282,31 +2674,33 @@ struct KernelContext_0
                     {
                         break;
                     }
+                    int _S153;
+                    int _S154;
                     for(;;)
                     {
                         for(;;)
                         {
-                            if(j_7 >= _S80)
+                            if(j_4 >= _S74)
                             {
                                 _S65 = int(2);
                                 break;
                             }
-                            float _S163 = attnLo_0(vw_0[7U]);
-                            float _S164 = attnHi_0(vw_0[7U]);
+                            float _S155 = attnLo_0(vw_0[4U]);
+                            float _S156 = attnHi_0(vw_0[4U]);
                             for(;;)
                             {
                                 for(;;)
                                 {
                                     for(;;)
                                     {
-                                        if(_S19)
+                                        if(visible_0)
                                         {
                                             _S65 = int(5);
                                             break;
                                         }
-                                        float pj_56 = (*(&kernelContext_0)->ss_0)[j_7];
-                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_7], _S163, lo_1[0U]);
-                                        hi_1[0U] = fma(pj_56, _S164, hi_1[0U]);
+                                        float pj_32 = (*(&kernelContext_0)->ss_0)[j_4];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_4], _S155, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_32, _S156, hi_1[0U]);
                                         _S65 = int(7);
                                         break;
                                     }
@@ -3328,24 +2722,24 @@ struct KernelContext_0
                                     {
                                         if(1U >= _S8)
                                         {
-                                            _S140 = int(5);
+                                            _S63 = int(5);
                                             break;
                                         }
-                                        float pj_57 = (*(&kernelContext_0)->ss_0)[_S16 + j_7];
-                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S16 + j_7], _S163, lo_1[1U]);
-                                        hi_1[1U] = fma(pj_57, _S164, hi_1[1U]);
-                                        _S140 = int(7);
+                                        float pj_33 = (*(&kernelContext_0)->ss_0)[_S19 + j_4];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_4], _S155, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_33, _S156, hi_1[1U]);
+                                        _S63 = int(7);
                                         break;
                                     }
-                                    if(_S140 != int(7))
+                                    if(_S63 != int(7))
                                     {
-                                        _S139 = _S140;
+                                        _S62 = _S63;
                                         break;
                                     }
-                                    _S139 = int(6);
+                                    _S62 = int(6);
                                     break;
                                 }
-                                if(_S139 != int(6))
+                                if(_S62 != int(6))
                                 {
                                     break;
                                 }
@@ -3355,24 +2749,24 @@ struct KernelContext_0
                                     {
                                         if(2U >= _S8)
                                         {
-                                            _S144 = int(5);
+                                            _S61 = int(5);
                                             break;
                                         }
-                                        float pj_58 = (*(&kernelContext_0)->ss_0)[2U * _S16 + j_7];
-                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S16 + j_7], _S163, lo_1[2U]);
-                                        hi_1[2U] = fma(pj_58, _S164, hi_1[2U]);
-                                        _S144 = int(7);
+                                        float pj_34 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_4];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_4], _S155, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_34, _S156, hi_1[2U]);
+                                        _S61 = int(7);
                                         break;
                                     }
-                                    if(_S144 != int(7))
+                                    if(_S61 != int(7))
                                     {
-                                        _S143 = _S144;
+                                        _S60 = _S61;
                                         break;
                                     }
-                                    _S143 = int(6);
+                                    _S60 = int(6);
                                     break;
                                 }
-                                if(_S143 != int(6))
+                                if(_S60 != int(6))
                                 {
                                     break;
                                 }
@@ -3382,24 +2776,24 @@ struct KernelContext_0
                                     {
                                         if(3U >= _S8)
                                         {
-                                            _S148 = int(5);
+                                            _S59 = int(5);
                                             break;
                                         }
-                                        float pj_59 = (*(&kernelContext_0)->ss_0)[3U * _S16 + j_7];
-                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S16 + j_7], _S163, lo_1[3U]);
-                                        hi_1[3U] = fma(pj_59, _S164, hi_1[3U]);
-                                        _S148 = int(7);
+                                        float pj_35 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_4];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_4], _S155, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_35, _S156, hi_1[3U]);
+                                        _S59 = int(7);
                                         break;
                                     }
-                                    if(_S148 != int(7))
+                                    if(_S59 != int(7))
                                     {
-                                        _S147 = _S148;
+                                        _S58 = _S59;
                                         break;
                                     }
-                                    _S147 = int(6);
+                                    _S58 = int(6);
                                     break;
                                 }
-                                if(_S147 != int(6))
+                                if(_S58 != int(6))
                                 {
                                     break;
                                 }
@@ -3409,24 +2803,24 @@ struct KernelContext_0
                                     {
                                         if(4U >= _S8)
                                         {
-                                            _S152 = int(5);
+                                            _S142 = int(5);
                                             break;
                                         }
-                                        float pj_60 = (*(&kernelContext_0)->ss_0)[4U * _S16 + j_7];
-                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S16 + j_7], _S163, lo_1[4U]);
-                                        hi_1[4U] = fma(pj_60, _S164, hi_1[4U]);
-                                        _S152 = int(7);
+                                        float pj_36 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_4];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_4], _S155, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_36, _S156, hi_1[4U]);
+                                        _S142 = int(7);
                                         break;
                                     }
-                                    if(_S152 != int(7))
+                                    if(_S142 != int(7))
                                     {
-                                        _S151 = _S152;
+                                        _S141 = _S142;
                                         break;
                                     }
-                                    _S151 = int(6);
+                                    _S141 = int(6);
                                     break;
                                 }
-                                if(_S151 != int(6))
+                                if(_S141 != int(6))
                                 {
                                     break;
                                 }
@@ -3436,24 +2830,24 @@ struct KernelContext_0
                                     {
                                         if(5U >= _S8)
                                         {
-                                            _S156 = int(5);
+                                            _S146 = int(5);
                                             break;
                                         }
-                                        float pj_61 = (*(&kernelContext_0)->ss_0)[5U * _S16 + j_7];
-                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S16 + j_7], _S163, lo_1[5U]);
-                                        hi_1[5U] = fma(pj_61, _S164, hi_1[5U]);
-                                        _S156 = int(7);
+                                        float pj_37 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_4];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_4], _S155, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_37, _S156, hi_1[5U]);
+                                        _S146 = int(7);
                                         break;
                                     }
-                                    if(_S156 != int(7))
+                                    if(_S146 != int(7))
                                     {
-                                        _S155 = _S156;
+                                        _S145 = _S146;
                                         break;
                                     }
-                                    _S155 = int(6);
+                                    _S145 = int(6);
                                     break;
                                 }
-                                if(_S155 != int(6))
+                                if(_S145 != int(6))
                                 {
                                     break;
                                 }
@@ -3463,53 +2857,51 @@ struct KernelContext_0
                                     {
                                         if(6U >= _S8)
                                         {
-                                            _S160 = int(5);
+                                            _S150 = int(5);
                                             break;
                                         }
-                                        float pj_62 = (*(&kernelContext_0)->ss_0)[6U * _S16 + j_7];
-                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S16 + j_7], _S163, lo_1[6U]);
-                                        hi_1[6U] = fma(pj_62, _S164, hi_1[6U]);
-                                        _S160 = int(7);
+                                        float pj_38 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_4];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_4], _S155, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_38, _S156, hi_1[6U]);
+                                        _S150 = int(7);
                                         break;
                                     }
-                                    if(_S160 != int(7))
+                                    if(_S150 != int(7))
                                     {
-                                        _S159 = _S160;
+                                        _S149 = _S150;
                                         break;
                                     }
-                                    _S159 = int(6);
+                                    _S149 = int(6);
                                     break;
                                 }
-                                if(_S159 != int(6))
+                                if(_S149 != int(6))
                                 {
                                     break;
                                 }
-                                int _S165;
                                 for(;;)
                                 {
-                                    int _S166;
                                     for(;;)
                                     {
                                         if(7U >= _S8)
                                         {
-                                            _S166 = int(5);
+                                            _S154 = int(5);
                                             break;
                                         }
-                                        float pj_63 = (*(&kernelContext_0)->ss_0)[7U * _S16 + j_7];
-                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S16 + j_7], _S163, lo_1[7U]);
-                                        hi_1[7U] = fma(pj_63, _S164, hi_1[7U]);
-                                        _S166 = int(7);
+                                        float pj_39 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_4];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_4], _S155, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_39, _S156, hi_1[7U]);
+                                        _S154 = int(7);
                                         break;
                                     }
-                                    if(_S166 != int(7))
+                                    if(_S154 != int(7))
                                     {
-                                        _S165 = _S166;
+                                        _S153 = _S154;
                                         break;
                                     }
-                                    _S165 = int(6);
+                                    _S153 = int(6);
                                     break;
                                 }
-                                if(_S165 != int(6))
+                                if(_S153 != int(6))
                                 {
                                     break;
                                 }
@@ -3530,13 +2922,757 @@ struct KernelContext_0
                     {
                         break;
                     }
+                    int _S157;
+                    int _S158;
+                    for(;;)
+                    {
+                        for(;;)
+                        {
+                            if(j_5 >= _S74)
+                            {
+                                _S63 = int(2);
+                                break;
+                            }
+                            float _S159 = attnLo_0(vw_0[5U]);
+                            float _S160 = attnHi_0(vw_0[5U]);
+                            for(;;)
+                            {
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(visible_0)
+                                        {
+                                            _S63 = int(5);
+                                            break;
+                                        }
+                                        float pj_40 = (*(&kernelContext_0)->ss_0)[j_5];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_5], _S159, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_40, _S160, hi_1[0U]);
+                                        _S63 = int(7);
+                                        break;
+                                    }
+                                    if(_S63 != int(7))
+                                    {
+                                        _S62 = _S63;
+                                        break;
+                                    }
+                                    _S62 = int(6);
+                                    break;
+                                }
+                                if(_S62 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(1U >= _S8)
+                                        {
+                                            _S61 = int(5);
+                                            break;
+                                        }
+                                        float pj_41 = (*(&kernelContext_0)->ss_0)[_S19 + j_5];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_5], _S159, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_41, _S160, hi_1[1U]);
+                                        _S61 = int(7);
+                                        break;
+                                    }
+                                    if(_S61 != int(7))
+                                    {
+                                        _S60 = _S61;
+                                        break;
+                                    }
+                                    _S60 = int(6);
+                                    break;
+                                }
+                                if(_S60 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(2U >= _S8)
+                                        {
+                                            _S59 = int(5);
+                                            break;
+                                        }
+                                        float pj_42 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_5];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_5], _S159, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_42, _S160, hi_1[2U]);
+                                        _S59 = int(7);
+                                        break;
+                                    }
+                                    if(_S59 != int(7))
+                                    {
+                                        _S58 = _S59;
+                                        break;
+                                    }
+                                    _S58 = int(6);
+                                    break;
+                                }
+                                if(_S58 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(3U >= _S8)
+                                        {
+                                            _S142 = int(5);
+                                            break;
+                                        }
+                                        float pj_43 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_5];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_5], _S159, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_43, _S160, hi_1[3U]);
+                                        _S142 = int(7);
+                                        break;
+                                    }
+                                    if(_S142 != int(7))
+                                    {
+                                        _S141 = _S142;
+                                        break;
+                                    }
+                                    _S141 = int(6);
+                                    break;
+                                }
+                                if(_S141 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(4U >= _S8)
+                                        {
+                                            _S146 = int(5);
+                                            break;
+                                        }
+                                        float pj_44 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_5];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_5], _S159, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_44, _S160, hi_1[4U]);
+                                        _S146 = int(7);
+                                        break;
+                                    }
+                                    if(_S146 != int(7))
+                                    {
+                                        _S145 = _S146;
+                                        break;
+                                    }
+                                    _S145 = int(6);
+                                    break;
+                                }
+                                if(_S145 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(5U >= _S8)
+                                        {
+                                            _S150 = int(5);
+                                            break;
+                                        }
+                                        float pj_45 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_5];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_5], _S159, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_45, _S160, hi_1[5U]);
+                                        _S150 = int(7);
+                                        break;
+                                    }
+                                    if(_S150 != int(7))
+                                    {
+                                        _S149 = _S150;
+                                        break;
+                                    }
+                                    _S149 = int(6);
+                                    break;
+                                }
+                                if(_S149 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(6U >= _S8)
+                                        {
+                                            _S154 = int(5);
+                                            break;
+                                        }
+                                        float pj_46 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_5];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_5], _S159, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_46, _S160, hi_1[6U]);
+                                        _S154 = int(7);
+                                        break;
+                                    }
+                                    if(_S154 != int(7))
+                                    {
+                                        _S153 = _S154;
+                                        break;
+                                    }
+                                    _S153 = int(6);
+                                    break;
+                                }
+                                if(_S153 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(7U >= _S8)
+                                        {
+                                            _S158 = int(5);
+                                            break;
+                                        }
+                                        float pj_47 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_5];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_5], _S159, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_47, _S160, hi_1[7U]);
+                                        _S158 = int(7);
+                                        break;
+                                    }
+                                    if(_S158 != int(7))
+                                    {
+                                        _S157 = _S158;
+                                        break;
+                                    }
+                                    _S157 = int(6);
+                                    break;
+                                }
+                                if(_S157 != int(6))
+                                {
+                                    break;
+                                }
+                                break;
+                            }
+                            _S63 = int(4);
+                            break;
+                        }
+                        if(_S63 != int(4))
+                        {
+                            _S62 = _S63;
+                            break;
+                        }
+                        _S62 = int(3);
+                        break;
+                    }
+                    if(_S62 != int(3))
+                    {
+                        break;
+                    }
+                    int _S161;
+                    int _S162;
+                    for(;;)
+                    {
+                        for(;;)
+                        {
+                            if(j_6 >= _S74)
+                            {
+                                _S61 = int(2);
+                                break;
+                            }
+                            float _S163 = attnLo_0(vw_0[6U]);
+                            float _S164 = attnHi_0(vw_0[6U]);
+                            for(;;)
+                            {
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(visible_0)
+                                        {
+                                            _S61 = int(5);
+                                            break;
+                                        }
+                                        float pj_48 = (*(&kernelContext_0)->ss_0)[j_6];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_6], _S163, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_48, _S164, hi_1[0U]);
+                                        _S61 = int(7);
+                                        break;
+                                    }
+                                    if(_S61 != int(7))
+                                    {
+                                        _S60 = _S61;
+                                        break;
+                                    }
+                                    _S60 = int(6);
+                                    break;
+                                }
+                                if(_S60 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(1U >= _S8)
+                                        {
+                                            _S59 = int(5);
+                                            break;
+                                        }
+                                        float pj_49 = (*(&kernelContext_0)->ss_0)[_S19 + j_6];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_6], _S163, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_49, _S164, hi_1[1U]);
+                                        _S59 = int(7);
+                                        break;
+                                    }
+                                    if(_S59 != int(7))
+                                    {
+                                        _S58 = _S59;
+                                        break;
+                                    }
+                                    _S58 = int(6);
+                                    break;
+                                }
+                                if(_S58 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(2U >= _S8)
+                                        {
+                                            _S142 = int(5);
+                                            break;
+                                        }
+                                        float pj_50 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_6];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_6], _S163, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_50, _S164, hi_1[2U]);
+                                        _S142 = int(7);
+                                        break;
+                                    }
+                                    if(_S142 != int(7))
+                                    {
+                                        _S141 = _S142;
+                                        break;
+                                    }
+                                    _S141 = int(6);
+                                    break;
+                                }
+                                if(_S141 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(3U >= _S8)
+                                        {
+                                            _S146 = int(5);
+                                            break;
+                                        }
+                                        float pj_51 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_6];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_6], _S163, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_51, _S164, hi_1[3U]);
+                                        _S146 = int(7);
+                                        break;
+                                    }
+                                    if(_S146 != int(7))
+                                    {
+                                        _S145 = _S146;
+                                        break;
+                                    }
+                                    _S145 = int(6);
+                                    break;
+                                }
+                                if(_S145 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(4U >= _S8)
+                                        {
+                                            _S150 = int(5);
+                                            break;
+                                        }
+                                        float pj_52 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_6];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_6], _S163, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_52, _S164, hi_1[4U]);
+                                        _S150 = int(7);
+                                        break;
+                                    }
+                                    if(_S150 != int(7))
+                                    {
+                                        _S149 = _S150;
+                                        break;
+                                    }
+                                    _S149 = int(6);
+                                    break;
+                                }
+                                if(_S149 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(5U >= _S8)
+                                        {
+                                            _S154 = int(5);
+                                            break;
+                                        }
+                                        float pj_53 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_6];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_6], _S163, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_53, _S164, hi_1[5U]);
+                                        _S154 = int(7);
+                                        break;
+                                    }
+                                    if(_S154 != int(7))
+                                    {
+                                        _S153 = _S154;
+                                        break;
+                                    }
+                                    _S153 = int(6);
+                                    break;
+                                }
+                                if(_S153 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(6U >= _S8)
+                                        {
+                                            _S158 = int(5);
+                                            break;
+                                        }
+                                        float pj_54 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_6];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_6], _S163, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_54, _S164, hi_1[6U]);
+                                        _S158 = int(7);
+                                        break;
+                                    }
+                                    if(_S158 != int(7))
+                                    {
+                                        _S157 = _S158;
+                                        break;
+                                    }
+                                    _S157 = int(6);
+                                    break;
+                                }
+                                if(_S157 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(7U >= _S8)
+                                        {
+                                            _S162 = int(5);
+                                            break;
+                                        }
+                                        float pj_55 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_6];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_6], _S163, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_55, _S164, hi_1[7U]);
+                                        _S162 = int(7);
+                                        break;
+                                    }
+                                    if(_S162 != int(7))
+                                    {
+                                        _S161 = _S162;
+                                        break;
+                                    }
+                                    _S161 = int(6);
+                                    break;
+                                }
+                                if(_S161 != int(6))
+                                {
+                                    break;
+                                }
+                                break;
+                            }
+                            _S61 = int(4);
+                            break;
+                        }
+                        if(_S61 != int(4))
+                        {
+                            _S60 = _S61;
+                            break;
+                        }
+                        _S60 = int(3);
+                        break;
+                    }
+                    if(_S60 != int(3))
+                    {
+                        break;
+                    }
+                    for(;;)
+                    {
+                        for(;;)
+                        {
+                            if(j_7 >= _S74)
+                            {
+                                _S59 = int(2);
+                                break;
+                            }
+                            float _S165 = attnLo_0(vw_0[7U]);
+                            float _S166 = attnHi_0(vw_0[7U]);
+                            for(;;)
+                            {
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(visible_0)
+                                        {
+                                            _S59 = int(5);
+                                            break;
+                                        }
+                                        float pj_56 = (*(&kernelContext_0)->ss_0)[j_7];
+                                        lo_1[0U] = fma((*(&kernelContext_0)->ss_0)[j_7], _S165, lo_1[0U]);
+                                        hi_1[0U] = fma(pj_56, _S166, hi_1[0U]);
+                                        _S59 = int(7);
+                                        break;
+                                    }
+                                    if(_S59 != int(7))
+                                    {
+                                        _S58 = _S59;
+                                        break;
+                                    }
+                                    _S58 = int(6);
+                                    break;
+                                }
+                                if(_S58 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(1U >= _S8)
+                                        {
+                                            _S142 = int(5);
+                                            break;
+                                        }
+                                        float pj_57 = (*(&kernelContext_0)->ss_0)[_S19 + j_7];
+                                        lo_1[1U] = fma((*(&kernelContext_0)->ss_0)[_S19 + j_7], _S165, lo_1[1U]);
+                                        hi_1[1U] = fma(pj_57, _S166, hi_1[1U]);
+                                        _S142 = int(7);
+                                        break;
+                                    }
+                                    if(_S142 != int(7))
+                                    {
+                                        _S141 = _S142;
+                                        break;
+                                    }
+                                    _S141 = int(6);
+                                    break;
+                                }
+                                if(_S141 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(2U >= _S8)
+                                        {
+                                            _S146 = int(5);
+                                            break;
+                                        }
+                                        float pj_58 = (*(&kernelContext_0)->ss_0)[2U * _S19 + j_7];
+                                        lo_1[2U] = fma((*(&kernelContext_0)->ss_0)[2U * _S19 + j_7], _S165, lo_1[2U]);
+                                        hi_1[2U] = fma(pj_58, _S166, hi_1[2U]);
+                                        _S146 = int(7);
+                                        break;
+                                    }
+                                    if(_S146 != int(7))
+                                    {
+                                        _S145 = _S146;
+                                        break;
+                                    }
+                                    _S145 = int(6);
+                                    break;
+                                }
+                                if(_S145 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(3U >= _S8)
+                                        {
+                                            _S150 = int(5);
+                                            break;
+                                        }
+                                        float pj_59 = (*(&kernelContext_0)->ss_0)[3U * _S19 + j_7];
+                                        lo_1[3U] = fma((*(&kernelContext_0)->ss_0)[3U * _S19 + j_7], _S165, lo_1[3U]);
+                                        hi_1[3U] = fma(pj_59, _S166, hi_1[3U]);
+                                        _S150 = int(7);
+                                        break;
+                                    }
+                                    if(_S150 != int(7))
+                                    {
+                                        _S149 = _S150;
+                                        break;
+                                    }
+                                    _S149 = int(6);
+                                    break;
+                                }
+                                if(_S149 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(4U >= _S8)
+                                        {
+                                            _S154 = int(5);
+                                            break;
+                                        }
+                                        float pj_60 = (*(&kernelContext_0)->ss_0)[4U * _S19 + j_7];
+                                        lo_1[4U] = fma((*(&kernelContext_0)->ss_0)[4U * _S19 + j_7], _S165, lo_1[4U]);
+                                        hi_1[4U] = fma(pj_60, _S166, hi_1[4U]);
+                                        _S154 = int(7);
+                                        break;
+                                    }
+                                    if(_S154 != int(7))
+                                    {
+                                        _S153 = _S154;
+                                        break;
+                                    }
+                                    _S153 = int(6);
+                                    break;
+                                }
+                                if(_S153 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(5U >= _S8)
+                                        {
+                                            _S158 = int(5);
+                                            break;
+                                        }
+                                        float pj_61 = (*(&kernelContext_0)->ss_0)[5U * _S19 + j_7];
+                                        lo_1[5U] = fma((*(&kernelContext_0)->ss_0)[5U * _S19 + j_7], _S165, lo_1[5U]);
+                                        hi_1[5U] = fma(pj_61, _S166, hi_1[5U]);
+                                        _S158 = int(7);
+                                        break;
+                                    }
+                                    if(_S158 != int(7))
+                                    {
+                                        _S157 = _S158;
+                                        break;
+                                    }
+                                    _S157 = int(6);
+                                    break;
+                                }
+                                if(_S157 != int(6))
+                                {
+                                    break;
+                                }
+                                for(;;)
+                                {
+                                    for(;;)
+                                    {
+                                        if(6U >= _S8)
+                                        {
+                                            _S162 = int(5);
+                                            break;
+                                        }
+                                        float pj_62 = (*(&kernelContext_0)->ss_0)[6U * _S19 + j_7];
+                                        lo_1[6U] = fma((*(&kernelContext_0)->ss_0)[6U * _S19 + j_7], _S165, lo_1[6U]);
+                                        hi_1[6U] = fma(pj_62, _S166, hi_1[6U]);
+                                        _S162 = int(7);
+                                        break;
+                                    }
+                                    if(_S162 != int(7))
+                                    {
+                                        _S161 = _S162;
+                                        break;
+                                    }
+                                    _S161 = int(6);
+                                    break;
+                                }
+                                if(_S161 != int(6))
+                                {
+                                    break;
+                                }
+                                int _S167;
+                                for(;;)
+                                {
+                                    int _S168;
+                                    for(;;)
+                                    {
+                                        if(7U >= _S8)
+                                        {
+                                            _S168 = int(5);
+                                            break;
+                                        }
+                                        float pj_63 = (*(&kernelContext_0)->ss_0)[7U * _S19 + j_7];
+                                        lo_1[7U] = fma((*(&kernelContext_0)->ss_0)[7U * _S19 + j_7], _S165, lo_1[7U]);
+                                        hi_1[7U] = fma(pj_63, _S166, hi_1[7U]);
+                                        _S168 = int(7);
+                                        break;
+                                    }
+                                    if(_S168 != int(7))
+                                    {
+                                        _S167 = _S168;
+                                        break;
+                                    }
+                                    _S167 = int(6);
+                                    break;
+                                }
+                                if(_S167 != int(6))
+                                {
+                                    break;
+                                }
+                                break;
+                            }
+                            _S59 = int(4);
+                            break;
+                        }
+                        if(_S59 != int(4))
+                        {
+                            _S58 = _S59;
+                            break;
+                        }
+                        _S58 = int(3);
+                        break;
+                    }
+                    if(_S58 != int(3))
+                    {
+                        break;
+                    }
                     break;
                 }
                 kw_5 = kw_5 + 32U;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        c0_0 = c0_0 + _S16;
+        c0_0 = c0_0 + _S19;
     }
     r_0 = 0U;
     for(;;)
@@ -3642,31 +3778,31 @@ struct KernelContext_0
             a_13 = a_12;
             b_6 = b_5;
         }
-        uint _S167 = 2U * _S62;
-        uint _S168 = _S63 * 64U + _S167;
-        (*(&kernelContext_0)->ss_0)[_S168] = a_13;
-        (*(&kernelContext_0)->ss_0)[_S168 + 1U] = b_6;
+        uint _S169 = 2U * _S56;
+        uint _S170 = _S57 * 64U + _S169;
+        (*(&kernelContext_0)->ss_0)[_S170] = a_13;
+        (*(&kernelContext_0)->ss_0)[_S170 + 1U] = b_6;
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if(_S63 != 0U)
+        if(_S57 != 0U)
         {
-            _S19 = true;
+            visible_0 = true;
         }
         else
         {
-            _S19 = _S62 >= _S11;
+            visible_0 = _S56 >= _S11;
         }
-        if(_S19)
+        if(visible_0)
         {
             r_0 = r_0 + 1U;
             continue;
         }
-        uint _S169 = 64U + _S167;
-        uint _S170 = 128U + _S167;
-        uint _S171 = 192U + _S167;
-        float a_14 = (*(&kernelContext_0)->ss_0)[_S167] + (*(&kernelContext_0)->ss_0)[_S169] + (*(&kernelContext_0)->ss_0)[_S170] + (*(&kernelContext_0)->ss_0)[_S171];
-        float b_7 = (*(&kernelContext_0)->ss_0)[_S167 + 1U] + (*(&kernelContext_0)->ss_0)[_S169 + 1U] + (*(&kernelContext_0)->ss_0)[_S170 + 1U] + (*(&kernelContext_0)->ss_0)[_S171 + 1U];
-        uint _S172 = r_0 / (&kernelContext_0)->p_0->queries_0;
-        uint h_4 = _S13 + _S172;
+        uint _S171 = 64U + _S169;
+        uint _S172 = 128U + _S169;
+        uint _S173 = 192U + _S169;
+        float a_14 = (*(&kernelContext_0)->ss_0)[_S169] + (*(&kernelContext_0)->ss_0)[_S171] + (*(&kernelContext_0)->ss_0)[_S172] + (*(&kernelContext_0)->ss_0)[_S173];
+        float b_7 = (*(&kernelContext_0)->ss_0)[_S169 + 1U] + (*(&kernelContext_0)->ss_0)[_S171 + 1U] + (*(&kernelContext_0)->ss_0)[_S172 + 1U] + (*(&kernelContext_0)->ss_0)[_S173 + 1U];
+        uint _S174 = r_0 / (&kernelContext_0)->p_0->queries_0;
+        uint h_4 = _S14 + _S174;
         uint i_2 = r_0 % (&kernelContext_0)->p_0->queries_0;
         uint row_0 = _S9 + h_4 * (&kernelContext_0)->p_0->queries_0 + i_2;
         float a_15;
@@ -3674,13 +3810,13 @@ struct KernelContext_0
         if(((&kernelContext_0)->p_0->splits_1) > 1U)
         {
             uint pr_8 = split_0 * _S10 + row_0;
-            uint at_0 = attnAccBase_0((&kernelContext_0)->p_0->splits_1, _S10) + pr_8 * (&kernelContext_0)->p_0->headDim_0 + _S167;
-            if(_S62 == 0U)
+            uint at_0 = attnAccBase_0((&kernelContext_0)->p_0->splits_1, _S10) + pr_8 * (&kernelContext_0)->p_0->headDim_0 + _S169;
+            if(_S56 == 0U)
             {
-                uint _S173 = 2U * pr_8;
-                float device* _S174 = (&kernelContext_0)->partials_0+_S173;
-                bool _S175 = _S14 == 0U;
-                if(_S175)
+                uint _S175 = 2U * pr_8;
+                float device* _S176 = (&kernelContext_0)->partials_0+_S175;
+                bool _S177 = _S17 == 0U;
+                if(_S177)
                 {
                     a_15 = dg_negative_infinity_0();
                 }
@@ -3688,9 +3824,9 @@ struct KernelContext_0
                 {
                     a_15 = (*(&kernelContext_0)->rowM_0)[r_0];
                 }
-                *_S174 = a_15;
-                float device* _S176 = (&kernelContext_0)->partials_0+(_S173 + 1U);
-                if(_S175)
+                *_S176 = a_15;
+                float device* _S178 = (&kernelContext_0)->partials_0+(_S175 + 1U);
+                if(_S177)
                 {
                     b_8 = 0.0;
                 }
@@ -3698,9 +3834,9 @@ struct KernelContext_0
                 {
                     b_8 = (*(&kernelContext_0)->rowL_0)[r_0];
                 }
-                *_S176 = b_8;
+                *_S178 = b_8;
             }
-            float device* _S177 = (&kernelContext_0)->partials_0+at_0;
+            float device* _S179 = (&kernelContext_0)->partials_0+at_0;
             if(((*(&kernelContext_0)->rowL_0)[r_0]) == 0.0)
             {
                 a_15 = 0.0;
@@ -3709,8 +3845,8 @@ struct KernelContext_0
             {
                 a_15 = a_14;
             }
-            *_S177 = a_15;
-            float device* _S178 = (&kernelContext_0)->partials_0+(at_0 + 1U);
+            *_S179 = a_15;
+            float device* _S180 = (&kernelContext_0)->partials_0+(at_0 + 1U);
             if(((*(&kernelContext_0)->rowL_0)[r_0]) == 0.0)
             {
                 b_8 = 0.0;
@@ -3719,13 +3855,13 @@ struct KernelContext_0
             {
                 b_8 = b_7;
             }
-            *_S178 = b_8;
+            *_S180 = b_8;
             r_0 = r_0 + 1U;
             continue;
         }
         float l_0 = (*(&kernelContext_0)->rowL_0)[r_0];
-        bool _S179 = ((*(&kernelContext_0)->rowL_0)[r_0]) == 0.0;
-        if(_S179)
+        bool _S181 = ((*(&kernelContext_0)->rowL_0)[r_0]) == 0.0;
+        if(_S181)
         {
             a_15 = 0.0;
         }
@@ -3733,7 +3869,7 @@ struct KernelContext_0
         {
             a_15 = a_14 / l_0;
         }
-        if(_S179)
+        if(_S181)
         {
             b_8 = 0.0;
         }
@@ -3741,7 +3877,7 @@ struct KernelContext_0
         {
             b_8 = b_7 / l_0;
         }
-        *((&kernelContext_0)->o_0+(row_0 * _S11 + _S62)) = attnPack_0(a_15, b_8);
+        *((&kernelContext_0)->o_0+(row_0 * _S11 + _S56)) = attnPack_0(a_15, b_8);
         r_0 = r_0 + 1U;
     }
     return;

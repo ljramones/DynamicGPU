@@ -111,7 +111,7 @@ public final class AttentionF16 implements AutoCloseable {
     private final Softmax softmax;
     private final GemmF16 values;
     private final Map<Integer, PipelineSet> fused = new HashMap<>();
-    private record DecodeVariant(int headDim, int rowTier) {}
+    private record DecodeVariant(int headDim, int rowTier, boolean useLengths) {}
     private final Map<DecodeVariant, GpuComputePipeline> decodePipelines = new HashMap<>();
     private GpuComputePipeline shortDecode;
     private boolean shortDecodeUnsupported;
@@ -283,14 +283,14 @@ public final class AttentionF16 implements AutoCloseable {
         subgroups = false;
     }
 
-    private GpuComputePipeline decodePipeline(int variant, int rows) {
+    private GpuComputePipeline decodePipeline(int variant, int rows, boolean useLengths) {
         int tier = rows == 1 ? 1 : rows <= 4 ? 4 : DECODE_ROWS;
-        return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), this::compileDecodePipeline);
+        return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier, useLengths), this::compileDecodePipeline);
     }
 
     private GpuComputePipeline compileDecodePipeline(DecodeVariant variant) {
         String suffix = variant.headDim() + (output() == Precision.FP32 ? "_f32" : "");
-        var constants = Map.<String, Object>of("ROW_TIER", variant.rowTier());
+        var constants = Map.<String, Object>of("ROW_TIER", variant.rowTier(), "USE_LENGTHS", variant.useLengths() ? 1 : 0);
         var types = Set.of(GpuCapabilities.FP32);
         if (subgroups && device.capabilities().shaderFeatures().contains(GpuCapabilities.SUBGROUP_ARITHMETIC)) {
             try {
@@ -475,7 +475,7 @@ public final class AttentionF16 implements AutoCloseable {
              var noLse = lse == null ? scratch(16, "attention-no-lse") : null) {
             var lseBinding = lse != null ? lse : noLse;
             if (decode)
-                encoder.dispatch(decodePipeline(variant, s.heads() / s.kvHeads() * s.queries()), Map.of(0, q, 1, k, 2, v, 3, o, 4, partial, 5, table, 6, lens), params, new Dimensions(1, s.kvHeads(), splits), "attention.decode");
+                encoder.dispatch(decodePipeline(variant, s.heads() / s.kvHeads() * s.queries(), lengths != null), Map.of(0, q, 1, k, 2, v, 3, o, 4, partial, 5, table, 6, lens), params, new Dimensions(1, s.kvHeads(), splits), "attention.decode");
             else if (matrixPath(s.headDim()))
                 encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, o, 4, partial, 5, table, 6, lseBinding, 7, lens), params,
                         new Dimensions(Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), MATRIX_ROWS), s.kvHeads(), splits), "attention.flash.simdgroup");
@@ -576,7 +576,7 @@ public final class AttentionF16 implements AutoCloseable {
              var partial = partials(splits, rows, b.headDim());
              var noLse = scratch(16, "attention-no-lse")) {
             var lens = lengths == null ? table : lengths;
-            encoder.dispatch(decodePipeline(variant, b.heads() / b.kvHeads() * b.queries()),
+            encoder.dispatch(decodePipeline(variant, b.heads() / b.kvHeads() * b.queries(), lengths != null),
                     Map.of(0, q, 1, cache.keys(layer), 2, cache.values(layer), 3, o, 4, partial, 5, table, 6, lens), params,
                     new Dimensions(batch, b.kvHeads(), splits), "attention.decode.batch");
             if (splits > 1)

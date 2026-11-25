@@ -315,8 +315,15 @@ abstract class AttentionConformance {
                     var plain = e.download(o);
                     a.encode(e, q, k, v, o, shape, lengths, 4);
                     var masked = e.download(o);
+                    e.fill(lengths, 0);
+                    a.encode(e, q, k, v, o, shape, lengths, 4);
+                    var empty = e.download(o);
+                    a.encode(e, q, k, v, o, shape);
+                    var plainAgain = e.download(o);
                     try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
                     assertArrayEquals(plain.bytes(), masked.bytes(), "all keys visible: " + shape);
+                    assertArrayEquals(new byte[(int) o.bytes()], empty.bytes(), "no visible keys: " + shape);
+                    assertArrayEquals(plain.bytes(), plainAgain.bytes(), "unmasked after masked decode: " + shape);
                 }
             }
         });

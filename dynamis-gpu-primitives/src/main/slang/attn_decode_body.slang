@@ -35,6 +35,7 @@
 static const uint THREADS = 128;
 static const uint RMAX = 8;
 [vk::constant_id(0)] const uint ROW_TIER = 8;   // maximum rows processed by the specialized pipeline
+[vk::constant_id(1)] const uint USE_LENGTHS = 1;
 static const uint SK = 1024;              // scores kept: rows * splitKeys <= SK
 static const uint D2 = DMAX / 2;
 static const uint TPP = THREADS / D2;     // threads per column pair, each over its share of the keys
@@ -64,18 +65,21 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint d2 = p.headDim / 2, offset = keys - p.queries;
     uint kStart = split * p.splitKeys, kEnd = min(keys, kStart + p.splitKeys);
     uint firstHead = seq * p.heads + kvHead * hpk;
-    kEnd = attnKeyEnd(lens, p.lengthGroup, firstHead, firstHead + hpk - 1, kEnd);
+    if (USE_LENGTHS != 0) kEnd = attnKeyEnd(lens, p.lengthGroup, firstHead, firstHead + hpk - 1, kEnd);
     uint n = kEnd > kStart ? kEnd - kStart : 0u;
     // a range is taken in chunks of the scores the group keeps; one chunk unless the range is longer (batched decode)
     uint chunk = max(128u, SK / max(rows, 1u) / 128u * 128u);
     uint sk = chunk;   // the stride of a row's scores
     uint limit[RMAX];
-    [ForceUnroll]
-    for (uint r = 0; r < RMAX; r++)
+    if (USE_LENGTHS != 0)
     {
-        limit[r] = p.causal != 0 ? r % p.queries + offset + 1 : keys;
-        if (r < rows && p.lengthGroup != 0)
-            limit[r] = min(limit[r], lens[(firstHead + r / p.queries) / p.lengthGroup]);
+        [ForceUnroll]
+        for (uint r = 0; r < RMAX; r++)
+        {
+            limit[r] = p.causal != 0 ? r % p.queries + offset + 1 : keys;
+            if (r < rows && p.lengthGroup != 0)
+                limit[r] = min(limit[r], lens[(firstHead + r / p.queries) / p.lengthGroup]);
+        }
     }
 
 #ifdef WAVE_ROWS
@@ -139,7 +143,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             for (uint r = 0; r < RMAX; r++)
             {
                 if (r >= rows) break;
-                bool visible = key < limit[r];
+                bool visible = USE_LENGTHS != 0 ? key < limit[r] : (p.causal == 0 || key <= r % p.queries + offset);
                 ss[r * sk + j] = visible ? s[r] * p.scale : dg_negative_infinity();
             }
         }
