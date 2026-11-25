@@ -425,7 +425,7 @@ The plan as agreed:
 
 ### 1.11: Attention at scale
 
-**Status: complete, to be released as 1.11.0.** Done:
+**Status: complete, released as 1.11.0.** Done:
 - **Flash attention** behind `AttentionF16` (a fused `encode`, no scratch), with linear memory and causal block
   skipping:
   - a portable Slang kernel for head dimensions up to 256;
