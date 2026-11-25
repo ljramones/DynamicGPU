@@ -139,6 +139,10 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - **Constants:** build infinities from bits, for example `asfloat(0xFF800000u)`, not `1.0 / 0.0`.
   - **Specialization constants:** a `static const` computed from one (`static const bool QK = QFORMAT >= 3`) aborts
     the SPIR-V emitter ("Unhandled global inst"). Use a macro or a function.
+- **Publishing partials across groups:** SDK Slang 2026.1 lowers `Atomic<uint>.add(1, MemoryOrder.AcquireRelease)`
+  to `memory_order_seq_cst` on an ordinary Metal device atomic. Native Metal rejects this overload. A relaxed
+  counter alone cannot publish preceding partial writes across groups. Short decode keeps its whole row in one
+  group, and long decode publishes its partials at the dispatch boundary.
 - **Hand-written MSL** is for what Slang cannot emit, such as `simdgroup_matrix`. Put it under
   `src/main/resources/.../metal/`, use the same ABI as the Slang kernel, and build a `KernelBundle` with only a
   `METAL` executable (see `GemmF16.simdgroupBundle`).

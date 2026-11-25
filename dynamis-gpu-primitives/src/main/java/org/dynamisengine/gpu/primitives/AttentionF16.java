@@ -106,6 +106,8 @@ public final class AttentionF16 implements AutoCloseable {
     private final Map<Integer, PipelineSet> fused = new HashMap<>();
     private record DecodeVariant(int headDim, int rowTier) {}
     private final Map<DecodeVariant, GpuComputePipeline> decodePipelines = new HashMap<>();
+    private GpuComputePipeline shortDecode;
+    private boolean shortDecodeUnsupported;
     private boolean closed;
 
     private AttentionF16(GpuDevice device, GemmF16 scores, Softmax softmax, GemmF16 values) {
@@ -231,7 +233,7 @@ public final class AttentionF16 implements AutoCloseable {
     }
 
     /** The kernel {@link #encode(GpuCommandEncoder, GpuBuffer, GpuBuffer, GpuBuffer, GpuBuffer, Shape)} runs for {@code s}. */
-    String fusedKernel(Shape s) { return decodes(s) ? "decode" : matrixPath(s.headDim()) ? "flash.simdgroup" : "flash"; }
+    String fusedKernel(Shape s) { return shortDecode(s) ? "decode.short" : decodes(s) ? "decode" : matrixPath(s.headDim()) ? "flash.simdgroup" : "flash"; }
 
     private PipelineSet fusedPipelines(int variant) {
         if (closed) throw new IllegalStateException("closed");
@@ -244,7 +246,7 @@ public final class AttentionF16 implements AutoCloseable {
             if (matrixPath(d)) {
                 var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
                 for (int i = 0; i < FLASH_ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, FLASH_ACCESSES.get(i), 4));
-                list.add(new PipelineDescriptor(matrixBundle(), "attn_flash_" + d + suffix + "_simdgroup",
+                list.add(new PipelineDescriptor(metalBundle("attn_flash_simdgroup"), "attn_flash_" + d + suffix + "_simdgroup",
                         new BindingLayout(b, GemmF16.KERNELS.parameterBytes("attn_flash_" + d + suffix)), new Dimensions(128, 1, 1), Map.of(),
                         types, Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16)));
             }
@@ -261,10 +263,45 @@ public final class AttentionF16 implements AutoCloseable {
                         FLASH_ACCESSES, Set.of(GpuCapabilities.FP32), wave ? Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC) : Set.of(), Map.of("ROW_TIER", tier))));
     }
 
-    private static KernelBundle matrixBundle() {
-        try (var in = AttentionF16.class.getResourceAsStream("metal/attn_flash_simdgroup.metal")) {
-            if (in == null) throw new IllegalStateException("missing metal/attn_flash_simdgroup.metal");
-            return new KernelBundle("dynamisgpu.primitives.attn_flash_simdgroup", "1",
+    private boolean shortDecode(Shape s) {
+        var caps = device.capabilities();
+        return !shortDecodeUnsupported && device.adapter().backend() == Backend.METAL && s.headDim() == 128 && decodes(s) && s.keys() <= 512
+                && caps.minSubgroupSize() == 32 && caps.maxSubgroupSize() == 32
+                && caps.maxGroupThreads() >= 512 && caps.maxGroupSize().x() >= 512
+                && caps.shaderFeatures().containsAll(SHORT_FEATURES);
+    }
+
+    private static final Set<String> SHORT_FEATURES = Set.of(GpuCapabilities.SUBGROUP_ARITHMETIC, GpuCapabilities.SUBGROUP_SHUFFLE);
+
+    private GpuComputePipeline shortDecodePipeline(int parameterBytes) {
+        if (shortDecode == null) {
+            var bindings = new java.util.ArrayList<BindingLayout.BufferBinding>();
+            for (int i = 0; i < 5; i++) bindings.add(new BindingLayout.BufferBinding(i, i == 3 ? Access.WRITE : Access.READ, 4));
+            String suffix = output() == Precision.FP32 ? "_f32" : "";
+            try {
+                shortDecode = device.pipeline(new PipelineDescriptor(metalBundle("attn_decode_short"), "attn_decode_128" + suffix + "_direct",
+                        new BindingLayout(bindings, parameterBytes), new Dimensions(512, 1, 1), Map.of(),
+                        Set.of(GpuCapabilities.FP16, GpuCapabilities.FP32), SHORT_FEATURES));
+            } catch (ComputeException e) {
+                if (e.code() != ComputeException.Code.UNSUPPORTED) throw e;
+                // Metal can give this compiled kernel a lower thread limit than the device maximum.
+                shortDecodeUnsupported = true;
+                return null;
+            }
+            if (shortDecode.limits().executionWidth() != 32) {
+                shortDecode.close();
+                shortDecode = null;
+                shortDecodeUnsupported = true;
+            }
+        }
+        return shortDecode;
+    }
+
+    private static KernelBundle metalBundle(String name) {
+        String path = "metal/" + name + ".metal";
+        try (var in = AttentionF16.class.getResourceAsStream(path)) {
+            if (in == null) throw new IllegalStateException("missing " + path);
+            return new KernelBundle("dynamisgpu.primitives." + name, "1",
                     Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, in.readAllBytes())));
         } catch (java.io.IOException e) {
             throw new java.io.UncheckedIOException(e);
@@ -308,6 +345,7 @@ public final class AttentionF16 implements AutoCloseable {
     }
 
     private void requireFused(Shape s) {
+        if (closed) throw new IllegalStateException("closed");
         if (!fusedSupports(s))
             throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the fused attention needs an even head dimension of at most "
                     + MAX_FUSED_HEAD_DIM + " and " + groupBytes(variant(s.headDim())) + " bytes of group memory: " + s);
@@ -319,15 +357,18 @@ public final class AttentionF16 implements AutoCloseable {
         Checks.range(q, 0, s.qBytes() / 2, 2, "q");
         Checks.range(o, 0, s.oBytes(output()) / output().bytes(), output().bytes(), "o");
         int variant = variant(s.headDim());
-        var set = fusedPipelines(variant);
-        int[] sp = split(s);
+        var layout = ParameterLayout.of(GemmF16.KERNELS, "attn_flash_" + variant + (output() == Precision.FP32 ? "_f32" : ""));
+        boolean direct = shortDecode(s) && shortDecodePipeline(layout.bytes()) != null;
+        int[] sp = direct ? new int[]{1, s.keys()} : split(s);
         int splits = sp[0], rowBlocks = Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), BR);
         long rows = (long) s.heads() * s.queries();
-        var layout = ParameterLayout.of(GemmF16.KERNELS, "attn_flash_" + variant + (output() == Precision.FP32 ? "_f32" : ""));
         var combineGrid = Grid.linear(device.capabilities(), rows);   // a group per row
         byte[] params = layout.block().u32("heads", s.heads()).u32("kvHeads", s.kvHeads()).u32("queries", s.queries()).u32("keys", s.keys())
                 .u32("headDim", s.headDim()).u32("cacheKeys", s.cacheKeys()).f32("scale", s.scale()).u32("causal", s.causal() ? 1 : 0)
-                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).bytes();
+                .u32("splits", splits).u32("splitKeys", sp[1]).u32("rowBlocks", direct || splits > 1 ? combineGrid.gridX() : rowBlocks).u32("pageSize", pageSize).bytes();
+        if (direct)
+            return encoder.dispatch(shortDecode, Map.of(0, q, 1, k, 2, v, 3, o, 4, table), params, combineGrid.groups(), "attention.decode.short");
+        var set = fusedPipelines(variant);
         // per dispatch: closing the handles keeps them alive for the recorded commands
         try (var ml = scratch(splits > 1 ? 8L * splits * rows : 16, "attention-partial-ml");
              var acc = scratch(splits > 1 ? 4L * splits * rows * s.headDim() : 16, "attention-partial-acc")) {
@@ -363,6 +404,7 @@ public final class AttentionF16 implements AutoCloseable {
         try {
             var resources = new java.util.ArrayList<AutoCloseable>(decodePipelines.values());
             resources.addAll(fused.values());
+            resources.add(shortDecode);
             PipelineSet.closeAll(resources.toArray(new AutoCloseable[0]));
         } finally {
             try { values.close(); } finally { try { softmax.close(); } finally { scores.close(); } }

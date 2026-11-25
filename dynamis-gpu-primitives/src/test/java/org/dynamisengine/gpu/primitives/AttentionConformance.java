@@ -170,6 +170,8 @@ abstract class AttentionConformance {
                     Shape.of(6, 7, 7, 2).withKvHeads(3),
                     Shape.of(16, 2, 9000, 64).withKvHeads(2).asCausal(),                     // flash, 16 rows per KV head
                     Shape.of(8, 2, 513, 64).withKvHeads(2).asCausal(),                       // decode, 8 rows and a final single key
+                    Shape.of(16, 2, 512, 128).withKvHeads(4).withCacheKeys(513).asCausal(),  // 8 rows, short decode at capacity
+                    Shape.of(8, 1, 513, 128).withKvHeads(2),                                // first longer context
                     Shape.of(6, 1, 129, 128).withKvHeads(2),                                // decode, 3 rows per KV head
                     Shape.of(2, 3, 5000, 256).withKvHeads(1).asCausal().withCacheKeys(6000), // decode at DMAX 256
                     Shape.of(4, 9, 40, 64).withKvHeads(4)}) {
@@ -196,7 +198,12 @@ abstract class AttentionConformance {
      * bits as the contiguous attention over the same keys and values, and the host-side facts track every step.
      */
     @Test void pagedMatchesContiguous() {
-        int layers = 2, kvh = 2, d = 64, ps = 32;
+        checkPagedMatchesContiguous(64);
+        checkPagedMatchesContiguous(128);
+    }
+
+    private void checkPagedMatchesContiguous(int d) {
+        int layers = 2, kvh = 2, ps = 32;
         var r = new SplittableRandom(50);
         try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(layers, kvh, d, ps, 16)); var a = AttentionF16.create(device, Precision.FP32)) {
             // expected[layer][seq] K and V, [kvHeads][tokens][d]

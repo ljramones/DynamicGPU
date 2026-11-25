@@ -528,6 +528,10 @@ in the sequence, and with the causal mask key blocks that no query of a group se
   - **Decode** (Slang): at most 8 rows per KV head (a decode step's query heads). A group takes one range of keys of a
     KV head and keeps its scores. Pipelines specialize the maximum row count to 1, 4 or 8. The compiler can then
     eliminate dot products and accumulators for unused rows. The order within each active row is preserved.
+  - **Short decode, Metal** (head dimension 128, up to 512 keys and 8 rows per KV head). One 512-thread group per
+    output row computes Q·K, the softmax, and P·V, then writes O directly. K and V can be paged. This needs
+    32-lane SIMD-groups and room for 512 threads in the compiled pipeline. Other configurations use Slang decode.
+    Dot products, FP32 weight sums and value sums use a different order within the existing scalar bound.
 - **Grouped-query attention:** a group's rows are the queries of one KV head's query heads, so each K and V block is
   read once for all of them.
 - **Key ranges:** with few rows, the keys are split into ranges across groups (aiming at 256 groups), and a second
