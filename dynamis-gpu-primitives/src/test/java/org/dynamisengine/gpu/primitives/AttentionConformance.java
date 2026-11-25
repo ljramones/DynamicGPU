@@ -158,6 +158,12 @@ abstract class AttentionConformance {
         return worst;
     }
 
+    private static String dispatchDescription(AttentionF16 attention, Shape shape) {
+        String kernel = attention.fusedKernel(shape);
+        int splits = kernel.equals("decode.short") ? 1 : AttentionF16.split(shape)[0];
+        return kernel + ", splits " + splits;
+    }
+
     @Test void fusedMatchesTheReference() {
         eachOutput(a -> {
             for (var s : new Shape[] {
@@ -177,7 +183,7 @@ abstract class AttentionConformance {
                     Shape.of(4, 9, 40, 64).withKvHeads(4)}) {
                 assertTrue(a.fusedSupports(s), s.toString());
                 double worst = checkFused(a, s, 1, 47);
-                System.out.printf("attention fused %s %s worst error/bound %.3g (%s, splits %d)%n", a.output(), s, worst, a.fusedKernel(s), AttentionF16.split(s)[0]);
+                System.out.printf("attention fused %s %s worst error/bound %.3g (%s)%n", a.output(), s, worst, dispatchDescription(a, s));
             }
             checkFused(a, Shape.of(2, 64, 96, 64), 4, 48);   // sharp softmax
         });
@@ -398,8 +404,8 @@ abstract class AttentionConformance {
                         try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
                     }
                     double t = time(e -> a.encode(e, gq, gk, gv, go, s));
-                    System.out.printf("attention %s decode heads=32/8 keys=%d dim=128: fused %.1f us, %.0f GB/s of K and V (splits %d)%n", device.adapter().name(),
-                            keys, t * 1e6, (s.kBytes() + s.vBytes()) / t / 1e9, AttentionF16.split(s)[0]);
+                    System.out.printf("attention %s decode heads=32/8 keys=%d dim=128: fused %.1f us, %.0f GB/s of K and V (%s)%n", device.adapter().name(),
+                            keys, t * 1e6, (s.kBytes() + s.vBytes()) / t / 1e9, dispatchDescription(a, s));
                     var stages = new java.util.TreeMap<String, Double>();
                     try (var e = device.encoder()) {
                         e.profile();
