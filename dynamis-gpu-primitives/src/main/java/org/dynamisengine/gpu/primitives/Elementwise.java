@@ -37,7 +37,11 @@ public final class Elementwise implements AutoCloseable {
         COPY, NEG, ABS, SQUARE,
         /** {@code x < 0 ? 0 : x}: NaN passes through; -0 stays -0. */
         RELU,
-        SQRT, EXP, LOG, RECIPROCAL;
+        SQRT, EXP, LOG, RECIPROCAL,
+        /** {@code x / (1 + exp(-x))} (1.10.0). */
+        SILU,
+        /** GELU in its tanh form, as {@code GemmF16}'s epilogue (1.10.0). */
+        GELU;
 
         /** Whether the result is the same bits on every device ({@link #apply}). */
         public boolean exact() { return ordinal() <= RELU.ordinal(); }
@@ -49,10 +53,12 @@ public final class Elementwise implements AutoCloseable {
         /** Java {@code Math.max}. */
         MAX,
         /** Java {@code Math.min}. */
-        MIN;
+        MIN,
+        /** {@code silu(a) * b}: the gated unit of SwiGLU, a the gate projection and b the up projection (1.10.0). */
+        SWIGLU;
 
         /** Whether the result is the same bits on every device ({@link #apply}). */
-        public boolean exact() { return this != DIV; }
+        public boolean exact() { return this != DIV && this != SWIGLU; }
     }
 
     private static final int THREADS = 256;
@@ -137,6 +143,11 @@ public final class Elementwise implements AutoCloseable {
             case EXP -> (float) Math.exp(x);
             case LOG -> (float) Math.log(x);
             case RECIPROCAL -> 1f / x;
+            case SILU -> x / (1f + (float) Math.exp(-x));
+            case GELU -> {
+                float u = GemmF16.GELU_SCALE * (x + GemmF16.GELU_CUBIC * x * x * x);
+                yield 0.5f * x * (1f + (1f - 2f / ((float) Math.exp(2f * u) + 1f)));
+            }
         };
     }
 
@@ -149,6 +160,7 @@ public final class Elementwise implements AutoCloseable {
             case DIV -> a / b;
             case MAX -> Math.max(a, b);
             case MIN -> Math.min(a, b);
+            case SWIGLU -> a / (1f + (float) Math.exp(-a)) * b;
         };
     }
 
@@ -162,6 +174,9 @@ public final class Elementwise implements AutoCloseable {
             case SQRT -> Bound.ulps(5, "Vulkan: 1 / inversesqrt (2 ULP) through a 2.5 ULP division; Metal: correctly rounded");
             case EXP -> Bound.formula("max(4, 3 + 2|x|) ULP: Vulkan 3 + 2|x| ULP, Metal (precise) 4 ULP");
             case LOG -> Bound.formula("4 ULP for x outside [0.5, 2]; inside, absolute 2^-21 or 4 ULP, whichever is larger");
+            case SILU -> Bound.formula("(7 + 2|x|) ULP: exp's (3 + 2|x| on Vulkan) through 1 + e and a 2.5 ULP division");
+            case GELU -> Bound.formula("(8 + 4|u|) ULP of y plus |x| 2^-22 absolute, u = sqrt(2/pi)(x + 0.044715 x^3): exp's error, and "
+                    + "the cancellation of 1 + tanh(u) for x below about -3");
             default -> Bound.ulps(2.5, "Vulkan: 1 / x within 2.5 ULP for |x| in [2^-126, 2^126]");
         };
         return new AccuracyContract(name, List.of("FP32"), "none", "FP32", Order.DEVICE, bound, "");
@@ -173,6 +188,10 @@ public final class Elementwise implements AutoCloseable {
         if (op.exact()) {
             return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32, correctly rounded", Order.FIXED,
                     Bound.exact(), "Elementwise.apply");
+        }
+        if (op == Binary.SWIGLU) {
+            return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
+                    Bound.formula("(8 + 2|a|) ULP: SiLU's (7 + 2|a|), then one rounded product"), "");
         }
         return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
                 Bound.ulps(2.5, "Vulkan: a / b within 2.5 ULP for |b| in [2^-126, 2^126]"), "");

@@ -38,9 +38,10 @@ public final class Reduce implements AutoCloseable {
     public static final int THREADS = 256;
     private final GpuDevice device;
     private final Map<Op, PipelineSet> rows = new EnumMap<>(Op.class);
-    private PipelineSet argmax;
+    private PipelineSet argmax, lse;
     private final ParameterLayout layout = ParameterLayout.of(GemmF16.KERNELS, "reduce_rows");
     private final ParameterLayout argmaxLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_argmax");
+    private final ParameterLayout lseLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_lse");
     private final DebugChecks debug;
     private boolean closed;
 
@@ -99,6 +100,52 @@ public final class Reduce implements AutoCloseable {
         encoder.dispatch(argmax.get(0), Map.of(0, x, 1, indices, 2, debug.buffer()), params, grid.groups(), "reduce.argmax");
         debug.after(encoder);
         return encoder;
+    }
+
+    /**
+     * Records {@code y[..] = log(sum exp(x[..]))} over the last dimension of x (1.10.0): the log-sum-exp of each row,
+     * computed as {@code max + log(sum exp(x - max))} with the max and the sum in fixed trees. A row of -infinity gives
+     * -infinity, a NaN NaN. exp and log are the device's, so it is bounded ({@link #logSumExpContract}).
+     */
+    public GpuCommandEncoder logSumExp(GpuCommandEncoder encoder, GpuBuffer x, StridedView xv, GpuBuffer y, StridedView yv) {
+        if (closed) throw new IllegalStateException("closed");
+        var x4 = xv.withRank(4);
+        var y4 = Views.rows(xv, x4, yv, "y");
+        xv.check(x, 4, "x");
+        yv.checkWritable(y, 4, "y");
+        long rowCount = Views.rowCount(x4);
+        if (rowCount == 0) return encoder;
+        if (lse == null) {
+            lse = PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("reduce_lse",
+                    List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(), debug.constants(Map.of()))));
+        }
+        var grid = Grid.linear(device.capabilities(), rowCount);
+        byte[] params = lseLayout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
+                .u32("yLength", DebugChecks.length(y)).view("x", x4).view("y", y4).bytes();
+        debug.before(encoder);
+        encoder.dispatch(lse.get(0), Map.of(0, x, 1, y, 2, debug.buffer()), params, grid.groups(), "reduce.lse");
+        debug.after(encoder);
+        return encoder;
+    }
+
+    /** The log-sum-exp of {@code x[off .. off + n)} in double: the exact value the GPU's result is held to. @since 1.10.0 */
+    public static double logSumExpExact(float[] x, int off, int n) {
+        double mx = Double.NEGATIVE_INFINITY;
+        for (int j = 0; j < n; j++) { if (Float.isNaN(x[off + j])) return Double.NaN; mx = Math.max(mx, x[off + j]); }
+        if (mx == Double.NEGATIVE_INFINITY) return mx;
+        double s = 0;
+        for (int j = 0; j < n; j++) s += Math.exp(x[off + j] - mx);
+        return mx + Math.log(s);
+    }
+
+    /**
+     * The contract of {@link #logSumExp}: with {@code s = sum exp(x - max)} in [1, n],
+     * {@code |y - exact| <= |max| 2^-24 + ((n + 10 + 2 max|x - max|) 2^-24) + 4 ulp of log(s)} (first order). @since 1.10.0
+     */
+    public static AccuracyContract logSumExpContract() {
+        return new AccuracyContract("Reduce LOGSUMEXP", List.of("FP32"), "FP32: max, then sum exp(x - max), fixed trees", "FP32", Order.DEVICE,
+                Bound.formula("|y - exact| <= 2^-24 |max| + (n + 10 + 2 max|x - max|) 2^-24 + 4 ulp(log s), s = sum exp(x - max) (first order)"),
+                "Reduce.logSumExpExact");
     }
 
     static float identity(Op op) {

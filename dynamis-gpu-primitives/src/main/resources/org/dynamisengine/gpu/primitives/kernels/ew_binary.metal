@@ -201,9 +201,13 @@ float binary_0(float a_2, float b_2)
         {
             return dg_max_0(a_2, b_2);
         }
-    default:
+    case 5U:
         {
             return dg_min_0(a_2, b_2);
+        }
+    default:
+        {
+            return a_2 / (1.0 + exp(- a_2)) * b_2;
         }
     }
 }

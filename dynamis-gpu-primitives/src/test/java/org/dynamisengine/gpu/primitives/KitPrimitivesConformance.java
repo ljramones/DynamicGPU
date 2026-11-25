@@ -112,6 +112,8 @@ abstract class KitPrimitivesConformance {
                             case SQRT -> Math.sqrt(a);
                             case EXP -> Math.exp(a);
                             case LOG -> Math.log(a);
+                            case SILU -> a / (1 + Math.exp(-(double) a));
+                            case GELU -> 0.5 * a * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (a + 0.044715 * a * a * (double) a)));
                             default -> 1.0 / a;
                         };
                         float want = (float) exact;
@@ -121,11 +123,19 @@ abstract class KitPrimitivesConformance {
                             else if (Math.abs(want) >= 0x1p-126 || want == 0) assertSameBits(want, got, where);
                             continue;
                         }
+                        if (op == Elementwise.Unary.GELU) {
+                            // an absolute term near zero, where a distance in ULP counts every float down to 0
+                            double u = Math.sqrt(2 / Math.PI) * (a + 0.044715 * a * a * (double) a);
+                            double bound = (8 + 4 * Math.min(30, Math.abs(u))) * Math.ulp(want) + Math.abs(a) * 0x1p-22;
+                            assertTrue(Math.abs(got - exact) <= bound, where + ": " + got + ", exact " + exact);
+                            continue;
+                        }
                         long ulps = AccuracyContract.ulpDistance(want, got);
                         worst = Math.max(worst, ulps);
                         double allowed = switch (op) {
                             case EXP -> Math.max(4, 3 + 2 * Math.abs(a));
                             case LOG -> (a < 0.5 || a > 2) ? 4 : Math.max(4, 0x1p-21 / Math.ulp(want));
+                            case SILU -> 7 + 2 * Math.abs(a);
                             default -> contract.bound().ulps();
                         };
                         assertTrue(ulps <= allowed, where + ": " + ulps + " ULP, contract " + contract.bound().formula());
@@ -164,7 +174,7 @@ abstract class KitPrimitivesConformance {
                         if (Math.abs(x2) < 0x1p-126 || Math.abs(x2) > 0x1p126) continue;
                         long ulps = AccuracyContract.ulpDistance(want, got);
                         worst = Math.max(worst, ulps);
-                        assertTrue(ulps <= 2.5, where + ": " + ulps + " ULP");
+                        assertTrue(ulps <= (op == Elementwise.Binary.SWIGLU ? 8 + 2 * Math.abs(x1) : 2.5), where + ": " + ulps + " ULP");
                     }
                 }
                 if (!op.exact()) System.out.println("elementwise " + op + " on " + device.adapter().name() + ": worst " + worst + " ULP");

@@ -137,9 +137,17 @@ float unary_0(float x_0)
         {
             return log(x_0);
         }
-    default:
+    case 8U:
         {
             return 1.0 / x_0;
+        }
+    case 9U:
+        {
+            return x_0 / (1.0 + exp(- x_0));
+        }
+    default:
+        {
+            return 0.5 * x_0 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (x_0 + 0.04471499845385551 * x_0 * x_0 * x_0))) + 1.0)));
         }
     }
 }

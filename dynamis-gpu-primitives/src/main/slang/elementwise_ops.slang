@@ -43,7 +43,13 @@ float unary(float x)
     case 5: return sqrt(x);                                 // SQRT
     case 6: return exp(x);                                  // EXP
     case 7: return log(x);                                  // LOG
-    default: return 1.0f / x;                               // RECIPROCAL
+    case 8: return 1.0f / x;                                // RECIPROCAL
+    case 9: return x / (1.0f + exp(-x));                    // SILU (1.10.0)
+    default:                                                // GELU, its tanh form (1.10.0): as GemmF16's epilogue
+    {
+        float u = 0.7978845608f * (x + 0.044715f * x * x * x);
+        return 0.5f * x * (1.0f + (1.0f - 2.0f / (exp(2.0f * u) + 1.0f)));
+    }
     }
 }
 
@@ -57,6 +63,7 @@ float binary(float a, float b)
     case 2: return a * b;                                   // MUL
     case 3: return a / b;                                   // DIV
     case 4: return dg_max(a, b);                            // MAX: Java Math.max
-    default: return dg_min(a, b);                           // MIN: Java Math.min
+    case 5: return dg_min(a, b);                            // MIN: Java Math.min
+    default: return a / (1.0f + exp(-a)) * b;               // SWIGLU (1.10.0): silu(a) * b
     }
 }

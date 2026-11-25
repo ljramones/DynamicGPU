@@ -50,3 +50,16 @@ gemm_q_tiled gemm_q_tiled.slang gemm_q_tiled
 gemm_q_tiled_h gemm_q_tiled_h.slang gemm_q_tiled_h
 gemm_q_tiled_bf16 gemm_q_tiled_bf16.slang gemm_q_tiled_bf16
 gemm_q_tiled_bf16_h gemm_q_tiled_bf16_h.slang gemm_q_tiled_bf16_h
+# inference kernels (1.10.0)
+norm_f32 norm_f32.slang norm_f32
+norm_f32_h norm_f32_h.slang norm_f32_h
+norm_f16 norm_f16.slang norm_f16
+norm_f16_h norm_f16_h.slang norm_f16_h
+rope_f32 rope_f32.slang rope_f32
+rope_f32_h rope_f32_h.slang rope_f32_h
+rope_f16 rope_f16.slang rope_f16
+rope_f16_h rope_f16_h.slang rope_f16_h
+embed embed.slang embed
+embed_h embed_h.slang embed_h
+sample_rows sample_rows.slang sample_rows
+reduce_lse reduce_lse.slang reduce_lse
