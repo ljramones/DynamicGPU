@@ -14,7 +14,7 @@
 
   <groupId>org.dynamisengine</groupId>
   <artifactId>dynamisgpu-parent</artifactId>
-  <version>1.9.0</version>
+  <version>1.9.1</version>
   <packaging>pom</packaging>
   <name>DynamisGPU Parent</name>
   <description>Headless Metal and Vulkan compute and GPU resource services for Dynamis Engine.</description>
@@ -23,7 +23,7 @@
     <connection>scm:git:https://github.com/ljramones/DynamicGPU.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/ljramones/DynamicGPU.git</developerConnection>
     <url>https://github.com/ljramones/DynamicGPU</url>
-    <tag>v1.9.0</tag>
+    <tag>v1.9.1</tag>
   </scm>
 
   <modules>
