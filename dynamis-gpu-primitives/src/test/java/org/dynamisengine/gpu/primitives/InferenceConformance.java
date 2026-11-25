@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Duration;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.SplittableRandom;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -236,6 +237,31 @@ abstract class InferenceConformance {
                     System.out.println("sampler " + device.adapter().name() + " vocab " + vocab + (tied ? " tied" : "") + " " + st + ": " + mismatches + " of " + draws + " differ from the reference");
                     assertEquals(0, mismatches, "draws differing from the reference: " + st);
                 }
+            }
+        }
+    }
+
+    @Test void optionalSamplerPipelinesCanBeUnsupported() {
+        GpuDevice fallback = new GpuDevice() {
+            @Override public GpuAdapter adapter() { return device.adapter(); }
+            @Override public GpuCapabilities capabilities() { return device.capabilities(); }
+            @Override public GpuBuffer allocate(BufferDescriptor d) { return device.allocate(d); }
+            @Override public GpuCommandEncoder encoder() { return device.encoder(); }
+            @Override public GpuQueue queue() { return device.queue(); }
+            @Override public void close() { }
+            @Override public GpuComputePipeline pipeline(PipelineDescriptor d) {
+                if (d.entryPoint().equals("sample_bounds") || d.entryPoint().equals("sample_shuffle"))
+                    throw new ComputeException(ComputeException.Code.UNSUPPORTED, "per-kernel thread limit");
+                return device.pipeline(d);
+            }
+        };
+        int vocab = 65549;
+        float[] logits = values(vocab, new SplittableRandom(791), 4, Precision.FP32);
+        try (var sampler = Sampler.create(fallback)) {
+            for (var st : List.of(Sampler.Settings.greedy(), new Sampler.Settings(0.8f, 40, 0.95f, 1),
+                    new Sampler.Settings(0.8f, 1024, 0.95f, 1))) {
+                assertEquals(Sampler.reference(logits, 0, vocab, st, 0, 1),
+                        sample(sampler, logits, Sampler.Shape.of(1, vocab), st, 1)[0]);
             }
         }
     }

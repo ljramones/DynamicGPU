@@ -420,7 +420,13 @@ A token from each row of FP32 logits, into a uint32 GPU buffer. Since 1.10.1 a r
 
 - **Stage 1 (`sample.chunks`):** one group of 1024 threads per chunk of 1024 logits, for the chunk's max, its first
   argmax and its sum of weights. With top-k or top-p, it also sorts the chunk into runs of 256.
-- **Subgroup sorting:** for at least 64 chunks, devices with subgroup shuffle and arithmetic can exchange the
+- **Small top-k:** for at least 64 chunks and k up to 64, `sample.bounds` finds each chunk's winner and its strongest
+  minimum over complete 64-token windows. The row's k-th largest logit bounds these minima from above. A second
+  lower bound comes from ranking 128 disjoint bucket winners by logit and then token index. Each `sample.filter`
+  group compacts all tokens that meet both bounds, sorts the survivors and emits one list of k entries for its chunk.
+  A chunk can retain all 1024 tokens. The candidate buffers use 16 × k bytes per chunk across both pairs (640 bytes
+  at k = 40).
+- **Subgroup sorting:** for other restricted draws with at least 64 chunks, devices with subgroup shuffle and arithmetic can exchange the
   short bitonic strides in registers. Long strides use group memory. The kernel checks lane ordering and active
   width, and can use group memory for every stride.
 - **Merge rounds (`sample.merge`, top-k or top-p only):** each group merges a power of two of sorted lists (a
@@ -466,6 +472,25 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
 | sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 12 / 17 / 76 us |
 | log-sum-exp | 128256 | 10 us |
 
+- **Small top-k measurements:** whole-encode GPU times on native Metal, Apple M4 Max, one row of 128256 logits,
+  k = 40 and p = 0.95. `InferenceConformance.topKBenchmark` uses a warm-up and the best of four timed rounds.
+  “Skewed” depresses every 64th logit, “concentrated” puts every finite logit in one chunk, and “suppressed chunks”
+  suppresses every 40th chunk, which can weaken a cutoff computed from the least of 40 bucket winners.
+
+  | Whole encode (us) | Tied | Varied | Skewed | Concentrated | Suppressed chunks | Ascending |
+  |---|---:|---:|---:|---:|---:|---:|
+  | 1.11.0 | 76.20 | 75.13 | 75.29 | 76.78 | 75.58 | 69.26 |
+  | Ranked winners and window minima | 44.13 | 41.46 | 41.06 | 56.00 | 41.46 | 41.22 |
+
+  On the same M4 Max via MoltenVK, the ranked prefilter reduced varied logits from 96.05 to 63.26 us and
+  concentrated logits from 94.66 to 75.91 us.
+
+  A chunk-local cutoff took 41.71 / 57.99 / 89.11 us on tied / varied / skewed logits. The least of 40 row-wide
+  bucket winners gave 37.05 us on varied logits but needed 94.28 us on suppressed chunks. Ranking 128 winners
+  serially per lane took 55.41 us on varied logits and 80.45 us on ascending logits. Adding the 64-token window
+  bound reduced the ascending case to 57.72 us. Splitting each rank across eight lanes gives the times above.
+  All variants retain the deterministic order of logits and token indices, and the final weights and draw keep
+  their original operations and rounding.
 - **Subgroup sort measurements:** on native Metal (Apple M4 Max, 128256 logits, k = 1024, p = 0.95), whole
   encodes fell from 121.85 to 111.86 us on fixed-seed uniform logits and from 122.05 to 108.70 us on tied logits.
   With k = 40, the same sort took 65.04 us on uniform logits (release 75.17 us). No weight, scan or draw changes.

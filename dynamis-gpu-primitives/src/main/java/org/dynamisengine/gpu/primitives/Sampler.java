@@ -5,6 +5,7 @@ import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.Checks;
 import org.dynamisengine.gpu.api.compute.kit.Grid;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
+import org.dynamisengine.gpu.api.compute.kit.PipelineSet;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -31,7 +32,8 @@ import java.util.Set;
  * </ul>
  * With top-k or top-p, stage 1 sorts its chunk into runs of 256, and merge rounds between the stages each merge up to
  * 2048 candidates of a power of two of runs in a group (a pairwise merge tree, one binary search per level) and keep
- * the first k, until a row has one sorted list. One row of a 128256-token vocabulary takes stage 1's
+ * the first k, until a row has one sorted list. With at least 64 chunks and k up to 64, the sampler can
+ * prefilter each chunk against a row-wide lower bound, sort all survivors and emit at most k candidates instead. One row of a 128256-token vocabulary takes stage 1's
  * 126 groups across the GPU, where one group per row took 0.53 ms for top-k with top-p on an M4 Max (1.10.0).
  * The sums run in fixed orders, so a device gives the same token for the same seed and step every time; greedy is
  * the same on every device. exp is the device's, so two devices agree unless u falls within their exp error of a
@@ -75,16 +77,18 @@ public final class Sampler implements AutoCloseable {
         public static Shape of(int rows, int vocab) { return new Shape(rows, vocab, vocab); }
     }
 
+    private static final int MIN_OPTIMIZED_CHUNKS = 64;
+    private static final int MAX_FILTER_K = 64;
+
     private final GpuDevice device;
-    private final org.dynamisengine.gpu.api.compute.kit.PipelineSet pipelines;
+    private final PipelineSet pipelines, prefilter, shuffle;
     private final ParameterLayout layout;
 
-    // Subgroup sorting is optional on devices with narrower per-kernel limits.
-    private final boolean shuffle;
-
-    private Sampler(GpuDevice device, org.dynamisengine.gpu.api.compute.kit.PipelineSet pipelines, boolean shuffle) {
+    private Sampler(GpuDevice device, PipelineSet pipelines, PipelineSet prefilter, PipelineSet shuffle) {
+        this.device = device;
+        this.pipelines = pipelines;
+        this.prefilter = prefilter;
         this.shuffle = shuffle;
-        this.device = device; this.pipelines = pipelines;
         this.layout = ParameterLayout.of(GemmF16.KERNELS, "sample_final");
     }
 
@@ -92,20 +96,50 @@ public final class Sampler implements AutoCloseable {
     public static Sampler create(GpuDevice device) {
         Checks.notNull(device, "device");
         var types = Set.of(GpuCapabilities.FP32);
-        var descriptors = new java.util.ArrayList<>(List.of(
-                GemmF16.KERNELS.pipeline("sample_chunks", List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE), types, Set.of()),
-                GemmF16.KERNELS.pipeline("sample_final", List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE), types, Set.of()),
-                GemmF16.KERNELS.pipeline("sample_merge", List.of(Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE), types, Set.of())));
-        var features = Set.of(GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.SUBGROUP_ARITHMETIC);
-        boolean shuffle = device.capabilities().shaderFeatures().containsAll(features);
-        if (shuffle) descriptors.add(GemmF16.KERNELS.pipeline("sample_shuffle",
-                List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE), types, features));
-        var set = org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, descriptors);
-        if (set.get(0).limits().maxThreads() < THREADS || set.get(1).limits().maxThreads() < THREADS || set.get(2).limits().maxThreads() < THREADS) {
-            set.close();
-            throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the sampler needs groups of " + THREADS + " threads");
+        var chunkAccess = List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE);
+        var kernels = GemmF16.KERNELS;
+        var core = PipelineSet.compile(device, List.of(
+                kernels.pipeline("sample_chunks", chunkAccess, types, Set.of()),
+                kernels.pipeline("sample_final", List.of(Access.READ, Access.READ, Access.READ, Access.READ, Access.READ_WRITE), types, Set.of()),
+                kernels.pipeline("sample_merge", List.of(Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE), types, Set.of())));
+        PipelineSet prefilter = null, shuffle = null;
+        try {
+            if (!canRunGroups(core)) throw new ComputeException(ComputeException.Code.UNSUPPORTED, "the sampler needs groups of " + THREADS + " threads");
+            prefilter = optional(device, List.of(
+                    kernels.pipeline("sample_filter", List.of(Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ), types, Set.of()),
+                    kernels.pipeline("sample_bounds", List.of(Access.READ, Access.READ_WRITE), types, Set.of())));
+            var features = Set.of(GpuCapabilities.SUBGROUP_SHUFFLE, GpuCapabilities.SUBGROUP_ARITHMETIC);
+            if (device.capabilities().shaderFeatures().containsAll(features))
+                shuffle = optional(device, List.of(kernels.pipeline("sample_shuffle", chunkAccess, types, features)));
+            return new Sampler(device, core, prefilter, shuffle);
+        } catch (RuntimeException e) {
+            try { PipelineSet.closeAll(shuffle, prefilter, core); }
+            catch (RuntimeException suppressed) { e.addSuppressed(suppressed); }
+            throw e;
         }
-        return new Sampler(device, set, shuffle && set.get(3).limits().maxThreads() >= THREADS);
+    }
+
+    private static boolean canRunGroups(PipelineSet set) {
+        for (int i = 0; i < set.size(); i++) if (set.get(i).limits().maxThreads() < THREADS) return false;
+        return true;
+    }
+
+    // Some devices reject the compiled local size at pipeline creation; others report it in limits().
+    private static PipelineSet optional(GpuDevice device, List<PipelineDescriptor> descriptors) {
+        PipelineSet set;
+        try {
+            set = PipelineSet.compile(device, descriptors);
+        } catch (ComputeException e) {
+            if (e.code() == ComputeException.Code.UNSUPPORTED) return null;
+            throw e;
+        }
+        boolean usable = false;
+        try {
+            usable = canRunGroups(set);
+            return usable ? set : null;
+        } finally {
+            if (!usable) set.close();
+        }
     }
 
     private GpuBuffer scratch(long bytes, String label) {
@@ -120,17 +154,27 @@ public final class Sampler implements AutoCloseable {
         int chunks = Math.ceilDiv(s.vocab(), CHUNK);
         boolean restricted = !settings.isGreedy() && (settings.topK() != 0 || settings.topP() < 1f);
         int k = settings.topK() == 0 ? Math.min(s.vocab(), MAX_K) : Math.min(settings.topK(), s.vocab());
-        long sorted = restricted ? 4L * s.rows() * chunks * CHUNK : 16;
+        boolean filter = prefilter != null && restricted && k <= MAX_FILTER_K && chunks >= MIN_OPTIMIZED_CHUNKS;
+        long sorted = restricted ? 4L * s.rows() * chunks * (filter ? k : CHUNK) : 16;
         // per dispatch: closing the handles keeps them alive for the recorded commands
         try (var av = scratch(sorted, "sampler-values"); var ai = scratch(sorted, "sampler-indices");
-             var bv = scratch(restricted ? 4L * s.rows() * chunks * CHUNK : 16, "sampler-merged-values");
-             var bi = scratch(restricted ? 4L * s.rows() * chunks * CHUNK : 16, "sampler-merged-indices");
+             var bv = scratch(sorted, "sampler-merged-values");
+             var bi = scratch(sorted, "sampler-merged-indices");
              var info = scratch(16L * s.rows() * chunks, "sampler-chunks")) {
-            encoder.dispatch(pipelines.get(restricted && shuffle && chunks >= 64 ? 3 : 0), Map.of(0, logits, 1, av, 2, ai, 3, info), params(s, settings, step, chunks, restricted, chunks, CHUNK, k, 1),
-                    new Dimensions(chunks, s.rows(), 1), "sample.chunks");
+            if (filter) {
+                encoder.dispatch(prefilter.get(1), Map.of(0, logits, 1, info),
+                        params(s, settings, step, chunks, true, chunks, CHUNK, k, 1),
+                        new Dimensions(chunks, s.rows(), 1), "sample.bounds");
+            }
+            var chunkPipeline = pipelines.get(0);
+            if (filter) chunkPipeline = prefilter.get(0);
+            else if (restricted && shuffle != null && chunks >= MIN_OPTIMIZED_CHUNKS) chunkPipeline = shuffle.get(0);
+            encoder.dispatch(chunkPipeline, Map.of(0, logits, 1, av, 2, ai, 3, info),
+                    params(s, settings, step, chunks, restricted, chunks, CHUNK, k, 1),
+                    new Dimensions(chunks, s.rows(), 1), filter ? "sample.filter" : "sample.chunks");
             // merge rounds: each group keeps the first k of up to 2048 candidates, until one list a row remains
             GpuBuffer curV = av, curI = ai, nextV = bv, nextI = bi;
-            int lists = chunks * (CHUNK / RUN), stride = RUN;   // stage 1's sorted runs
+            int lists = filter ? chunks : chunks * (CHUNK / RUN), stride = filter ? k : RUN;   // stage 1's sorted runs
             // rounds until the final stage can merge the rest in its 1024 slots
             while (restricted && Integer.highestOneBit(lists * 2 - 1) * Math.min(k, stride) > CHUNK) {
                 // a power of two of lists whose first min(k, stride) entries fit the group's 2048 slots
@@ -262,5 +306,5 @@ public final class Sampler implements AutoCloseable {
                         + "device for the same seed and step, and Sampler.reference's unless the draw falls within exp's error of a boundary"), "Sampler.reference");
     }
 
-    @Override public void close() { pipelines.close(); }
+    @Override public void close() { PipelineSet.closeAll(shuffle, prefilter, pipelines); }
 }

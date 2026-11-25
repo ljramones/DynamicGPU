@@ -63,6 +63,8 @@ embed embed.slang embed
 embed_h embed_h.slang embed_h
 sample_chunks sample_chunks.slang sample_chunks
 sample_shuffle sample_shuffle.slang sample_shuffle
+sample_filter sample_filter.slang sample_filter
+sample_bounds sample_bounds.slang sample_bounds
 sample_merge sample_merge.slang sample_merge
 sample_final sample_final.slang sample_final
 reduce_lse reduce_lse.slang reduce_lse
