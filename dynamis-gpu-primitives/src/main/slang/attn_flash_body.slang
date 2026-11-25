@@ -5,7 +5,7 @@
 //
 // A group takes BR = 16 rows of one KV head: the rows are its query heads' queries (row r is query r % queries of
 // head kvHead * heads / kvHeads + r / queries), so grouped-query attention reads each K and V block once for all of
-// them. Each row has 8 threads. Per block of BC keys:
+// them. Each row has 8 threads, or 16 in the wide Vulkan kernel. Per block of BC keys:
 //   - K and V to group memory; each thread computes the scores of keys k, k + 8, .. of its row: a dot product in
 //     FP32 (FP16 products are exact), times scale; masked keys are -infinity;
 //   - each thread takes the block's max m' of its row's scores, rescales its running sum l and accumulators by
@@ -14,6 +14,11 @@
 // Every thread of a row computes m and l the same way, so they agree. Key blocks that no row of the group sees
 // (causal) are skipped. With splits > 1 the group covers one range of the keys and writes its (m, l, accumulators)
 // for attn_combine; otherwise O = acc / l.
+// On the M4 Max through MoltenVK, D128 causal prefill at 512/1024/2048 tokens (ms):
+// 8 lanes, sequential dots 0.921/3.373/12.822; interleaved dots 0.796/2.937/11.346.
+// 16 lanes with sequential dots 0.701/2.624/10.227; interleaved 0.646/2.412/9.385.
+// Eight rows sharing K/V with 16 lanes and interleaved dots took 1.111/4.331/17.921.
+// Interleaving reuses each FP32 query pair across two independent scores in the original FMA order.
 #include "attn_common.slang"
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint> q;
@@ -30,7 +35,11 @@
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint BR = 16;
+#ifdef WIDE
+static const uint TPR = 16;
+#else
 static const uint TPR = 8;
+#endif
 static const uint THREADS = BR * TPR;
 static const uint D2 = DMAX / 2;          // pairs
 static const uint STRIDE = D2 + 1;        // padded rows: no bank conflicts between rows
@@ -44,7 +53,7 @@ groupshared float ss[BR * BC];
 groupshared float ps[BR * BC];
 
 [shader("compute")]
-[numthreads(128, 1, 1)]
+[numthreads(THREADS, 1, 1)]
 void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
     uint t = local.x, lr = t / TPR, kk = t % TPR;
@@ -95,7 +104,32 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             vs[j * STRIDE + pr] = ok ? v[at] : 0u;
         }
         GroupMemoryBarrierWithGroupSync();
-        // the scores of keys kk, kk + 8, ..
+        // the scores of keys kk, kk + TPR, ..
+#ifdef WIDE
+        float scores[KPT];
+        [ForceUnroll] for (uint u = 0; u < KPT; u++) scores[u] = 0.0f;
+        for (uint p0 = 0; p0 < D2; p0 += 8)
+        {
+            [ForceUnroll] for (uint pi = 0; pi < 8; pi++)
+            {
+                uint pr = p0 + pi;
+                uint qw = qs[lr * STRIDE + pr];
+                float qlo = attnLo(qw), qhi = attnHi(qw);
+                [ForceUnroll] for (uint u = 0; u < KPT; u++)
+                {
+                    uint kw = ks[(kk + u * TPR) * STRIDE + pr];
+                    scores[u] = fma(qlo, attnLo(kw), scores[u]);
+                    scores[u] = fma(qhi, attnHi(kw), scores[u]);
+                }
+            }
+        }
+        [ForceUnroll] for (uint u = 0; u < KPT; u++)
+        {
+            uint j = kk + u * TPR, key = b + j;
+            bool visible = live && key < kEnd && key < limit;
+            ss[lr * BC + j] = visible ? scores[u] * p.scale : dg_negative_infinity();
+        }
+#else
         [ForceUnroll]
         for (uint u = 0; u < KPT; u++)
         {
@@ -116,6 +150,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             bool visible = live && key < kEnd && key < limit;
             ss[lr * BC + j] = visible ? s * p.scale : dg_negative_infinity();
         }
+#endif
         GroupMemoryBarrierWithGroupSync();
         // the row's new max, the rescale, and P of this thread's keys
         float mb = dg_negative_infinity();

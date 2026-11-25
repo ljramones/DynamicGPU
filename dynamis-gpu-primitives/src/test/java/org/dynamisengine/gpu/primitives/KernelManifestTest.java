@@ -10,6 +10,17 @@ import org.junit.jupiter.api.Test;
  * for the fused attention's, which AttentionF16.fusedSupports checks against the device (at most 32 KiB).
  */
 class KernelManifestTest {
+    @Test void wideFlashUsesTheSameBindingsAndGroupMemory() {
+        var kernels = GemmF16.KERNELS;
+        for (String suffix : new String[] {"", "_f32"}) {
+            String base = "attn_flash_128" + suffix, wide = "attn_flash_128_wide" + suffix;
+            assertEquals(256, kernels.localSize(wide).x());
+            assertEquals(kernels.buffers(base), kernels.buffers(wide));
+            assertEquals(kernels.parameterOffsets(base), kernels.parameterOffsets(wide));
+            assertEquals(kernels.groupSharedBytes(base), kernels.groupSharedBytes(wide));
+        }
+    }
+
     @Test void groupSharedMemoryIsReadFromTheSpirv() {
         // softmax: red[256] floats, plus rowMax and rowSum
         assertEquals(256 * 4 + 4 + 4, GemmF16.KERNELS.groupSharedBytes("softmax_f32"));

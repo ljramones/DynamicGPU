@@ -240,8 +240,12 @@ public final class AttentionF16 implements AutoCloseable {
         return fused.computeIfAbsent(variant, d -> {
             String suffix = output() == Precision.FP32 ? "_f32" : "";
             var types = Set.of(GpuCapabilities.FP32);
+            var caps = device.capabilities();
+            boolean wide = d == 128 && device.adapter().backend() == Backend.VULKAN
+                    && caps.maxGroupThreads() >= 256 && caps.maxGroupSize().x() >= 256;
+            String flashName = "attn_flash_" + d + (wide ? "_wide" : "") + suffix;
             var list = new java.util.ArrayList<>(List.of(
-                    GemmF16.KERNELS.pipeline("attn_flash_" + d + suffix, FLASH_ACCESSES, types, Set.of()),
+                    GemmF16.KERNELS.pipeline(flashName, FLASH_ACCESSES, types, Set.of()),
                     GemmF16.KERNELS.pipeline("attn_combine" + suffix, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of())));
             if (matrixPath(d)) {
                 var b = new java.util.ArrayList<BindingLayout.BufferBinding>();

@@ -69,7 +69,9 @@ reduce_lse_combine reduce_lse_combine.slang reduce_lse_combine
 attn_flash_64 attn_flash_64.slang attn_flash_64
 attn_flash_64_f32 attn_flash_64_f32.slang attn_flash_64_f32
 attn_flash_128 attn_flash_128.slang attn_flash_128
+attn_flash_128_wide attn_flash_128_wide.slang attn_flash_128_wide spirv
 attn_flash_128_f32 attn_flash_128_f32.slang attn_flash_128_f32
+attn_flash_128_wide_f32 attn_flash_128_wide_f32.slang attn_flash_128_wide_f32 spirv
 attn_flash_256 attn_flash_256.slang attn_flash_256
 attn_flash_256_f32 attn_flash_256_f32.slang attn_flash_256_f32
 attn_combine attn_combine.slang attn_combine

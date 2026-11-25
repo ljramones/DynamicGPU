@@ -522,6 +522,8 @@ in the sequence, and with the causal mask key blocks that no query of a group se
 - **Kernels:** `fusedKernel` names the one a shape runs.
   - **Flash, portable** (Slang): 16 rows x 8 threads a group, key blocks of 32 (16 at head dimension 256) in group
     memory. Head dimensions are even and at most 256.
+    For the 128-dimension variant, Vulkan devices with room for 256 threads use 16 lanes per row. Each lane
+    computes two dot products together. Their independent FP32 accumulators visit each dimension in the original order.
   - **Flash, Metal matrix** (hand-written MSL, `simdgroup_matrix`): native Metal at head dimensions 64 and 128. Each
     SIMD-group owns 8 rows: `S = Q K^T` and `P V` are matrix products, the accumulators are rescaled by a diagonal
     matrix, and K and V blocks are staged in threadgroup memory. P is rounded to FP16 for its product.
@@ -583,6 +585,21 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   | 512 | 0.67 ms | 0.42 ms |
   | 1024 | 2.22 ms | 1.42 ms |
   | 2048 | 8.47 ms | 5.28 ms (13 TFLOP/s dense-equivalent) |
+
+- **Portable prefill review.** MoltenVK on the M4 Max, 32 heads, dimension 128, causal, FP16 O.
+  Lower is faster. Each column shows milliseconds for a whole encode, with the best of repeated trials.
+
+  | Rows per group | Lanes per row | Dot products per lane | 512 | 1024 | 2048 |
+  |---:|---:|---|---:|---:|---:|
+  | 16 | 8 | Sequential (1.11.0) | 0.921 | 3.373 | 12.822 |
+  | 16 | 8 | Interleaved | 0.796 | 2.937 | 11.346 |
+  | 16 | 16 | Sequential | 0.701 | 2.624 | 10.227 |
+  | 8 | 16 | Interleaved | 1.111 | 4.331 | 17.921 |
+  | 16 | 16 | Interleaved (selected) | 0.646 | 2.412 | 9.385 |
+
+  At 2048 tokens the selected kernel repeated at 9.448 ms, and the release control at 12.916 ms.
+  On arm64 lavapipe (LLVM 20.1.2), eight heads at 128 and 256 tokens took 1.994 / 6.712 ms on the release
+  kernel and 1.595 / 4.949 ms on the selected kernel. Smaller workgroup limits use the eight-lane release path.
 
 - **Prefill mask review (M4 Max, native Metal).** Each row now tests a block's last key once. A fully visible block
   skips the per-key mask. Tail, padded and causal-edge keys retain the per-key check. The arithmetic and rounding
