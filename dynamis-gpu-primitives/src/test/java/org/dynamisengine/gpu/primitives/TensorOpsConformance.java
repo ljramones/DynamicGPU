@@ -225,4 +225,73 @@ abstract class TensorOpsConformance {
             assertEquals(Float.floatToRawIntBits((float) bits), Cast.reference(Cast.Type.INT32, Cast.Type.FP32, bits));
         }
     }
+
+    static float[] floats(int[] w) { float[] f = new float[w.length]; for (int i = 0; i < w.length; i++) f[i] = Float.intBitsToFloat(w[i]); return f; }
+    static int[] bits(float[] f) { int[] w = new int[f.length]; for (int i = 0; i < f.length; i++) w[i] = Float.floatToRawIntBits(f[i]); return w; }
+
+    /** Values with ties (a coarse grid) and occasional NaNs and infinities: argmax and the max's gradient meet them. */
+    static float[] tied(int n, long seed) {
+        var r = new SplittableRandom(seed);
+        float[] f = new float[n];
+        for (int i = 0; i < n; i++) {
+            int k = r.nextInt(40);
+            f[i] = k == 0 ? Float.NaN : k == 1 ? Float.POSITIVE_INFINITY : k == 2 ? Float.NEGATIVE_INFINITY : k == 3 ? -0f : r.nextInt(-6, 7) * 0.5f;
+        }
+        return f;
+    }
+
+    @Test void reductionsAlongEveryAxisAreFixedOrder() {
+        // x: 5 x 37 x 300, stored with a padded middle stride; reduced along each axis in turn
+        int d0 = 5, d1 = 37, d2 = 300, ld = 304;
+        var xv = StridedView.of(7, new long[] {d0, d1, d2}, new long[] {(long) d1 * ld, ld, 1});
+        int xLen = 7 + d0 * d1 * ld;
+        var rng = new SplittableRandom(21);
+        float[] x = new float[xLen];
+        for (int i = 0; i < xLen; i++) x[i] = (float) ((rng.nextDouble() * 2 - 1) * Math.pow(2, rng.nextInt(-8, 9)));
+        float[] xt = tied(xLen, 22);
+        try (var reduce = Reduce.create(device); var gx = buffer(4L * xLen); var gy = buffer(4L * d1 * d2); var gi = buffer(4L * d1 * d2);
+                var gdx = buffer(4L * d0 * d1 * d2)) {
+            for (int axis = 0; axis < 3; axis++) {
+                long[] ye = new long[2];
+                for (int d = 0, k = 0; d < 3; d++) if (d != axis) ye[k++] = xv.extent(d);
+                var yv = StridedView.matrix(ye[0], ye[1]);
+                int yn = (int) (ye[0] * ye[1]);
+                for (var op : Reduce.Op.values()) {
+                    float[] in = op == Reduce.Op.SUM || op == Reduce.Op.MEAN ? x : xt;
+                    final int ax = axis;
+                    int[] got = run(e -> { e.upload(gx, words(bits(in))); reduce.axis(e, op, gx, xv, ax, gy, yv); }, gy);
+                    float[] want = new float[d1 * d2];
+                    Reduce.reference(op, in, Views.moveToLast(xv, axis), want, yv);
+                    for (int i = 0; i < yn; i++) {
+                        float g = Float.intBitsToFloat(got[i]);
+                        String where = op + " along axis " + axis + " at " + i;
+                        if (op == Reduce.Op.MEAN) {
+                            assertTrue(org.dynamisengine.gpu.api.compute.kit.AccuracyContract.ulpDistance(want[i], g) <= 2, where + ": want " + want[i] + ", got " + g);
+                        } else if (!(Float.isNaN(want[i]) && Float.isNaN(g))) {
+                            assertEquals(Float.floatToRawIntBits(want[i]), got[i], where + ": want " + want[i] + ", got " + g);
+                        }
+                    }
+                }
+                // argmax and the max's gradient along the axis, with ties and NaNs
+                final int ax = axis;
+                int[] idx = run(e -> { e.upload(gx, words(bits(xt))); reduce.argmaxAxis(e, gx, xv, ax, gi, yv); }, gi);
+                int[] wantIdx = new int[d1 * d2];
+                Reduce.referenceArgmax(xt, Views.moveToLast(xv, axis), wantIdx, yv);
+                for (int i = 0; i < yn; i++) assertEquals(wantIdx[i], idx[i], "argmax along axis " + axis + " at " + i);
+                float[] dy = new float[yn];
+                for (int i = 0; i < yn; i++) dy[i] = (float) rng.nextDouble() - 0.5f;
+                var dxv = StridedView.of(0, new long[] {d0, d1, d2}, new long[] {(long) d1 * d2, d2, 1});
+                int[] dx = run(e -> {
+                    e.upload(gi, words(idx)).upload(gy, words(java.util.Arrays.copyOf(bits(dy), d1 * d2)));
+                    reduce.maxBackward(e, gi, yv, gy, yv, ax, gdx, dxv);
+                }, gdx);
+                float[] wantDx = new float[d0 * d1 * d2];
+                Reduce.referenceMaxBackward(idx, yv, dy, yv, axis, wantDx, dxv);
+                for (int i = 0; i < wantDx.length; i++) assertEquals(Float.floatToRawIntBits(wantDx[i]), dx[i], "max backward along axis " + axis + " at " + i);
+            }
+            try (var e = device.encoder()) {
+                assertThrows(IllegalArgumentException.class, () -> reduce.axis(e, Reduce.Op.SUM, gx, xv, 3, gy, StridedView.matrix(5, 37)));
+            }
+        }
+    }
 }

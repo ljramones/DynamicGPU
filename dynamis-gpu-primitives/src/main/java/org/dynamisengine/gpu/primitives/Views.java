@@ -51,6 +51,18 @@ final class Views {
         return block;
     }
 
+    /** {@code v} with dimension {@code axis} moved last, the others in order (1.14.0): no copy, only the view. */
+    static StridedView moveToLast(StridedView v, int axis) {
+        if (axis < 0 || axis >= v.rank()) throw new IllegalArgumentException("axis " + axis + " of a rank-" + v.rank() + " view");
+        long[] e = new long[v.rank()], s = new long[v.rank()];
+        for (int d = 0, k = 0; d < v.rank(); d++) {
+            if (d == axis) continue;
+            e[k] = v.extent(d); s[k++] = v.stride(d);
+        }
+        e[v.rank() - 1] = v.extent(axis); s[v.rank() - 1] = v.stride(axis);
+        return StridedView.of(v.offset(), e, s);
+    }
+
     /** The rows of a rank-4 view: the product of its first three extents, within 32 bits. */
     static long rowCount(StridedView x4) {
         long rows = x4.extent(0) * x4.extent(1) * x4.extent(2);
