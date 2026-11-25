@@ -473,6 +473,26 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
   - sorting 2048 slots per merge group, 67 us.
 - **RoPE and the gather** include their error check (an error-buffer reset and check around the dispatch).
 
+#### Host cost of sampler and log-sum-exp scratch
+
+An allocation trial on the M4 Max reused each primitive's private buffers across successive calls in the same
+encoder. A different encoder received fresh storage so independently submitted or replayed command lists could
+retain their own buffers. The release and candidate ran the same warmed, whole-encode batches for one row of
+128256 logits. Each entry is microseconds per call, release → reuse, from the second of two paired runs, using
+the best of six rounds of at least 20 ms GPU time. Wall time includes recording, submission and completion.
+
+| Operation | Calls per encoder | CPU recording (µs) | GPU (µs) | Wall (µs) |
+|---|---:|---:|---:|---:|
+| `Reduce.logSumExp` | 2400 | 3.13 → 2.79 | 9.70 → 9.46 | 16.39 → 15.58 |
+| Greedy draw | 2400 | 2.73 → 1.33 | 11.83 → 11.70 | 18.95 → 15.82 |
+| Top-k 40, top-p 0.95 | 384 | 4.00 → 2.09 | 76.21 → 76.01 | 128.06 → 82.77 |
+
+The top-k batch's live labelled scratch at recording time fell from 793.5 MB to 2.07 MB with the 1.11.0
+sort-buffer layout. In a fresh encoder holding one log-sum-exp and one top-k draw, CPU record-and-close time was
+23.35 → 18.65 µs in one pair and 18.57 → 20.69 µs in the repeat. The trial also kept the final scratch buffers
+alive until the next encoder or primitive close. Reuse was deferred pending an encoder-scoped lifetime and a
+repeatable benefit in that single-step workload. The sampler and reduction calculations were identical.
+
 ## `Softmax`
 
 `y[j] = exp(s[j] - max) / sum exp(s[j'] - max)` over each row of an `m x n` matrix of FP32 scores. Masked columns
