@@ -114,3 +114,6 @@ logic_binary logic_binary.slang logic_binary
 logic_select logic_select.slang logic_select
 cast cast.slang cast
 reduce_max_backward reduce_max_backward.slang reduce_max_backward
+gather gather.slang gather
+scatter_count scatter_count.slang scatter_count
+scatter_add scatter_add.slang scatter_add

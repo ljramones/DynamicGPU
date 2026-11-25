@@ -294,4 +294,84 @@ abstract class TensorOpsConformance {
             }
         }
     }
+
+    @Test void gatherAlongEveryAxisCopiesExactly() {
+        int d0 = 4, d1 = 9, d2 = 70;
+        var xv = StridedView.of(3, new long[] {d0, d1, d2}, new long[] {(long) d1 * 72, 72, 1});
+        int xLen = 3 + d0 * d1 * 72;
+        int[] x = floatWords(xLen, 31);
+        var rng = new SplittableRandom(32);
+        try (var g = Gather.create(device); var gx = buffer(4L * xLen); var gi = buffer(4L * 300); var gy = buffer(4L * d0 * d1 * 200)) {
+            for (int axis = 0; axis < 3; axis++) {
+                int extent = (int) xv.extent(axis), n = 2 * extent + 3;
+                int[] idx = new int[300];
+                for (int j = 0; j < n; j++) idx[2 * j] = rng.nextInt(extent);   // strided index view, repeats included
+                var iv = StridedView.of(0, new long[] {n}, new long[] {2});
+                long[] ye = xv.extents();
+                ye[axis] = n;
+                long[] ys = new long[3];
+                ys[2] = 1; ys[1] = ye[2]; ys[0] = ye[1] * ye[2];
+                var yv = StridedView.of(0, ye, ys);
+                final int ax = axis;
+                int[] got = run(e -> { e.upload(gx, words(x)).upload(gi, words(idx)); g.gather(e, gx, xv, ax, gi, iv, gy, yv); }, gy);
+                int[] want = new int[got.length];
+                Gather.referenceGather(x, xv, axis, idx, iv, want, yv);
+                long count = yv.elements();
+                for (int i = 0; i < count; i++) assertEquals(want[i], got[i], "gather along axis " + axis + " at " + i);
+            }
+            // an index past the dimension fails the submission
+            var ex = assertThrows(org.dynamisengine.gpu.api.compute.ComputeException.class, () -> run(e -> {
+                e.fill(gi, d1);
+                g.gather(e, gx, xv, 1, gi, StridedView.contiguous(5), gy, StridedView.of(0, new long[] {d0, 5, d2}, new long[] {5L * d2, d2, 1}));
+            }, gy));
+            assertEquals(org.dynamisengine.gpu.api.compute.ComputeException.Code.KERNEL_ERROR, ex.code());
+        }
+    }
+
+    @Test void scatterAddSumsRepeatedIndicesInOrder() {
+        var rng = new SplittableRandom(41);
+        // the embedding's backward pass: rows of a 1000 x 48 table, 700 tokens, one of them 300 times (more than a chunk)
+        int vocab = 1000, dim = 48, n = 700;
+        int[] idx = new int[n];
+        for (int j = 0; j < n; j++) idx[j] = j % 7 == 0 || j > 400 ? 17 : rng.nextInt(vocab);
+        idx[n - 1] = vocab - 1;
+        float[] dy = new float[n * dim];
+        for (int i = 0; i < dy.length; i++) dy[i] = (float) ((rng.nextDouble() * 2 - 1) * Math.pow(2, rng.nextInt(-6, 7)));
+        float[] base = new float[vocab * dim];
+        for (int i = 0; i < base.length; i++) base[i] = (float) rng.nextDouble() - 0.5f;
+        try (var g = Gather.create(device); var gdy = buffer(4L * dy.length); var gi = buffer(4L * n); var gdx = buffer(4L * base.length)) {
+            for (boolean accumulate : new boolean[] {false, true}) {
+                var dyv = StridedView.matrix(n, dim);
+                var dxv = StridedView.matrix(vocab, dim);
+                int[] got = run(e -> {
+                    e.upload(gdy, words(bits(dy))).upload(gi, words(idx)).upload(gdx, words(bits(base)));
+                    g.scatterAdd(e, gdy, dyv, 0, gi, StridedView.contiguous(n), gdx, dxv, accumulate);
+                }, gdx);
+                float[] want = base.clone();
+                Gather.referenceScatterAdd(dy, dyv, 0, idx, StridedView.contiguous(n), want, dxv, accumulate);
+                for (int i = 0; i < want.length; i++) assertEquals(Float.floatToRawIntBits(want[i]), got[i], "scatterAdd (accumulate " + accumulate + ") at " + i);
+            }
+            // along the middle dimension of a rank-3 view, through a transposed dy
+            int d0 = 3, v = 11, d2 = 5, m = 40;
+            int[] idx2 = new int[m];
+            for (int j = 0; j < m; j++) idx2[j] = rng.nextInt(v);
+            float[] dy2 = new float[d0 * m * d2];
+            for (int i = 0; i < dy2.length; i++) dy2[i] = (float) rng.nextDouble();
+            var dyv2 = StridedView.of(0, new long[] {d0, d2, m}, new long[] {(long) m * d2, 1, d2}).transpose(1, 2);   // logical d0 x m x d2
+            var dxv2 = StridedView.of(0, new long[] {d0, v, d2}, new long[] {(long) v * d2, d2, 1});
+            int[] got = run(e -> {
+                e.upload(gdy, words(java.util.Arrays.copyOf(bits(dy2), dy.length))).upload(gi, words(java.util.Arrays.copyOf(idx2, n)));
+                g.scatterAdd(e, gdy, dyv2, 1, gi, StridedView.contiguous(m), gdx, dxv2, false);
+            }, gdx);
+            float[] want = new float[d0 * v * d2];
+            Gather.referenceScatterAdd(dy2, dyv2, 1, idx2, StridedView.contiguous(m), want, dxv2, false);
+            for (int i = 0; i < want.length; i++) assertEquals(Float.floatToRawIntBits(want[i]), got[i], "scatterAdd along axis 1 at " + i);
+            // an index past the table fails the submission
+            var ex = assertThrows(org.dynamisengine.gpu.api.compute.ComputeException.class, () -> run(e -> {
+                e.fill(gi, vocab);
+                g.scatterAdd(e, gdy, StridedView.matrix(n, dim), 0, gi, StridedView.contiguous(n), gdx, StridedView.matrix(vocab, dim), false);
+            }, gdx));
+            assertEquals(org.dynamisengine.gpu.api.compute.ComputeException.Code.KERNEL_ERROR, ex.code());
+        }
+    }
 }
