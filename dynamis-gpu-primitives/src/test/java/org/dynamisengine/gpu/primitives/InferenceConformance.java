@@ -207,9 +207,14 @@ abstract class InferenceConformance {
         var r = new SplittableRandom(4);
         try (var sampler = Sampler.create(device)) {
             int rows = 4;
-            for (int vocab : new int[] {7, 1000, 32000, 128256}) {
+            // the last case: integer logits, so most of the k largest tie and their order (by index, across chunks and
+            // merge rounds) decides the tokens (1.10.1)
+            for (int vocab : new int[] {7, 1000, 32000, 128256, -128256}) {
+                boolean tied = vocab < 0;
+                vocab = Math.abs(vocab);
                 var s = Sampler.Shape.of(rows, vocab);
                 float[] logits = values(rows * vocab, r, 6, Precision.FP32);
+                if (tied) for (int i = 0; i < logits.length; i++) logits[i] = r.nextInt(8);
                 logits[3] = logits[vocab + 9] = 50f; logits[vocab + 2] = 50f;        // ties at the max: the first wins
                 logits[2 * vocab + 1] = Float.NaN; logits[2 * vocab + 4] = Float.NEGATIVE_INFINITY;
                 var settings = new Sampler.Settings[] {Sampler.Settings.greedy(), new Sampler.Settings(0.8f, 0, 1f, 42),
@@ -228,7 +233,7 @@ abstract class InferenceConformance {
                             if (st.equals(Sampler.Settings.greedy())) assertEquals(expect, got[row], "greedy, vocab " + vocab + " row " + row);
                         }
                     }
-                    System.out.println("sampler " + device.adapter().name() + " vocab " + vocab + " " + st + ": " + mismatches + " of " + draws + " differ from the reference");
+                    System.out.println("sampler " + device.adapter().name() + " vocab " + vocab + (tied ? " tied" : "") + " " + st + ": " + mismatches + " of " + draws + " differ from the reference");
                     assertTrue(mismatches <= draws / 20, mismatches + " of " + draws + " draws differ from the reference: " + st);
                 }
             }
@@ -315,8 +320,13 @@ abstract class InferenceConformance {
     }
 
     @Test void logSumExpWithinItsBound() {
-        var r = new SplittableRandom(6);
-        int rows = 5, n = 50000;
+        // one chunk, one past a chunk of 4096, and many chunks (1.10.1)
+        for (int n : new int[] {300, 4097, 50000}) logSumExpWithinItsBound(n);
+    }
+
+    void logSumExpWithinItsBound(int n) {
+        var r = new SplittableRandom(6 + n);
+        int rows = 5;
         float[] x = values(rows * n, r, 20, Precision.FP32);
         for (int j = 0; j < n; j++) x[3 * n + j] = Float.NEGATIVE_INFINITY;   // a row of -infinity
         x[4 * n + 7] = Float.NaN;
@@ -332,7 +342,7 @@ abstract class InferenceConformance {
                 if (row == 3) { assertEquals(Float.NEGATIVE_INFINITY, y[row]); continue; }
                 if (row == 4) { assertTrue(Float.isNaN(y[row])); continue; }
                 double bound = 0x1p-24 * 20 + (n + 10 + 2 * 40) * 0x1p-24 + 4 * Math.ulp((float) Math.log(n));
-                assertTrue(Math.abs(y[row] - exact) <= bound, "lse row " + row + " = " + y[row] + ", exact " + exact);
+                assertTrue(Math.abs(y[row] - exact) <= bound, "lse n " + n + " row " + row + " = " + y[row] + ", exact " + exact);
             }
         }
     }
@@ -379,6 +389,20 @@ abstract class InferenceConformance {
             double topk = micros(e -> sampler.encode(e, gl, gtok, shape, new Sampler.Settings(0.8f, 40, 0.95f, 1), 0));
             System.out.printf("inference %s vocab=%d: embedding row %.1f us, log-sum-exp %.1f us, sample greedy %.1f us, temperature %.1f us, top-k 40 + top-p %.1f us%n",
                     device.adapter().name(), vocab, gather, lse, greedy, temp, topk);
+            if (device.capabilities().timestamps()) {
+                for (var st : new Sampler.Settings[] {new Sampler.Settings(0.8f, 40, 0.95f, 1), new Sampler.Settings(0.8f, 0, 1f, 1)}) {
+                    try (var e = device.encoder()) {
+                        e.profile();
+                        for (int i = 0; i < 50; i++) sampler.encode(e, gl, gtok, shape, st, 0);
+                        try (var sub = device.queue().submit(e)) {
+                            assertTrue(sub.await(WAIT));
+                            var times = new java.util.TreeMap<String, Double>();
+                            for (var d : sub.dispatchTimings()) times.merge(d.label(), d.time().toNanos() / 1e3 / 50, Double::sum);
+                            System.out.println("inference stages " + st + ": " + times);
+                        }
+                    }
+                }
+            }
         }
     }
 }

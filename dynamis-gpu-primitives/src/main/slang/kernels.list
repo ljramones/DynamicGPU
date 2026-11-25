@@ -61,5 +61,8 @@ rope_f16 rope_f16.slang rope_f16
 rope_f16_h rope_f16_h.slang rope_f16_h
 embed embed.slang embed
 embed_h embed_h.slang embed_h
-sample_rows sample_rows.slang sample_rows
+sample_chunks sample_chunks.slang sample_chunks
+sample_merge sample_merge.slang sample_merge
+sample_final sample_final.slang sample_final
 reduce_lse reduce_lse.slang reduce_lse
+reduce_lse_combine reduce_lse_combine.slang reduce_lse_combine

@@ -1,15 +1,19 @@
 package org.dynamisengine.gpu.primitives;
 
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.dynamisengine.gpu.api.compute.Access;
+import org.dynamisengine.gpu.api.compute.BufferDescriptor;
+import org.dynamisengine.gpu.api.compute.BufferUsage;
 import org.dynamisengine.gpu.api.compute.GpuBuffer;
 import org.dynamisengine.gpu.api.compute.GpuCapabilities;
 import org.dynamisengine.gpu.api.compute.GpuCommandEncoder;
 import org.dynamisengine.gpu.api.compute.GpuComputePipeline;
 import org.dynamisengine.gpu.api.compute.GpuDevice;
+import org.dynamisengine.gpu.api.compute.Placement;
 import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.AccuracyContract.Bound;
 import org.dynamisengine.gpu.api.compute.kit.AccuracyContract.Order;
@@ -42,6 +46,9 @@ public final class Reduce implements AutoCloseable {
     private final ParameterLayout layout = ParameterLayout.of(GemmF16.KERNELS, "reduce_rows");
     private final ParameterLayout argmaxLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_argmax");
     private final ParameterLayout lseLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_lse");
+    private final ParameterLayout lseCombineLayout = ParameterLayout.of(GemmF16.KERNELS, "reduce_lse_combine");
+    /** Elements of a row one log-sum-exp group takes (1.10.1). */
+    static final int LSE_CHUNK = 4096;
     private final DebugChecks debug;
     private boolean closed;
 
@@ -105,7 +112,9 @@ public final class Reduce implements AutoCloseable {
     /**
      * Records {@code y[..] = log(sum exp(x[..]))} over the last dimension of x (1.10.0): the log-sum-exp of each row,
      * computed as {@code max + log(sum exp(x - max))} with the max and the sum in fixed trees. A row of -infinity gives
-     * -infinity, a NaN NaN. exp and log are the device's, so it is bounded ({@link #logSumExpContract}).
+     * -infinity, a NaN NaN. exp and log are the device's, so it is bounded ({@link #logSumExpContract}). Since 1.10.1 a
+     * row longer than 4096 is split into chunks of 4096 across groups, and a second dispatch combines their maxima and
+     * sums ({@code M + log(sum s exp(m - M))}, in a fixed tree): a row of 128256 took 124 us in one group on an M4 Max.
      */
     public GpuCommandEncoder logSumExp(GpuCommandEncoder encoder, GpuBuffer x, StridedView xv, GpuBuffer y, StridedView yv) {
         if (closed) throw new IllegalStateException("closed");
@@ -116,14 +125,28 @@ public final class Reduce implements AutoCloseable {
         long rowCount = Views.rowCount(x4);
         if (rowCount == 0) return encoder;
         if (lse == null) {
-            lse = PipelineSet.compile(device, List.of(GemmF16.KERNELS.pipeline("reduce_lse",
-                    List.of(Access.READ, Access.WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of(), debug.constants(Map.of()))));
+            lse = PipelineSet.compile(device, List.of(
+                    GemmF16.KERNELS.pipeline("reduce_lse", List.of(Access.READ, Access.WRITE, Access.READ_WRITE, Access.READ_WRITE),
+                            Set.of(GpuCapabilities.FP32), Set.of(), debug.constants(Map.of())),
+                    GemmF16.KERNELS.pipeline("reduce_lse_combine", List.of(Access.READ, Access.WRITE, Access.READ_WRITE),
+                            Set.of(GpuCapabilities.FP32), Set.of(), debug.constants(Map.of()))));
         }
-        var grid = Grid.linear(device.capabilities(), rowCount);
+        long chunks = Math.max(1, Math.ceilDiv(x4.extent(3), LSE_CHUNK));
+        var grid = Grid.linear(device.capabilities(), rowCount * chunks);
         byte[] params = lseLayout.block().u32("rows", rowCount).u32("gridX", grid.gridX()).u32("xLength", DebugChecks.length(x))
-                .u32("yLength", DebugChecks.length(y)).view("x", x4).view("y", y4).bytes();
+                .u32("yLength", DebugChecks.length(y)).u32("chunks", chunks).u32("chunkLen", LSE_CHUNK).view("x", x4).view("y", y4).bytes();
         debug.before(encoder);
-        encoder.dispatch(lse.get(0), Map.of(0, x, 1, y, 2, debug.buffer()), params, grid.groups(), "reduce.lse");
+        // per dispatch: closing the handle keeps it alive for the recorded commands
+        try (var partial = device.allocate(new BufferDescriptor(Math.max(16, 8 * rowCount * chunks), EnumSet.of(BufferUsage.STORAGE), Placement.PRIVATE)
+                .withLabel("lse-partial"))) {
+            encoder.dispatch(lse.get(0), Map.of(0, x, 1, y, 2, debug.buffer(), 3, partial), params, grid.groups(), "reduce.lse");
+            if (chunks > 1) {
+                var rowsGrid = Grid.linear(device.capabilities(), rowCount);
+                byte[] combine = lseCombineLayout.block().u32("rows", rowCount).u32("gridX", rowsGrid.gridX()).u32("yLength", DebugChecks.length(y))
+                        .u32("chunks", chunks).view("y", y4).bytes();
+                encoder.dispatch(lse.get(1), Map.of(0, partial, 1, y, 2, debug.buffer()), combine, rowsGrid.groups(), "reduce.lse.combine");
+            }
+        }
         debug.after(encoder);
         return encoder;
     }

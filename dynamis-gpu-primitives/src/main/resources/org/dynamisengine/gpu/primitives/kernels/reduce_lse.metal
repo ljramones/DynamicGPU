@@ -146,6 +146,8 @@ struct Params_0
     uint gridX_1;
     uint xLength_0;
     uint yLength_0;
+    uint chunks_0;
+    uint chunkLen_0;
     uint xOffset_0;
     uint xExtent0_0;
     uint xStride0_0;
@@ -171,34 +173,40 @@ struct KernelContext_0
     Params_0 constant* p_0;
     uint device* errors_2;
     float device* x_1;
+    float device* partial_0;
     float device* y_0;
     array<float, int(256)> threadgroup* red_0;
     float threadgroup* rowMax_0;
 };
 
-[[kernel]] void reduce_lse(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(3)]], uint device* errors_3 [[buffer(2)]], float device* x_2 [[buffer(0)]], float device* y_1 [[buffer(1)]])
+[[kernel]] void reduce_lse(uint3 group_1 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(4)]], uint device* errors_3 [[buffer(2)]], float device* x_2 [[buffer(0)]], float device* partial_1 [[buffer(3)]], float device* y_1 [[buffer(1)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
     (&kernelContext_0)->errors_2 = errors_3;
     (&kernelContext_0)->x_1 = x_2;
+    (&kernelContext_0)->partial_0 = partial_1;
     (&kernelContext_0)->y_0 = y_1;
     threadgroup array<float, int(256)> red_1;
     (&kernelContext_0)->red_0 = &red_1;
     threadgroup float rowMax_1;
     (&kernelContext_0)->rowMax_0 = &rowMax_1;
-    uint row_1 = dg_linear_group_0(group_1, p_1->gridX_1);
-    if(row_1 >= (p_1->rows_0))
+    uint id_0 = dg_linear_group_0(group_1, p_1->gridX_1);
+    uint row_1 = id_0 / p_1->chunks_0;
+    uint g_0 = id_0 % p_1->chunks_0;
+    if(row_1 >= ((&kernelContext_0)->p_0->rows_0))
     {
         return;
     }
     uint t_0 = local_0.x;
     DgView_0 xv_0 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
-    uint _S16 = xv_0.extent_0.w;
+    uint start_0 = g_0 * (&kernelContext_0)->p_0->chunkLen_0;
+    uint _S16 = min(xv_0.extent_0.w, start_0 + (&kernelContext_0)->p_0->chunkLen_0);
     thread DgView_0 _S17 = xv_0;
     uint3 _S18 = dg_row_0(&_S17, row_1);
     float _S19 = dg_negative_infinity_0();
-    uint j_0 = t_0;
+    uint _S20 = start_0 + t_0;
+    uint j_0 = _S20;
     float acc_0 = _S19;
     for(;;)
     {
@@ -209,68 +217,67 @@ struct KernelContext_0
         {
             break;
         }
-        uint4 _S20 = uint4(_S18, j_0);
-        thread DgView_0 _S21 = xv_0;
-        uint _S22 = dg_at_0(&_S21, _S20);
-        bool _S23 = dg_in_range_0((&kernelContext_0)->errors_2, _S22, (&kernelContext_0)->p_0->xLength_0, row_1);
-        if(_S23)
+        uint4 _S21 = uint4(_S18, j_0);
+        thread DgView_0 _S22 = xv_0;
+        uint _S23 = dg_at_0(&_S22, _S21);
+        bool _S24 = dg_in_range_0((&kernelContext_0)->errors_2, _S23, (&kernelContext_0)->p_0->xLength_0, row_1);
+        if(_S24)
         {
-            acc_0 = dg_max_0(acc_0, *((&kernelContext_0)->x_1+_S22));
+            acc_0 = dg_max_0(acc_0, *((&kernelContext_0)->x_1+_S23));
         }
         j_0 = j_0 + 256U;
     }
     (*(&kernelContext_0)->red_0)[t_0] = acc_0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S24 = t_0 < 128U;
-    if(_S24)
+    bool _S25 = t_0 < 128U;
+    if(_S25)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 128U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S25 = t_0 < 64U;
-    if(_S25)
+    bool _S26 = t_0 < 64U;
+    if(_S26)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 64U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S26 = t_0 < 32U;
-    if(_S26)
+    bool _S27 = t_0 < 32U;
+    if(_S27)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 32U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S27 = t_0 < 16U;
-    if(_S27)
+    bool _S28 = t_0 < 16U;
+    if(_S28)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 16U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S28 = t_0 < 8U;
-    if(_S28)
+    bool _S29 = t_0 < 8U;
+    if(_S29)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 8U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S29 = t_0 < 4U;
-    if(_S29)
+    bool _S30 = t_0 < 4U;
+    if(_S30)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 4U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S30 = t_0 < 2U;
-    if(_S30)
+    bool _S31 = t_0 < 2U;
+    if(_S31)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 2U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S31 = t_0 < 1U;
-    if(_S31)
+    bool _S32 = t_0 < 1U;
+    if(_S32)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_max_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 1U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    bool _S32 = t_0 == 0U;
-    if(_S32)
+    if(t_0 == 0U)
     {
         *(&kernelContext_0)->rowMax_0 = (*(&kernelContext_0)->red_0)[int(0)];
     }
@@ -280,7 +287,7 @@ struct KernelContext_0
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if((*_S33) != _S19)
     {
-        j_0 = t_0;
+        j_0 = _S20;
         acc_0 = 0.0;
         for(;;)
         {
@@ -308,71 +315,74 @@ struct KernelContext_0
     }
     (*(&kernelContext_0)->red_0)[t_0] = acc_0;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S24)
+    if(_S25)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 128U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S25)
+    if(_S26)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 64U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S26)
+    if(_S27)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 32U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S27)
+    if(_S28)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 16U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S28)
+    if(_S29)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 8U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S29)
+    if(_S30)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 4U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S30)
+    if(_S31)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 2U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if(_S31)
+    if(_S32)
     {
         (*(&kernelContext_0)->red_0)[t_0] = dg_op_add_0((*(&kernelContext_0)->red_0)[t_0], (*(&kernelContext_0)->red_0)[t_0 + 1U]);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint4 _S38 = uint4(_S18, 0U);
-    thread DgView_0 _S39 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
-    uint _S40 = dg_at_0(&_S39, _S38);
-    bool _S41;
-    if(_S32)
+    if(t_0 != 0U)
     {
-        bool _S42 = dg_in_range_0((&kernelContext_0)->errors_2, _S40, (&kernelContext_0)->p_0->yLength_0, row_1);
-        _S41 = _S42;
+        return;
     }
-    else
+    if((p_1->chunks_0) > 1U)
     {
-        _S41 = false;
+        uint _S38 = 2U * id_0;
+        *((&kernelContext_0)->partial_0+_S38) = mx_0;
+        *((&kernelContext_0)->partial_0+(_S38 + 1U)) = (*(&kernelContext_0)->red_0)[int(0)];
+        return;
     }
-    if(_S41)
+    uint4 _S39 = uint4(_S18, 0U);
+    thread DgView_0 _S40 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
+    uint _S41 = dg_at_0(&_S40, _S39);
+    bool _S42 = dg_in_range_0((&kernelContext_0)->errors_2, _S41, (&kernelContext_0)->p_0->yLength_0, row_1);
+    if(_S42)
     {
-        float device* _S43 = (&kernelContext_0)->y_0+_S40;
+        float device* _S43 = (&kernelContext_0)->y_0+_S41;
+        bool _S44;
         if(mx_0 == _S19)
         {
-            _S41 = true;
+            _S44 = true;
         }
         else
         {
-            _S41 = dg_is_nan_0(mx_0);
+            _S44 = dg_is_nan_0(mx_0);
         }
-        if(_S41)
+        if(_S44)
         {
             acc_0 = mx_0;
         }
