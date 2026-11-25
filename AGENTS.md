@@ -138,6 +138,8 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   `VK_EXT_layer_settings`.
 - **Mesa lavapipe:**
   - It does not fuse `fma` (`GpuCapabilities.FUSED_FMA` is absent).
+  - It folds `float(half(s))` back to `s`, so a value rounded to FP16 in registers may not be. Where the rounded
+    value matters (the norms' residual stream), round in integer arithmetic (`qF32ToF16` in `quant_common.slang`).
   - It reassociates unmarked arithmetic.
   - Mesa merges `fma(k, a, fma(k, b, c))` unless the `fma` is marked `NoContraction`.
 - **Subgroups:** 32 lanes on native Metal, 4 to 32 on MoltenVK, 4 on lavapipe. Kernels must work at any size in
@@ -167,6 +169,11 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   4.0.
 - **Neighbouring lanes, different branches:** a branch that depends on the lane's data (the K scales' `j < 4`)
   diverges within a SIMD group. Compute both sides and select.
+- **Writable bindings may not overlap another binding** ("Writable dispatch bindings overlap"). For an in-place
+  update, bind the buffer once and read through the writable slot (`inPlace` in the norm and RoPE kernels), and give
+  an unused writable slot its own scratch buffer rather than the shared read placeholder.
+- **Near zero, compare absolutely:** the ULP distance from a tiny value to 0 counts every float in between (about
+  850 million from 1.5e-8), so a bound with an absolute term must be checked as an absolute difference.
 - **Benchmarks record many dispatches per submission.** Long command lists are a good stress test; keep
   `-Dgemm.shapes=true` and `-Dgemm.benchmark=true` running on MoltenVK as well as Metal.
 
@@ -254,13 +261,14 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.9.0 are on GitHub.
+- **Published:** 1.0.x to 1.9.1 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
   - **1.7.0:** the kernel kit, and the `Elementwise`, `Reduce`, `Scan` and `NanCheck` primitives.
 - **1.8.0:** the GEMM family.
 - **1.9.0:** quantized weights.
-- **1.9.1 (K formats, block 128, GGUF import):** built on branch `feat/quant-formats`; see `docs/releases/1.9.1.md`.
-  `scripts/ggml-oracle.py` (with gguf-py) writes the GGML test samples.
-- **Next:** milestone 1.10 (inference kernels).
+- **1.9.1:** K formats, block 128 and GGUF import. `scripts/ggml-oracle.py` (with gguf-py) writes the GGML test
+  samples.
+- **1.10.0 (inference kernels):** built on branch `feat/inference-kernels`; see `docs/releases/1.10.0.md`.
+- **Next:** milestone 1.11 (attention at scale).

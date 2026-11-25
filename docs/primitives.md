@@ -9,12 +9,16 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
 | `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
-| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting | 1.7.0 |
-| `Reduce` | fixed-order sum, max, min and argmax along the last dimension | 1.7.0 |
+| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0) | 1.7.0 |
+| `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0) | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
 | `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M; the K formats Q4K, Q5K, Q6K): CPU and GPU encoders and decoders, bit for bit | 1.9.0 (K formats 1.9.1) |
 | `GgufBlocks` | llama.cpp's GGML blocks (Q4_0, Q4_1, Q8_0, Q4_K, Q5_K, Q6_K) to and from `QuantizedMatrix`, without loss | 1.9.1 |
+| `Norms` | RMSNorm and LayerNorm per row, with an optional fused residual add | 1.10.0 |
+| `Rope` | rotary position embedding from a host table, positions on the GPU | 1.10.0 |
+| `Embedding` | rows gathered by GPU-resident tokens from FP32, FP16 or quantized tables | 1.10.0 |
+| `Sampler` | greedy, temperature, top-k and top-p sampling on the GPU, seeded | 1.10.0 |
 | `QuantizedGemm` | matrix multiply with quantized weights, dequantized in the kernel, for decode and prefill | 1.9.0 |
 
 Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
@@ -360,6 +364,101 @@ try (var gemm = QuantizedGemm.create(device, GemmF16.Input.FP16, Precision.FP32)
 - **Prefill:** TILED takes 3.5 to 4.1 ms at 512 x 4096 x 4096 for every format (4.2 to 4.9 TFLOP/s), a little below
   the FP16 tiled kernel's 5.3. The matrix kernel's
   12.7 TFLOP/s for FP16 weights has no quantized form yet.
+
+## Inference kernels (1.10.0)
+
+The kernels of a decode step around the matrix products, for FP32 or FP16 activations. The step's values (positions,
+tokens) stay on the GPU between steps.
+
+### `Norms`
+
+RMSNorm and LayerNorm of each row (`Norms.Kind`), optionally fused with the residual add:
+
+```java
+try (var norms = Norms.create(device, Precision.FP16, Precision.FP16)) {
+    // h += attention output; y = RMSNorm(h) * w   (h updated in place, the next layer's residual stream)
+    norms.encode(encoder, Norms.Kind.RMS, h, attnOut, h, weight, null, y, Norms.Shape.of(tokens, dim, 1e-5f));
+}
+```
+
+- **Values:** `v = x`, or with a residual `h = in(x + res)`, written to h (which may be x), and `v = h`.
+  - **RMSNorm:** `y = v rsqrt(sum v^2 / n + eps) w`.
+  - **LayerNorm:** `y = (v - mean) rsqrt(sum (v - mean)^2 / n + eps) w + b`, with two passes for the variance.
+- **Types and order:** FP32 throughout, rounded once to the output type. `w` and `b` are FP32. The sums use a fixed
+  tree over the group's 256 threads.
+- **Accuracy:** h is exact. y is bounded, because rsqrt and the division by n are the device's (`Norms.exact`, in
+  double, is what tests check against).
+
+### `Rope`
+
+Rotary position embedding of each head of each token. Each token's position comes from a GPU buffer (uint32 per
+token).
+- **Layouts:** `INTERLEAVED` rotates pairs `(2i, 2i + 1)` (GPT-J); `HALVES` rotates `(i, i + rotaryDim / 2)`
+  (GPT-NeoX, llama).
+- **Partial rotary dimensions:** the elements from `rotaryDim` to the head's end pass through.
+- **Tables:** the cosines and sines come from a `Rope.Table` computed on the host in double. GPU sine is coarse at
+  large angles: Vulkan allows `2^-11` absolute.
+  - **Built in:** `Table.standard(positions, rotaryDim, theta)` and `Table.scaled(..., scale)` (linear
+    interpolation).
+  - **Any other scheme** (NTK, YaRN, llama 3): pass its values with `Table.of`.
+- **Exactness:** each element is two correctly rounded products and an unfused add, so the result is bit for bit
+  `Rope.reference` on every device.
+- **Errors:** a position past the table fails the submission.
+- **In place:** pass the same buffer for x and y; it is bound once.
+
+### `Embedding`
+
+`y[t] = table[tokens[t]]`, with the tokens read from a GPU buffer, the `Sampler`'s output for instance.
+- **Tables:** FP32, FP16 or a packed `QuantizedMatrix` of any format.
+- **Exactness:** values are bit for bit the table's (`QuantizedMatrix.value` for a quantized table).
+- **Errors:** a token past the vocabulary fails the submission.
+
+### `Sampler`
+
+A token from each row of FP32 logits, into a uint32 GPU buffer. One group of 1024 threads handles each row.
+
+```java
+var settings = new Sampler.Settings(0.8f, 40, 0.95f, seed);   // temperature, top-k, top-p, seed
+sampler.encode(encoder, logits, token, Sampler.Shape.of(1, vocab), settings, step);
+embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next step reads the token on the GPU
+```
+
+- **Greedy** (temperature 0 or `k = 1`): the first index of the largest logit, with NaN counting as -infinity.
+- **Sampling:** weights `exp((l - max) / T)`.
+  - **Without top-k and top-p:** over the whole vocabulary, in index order.
+  - **With them:** over the k largest (`k <= 1024`), sorted by logit then index, and cut at top-p. Top-p alone
+    takes the 1024 largest.
+  - **The draw:** `u = rand * total`, with `rand` from a counter-based hash of (seed, row, step); the token is the
+    first whose running sum exceeds u.
+- **Accuracy:**
+  - **Greedy:** exact.
+  - **Repeatable:** the same seed and step give the same token on a device.
+  - **Across devices:** tokens agree unless the draw falls within exp's error of a boundary.
+  - **Measured:** in every test, all three backends matched `Sampler.reference` on every draw, and the draws
+    follow the softmax.
+
+### Activations and log-sum-exp
+
+- **`Elementwise`:** `SILU`, `GELU` (the tanh form, as the GEMM epilogue) and the binary `SWIGLU` (`silu(a) b`).
+  They are bounded by the device's exp.
+- **`Reduce.logSumExp`:** `max + log(sum exp(x - max))` per row, over the same strided views as `rows`.
+
+### Measured
+
+`-Dinference.benchmark=true` gives GPU time on an M4 Max, at llama-like sizes:
+
+| Kernel | Size | Time |
+|---|---|---|
+| residual add + RMSNorm | 1 x 4096 / 512 x 4096 | 8.3 us / 54 us |
+| RoPE | 32 heads x 128, 1 / 512 tokens | 21 us / 32 us |
+| embedding gather | 1 row of 4096, FP16 | 16 us |
+| sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 19 / 51 / 526 us |
+| log-sum-exp | 128256 | 124 us |
+
+- **Why sampling and log-sum-exp are slow:** one group per row leaves most of the GPU idle on a single row. Top-k's
+  radix select also makes four histogram passes through contended group-memory atomics. A multi-group form is
+  planned.
+- **RoPE and the gather** include their error check (an error-buffer reset and check around the dispatch).
 
 ## `Softmax`
 

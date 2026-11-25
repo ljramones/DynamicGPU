@@ -394,6 +394,21 @@ The plan as agreed:
 
 ### 1.10: Inference kernels
 
+**Status: complete, to be released as 1.10.0.** Done:
+- **`Norms`:** RMSNorm and LayerNorm, with the fused residual add (h exact, in place or not).
+- **`Rope`:** both layouts and partial rotary dimensions, from a host table in double. It is bit for bit everywhere.
+- **Activations:** `Elementwise` `SILU`, `GELU` and `SWIGLU`; the residual add is `ADD`.
+- **`Embedding`:** a gather from FP32, FP16 and quantized tables, by GPU-resident tokens.
+- **`Sampler`:** greedy, temperature, top-k and top-p, seeded. The token stays on the GPU and feeds the embedding
+  gather. Greedy is exact, and draws matched the CPU reference on every backend.
+- **`Reduce.logSumExp`.**
+
+Not done:
+- **Fast sampling and log-sum-exp for one row:** they run in one group, so top-k 40 with top-p takes about 0.5 ms at
+  a vocabulary of 128256. A multi-group form is planned.
+
+The plan as agreed:
+
 - **Norms:** RMSNorm and LayerNorm, optionally fused with the residual add.
 - **RoPE:** rotary position embedding, with the common rotation layouts.
 - **Elementwise activations:** SiLU, GELU and SwiGLU as standalone operations, plus residual add.
