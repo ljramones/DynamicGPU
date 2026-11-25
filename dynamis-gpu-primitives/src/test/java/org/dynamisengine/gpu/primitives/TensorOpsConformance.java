@@ -374,4 +374,61 @@ abstract class TensorOpsConformance {
             assertEquals(org.dynamisengine.gpu.api.compute.ComputeException.Code.KERNEL_ERROR, ex.code());
         }
     }
+
+    @Test void sigmoidAndTanhMeetTheirBounds() {
+        // a sweep of x over [-90, 90] (dense near 0 and around the polynomial's edge), forward and backward, each element
+        // within its contract against the double result; dy random
+        var rng = new SplittableRandom(51);
+        int n = 1 << 16;
+        float[] x = new float[n], dy = new float[n];
+        for (int i = 0; i < n; i++) {
+            int k = rng.nextInt(4);
+            x[i] = k == 0 ? (float) ((rng.nextDouble() * 2 - 1) * 90) : k == 1 ? (float) ((rng.nextDouble() * 2 - 1) * Math.pow(2, rng.nextInt(-30, 0)))
+                    : k == 2 ? (float) (0.625 + (rng.nextDouble() - 0.5) * 0.01) * (rng.nextBoolean() ? 1 : -1) : (float) ((rng.nextDouble() * 2 - 1) * 8);
+            dy[i] = (float) ((rng.nextDouble() * 2 - 1) * 4);
+        }
+        x[0] = Float.NaN; x[1] = Float.POSITIVE_INFINITY; x[2] = Float.NEGATIVE_INFINITY; x[3] = 0f; x[4] = -0f; x[5] = 0.625f; x[6] = -0.625f;
+        var v = StridedView.contiguous(n);
+        try (var ew = Elementwise.create(device); var gx = buffer(4L * n); var gd = buffer(4L * n); var gy = buffer(4L * n)) {
+            for (int pass = 0; pass < 4; pass++) {
+                final int ps = pass;
+                int[] got = run(e -> {
+                    e.upload(gx, words(bits(x))).upload(gd, words(bits(dy)));
+                    switch (ps) {
+                        case 0 -> ew.unary(e, Elementwise.Unary.SIGMOID, gx, v, gy, v);
+                        case 1 -> ew.unary(e, Elementwise.Unary.TANH, gx, v, gy, v);
+                        case 2 -> ew.binary(e, Elementwise.Binary.SIGMOID_BACKWARD, gx, v, gd, v, gy, v);
+                        default -> ew.binary(e, Elementwise.Binary.TANH_BACKWARD, gx, v, gd, v, gy, v);
+                    }
+                }, gy);
+                String name = new String[] {"sigmoid", "tanh", "sigmoid backward", "tanh backward"}[pass];
+                long worst = 0;
+                for (int i = 0; i < n; i++) {
+                    double a = x[i];
+                    double exact = switch (pass) {
+                        case 0 -> 1 / (1 + Math.exp(-a));
+                        case 1 -> Math.tanh(a);
+                        case 2 -> { double s = 1 / (1 + Math.exp(-Math.abs(a))); yield dy[i] * s * Math.exp(-Math.abs(a)) * s; }
+                        default -> { double c = Math.cosh(a); yield dy[i] / (c * c); }
+                    };
+                    float want = (float) exact, g = Float.intBitsToFloat(got[i]);
+                    String where = name + " of " + x[i] + (pass >= 2 ? " (dy " + dy[i] + ")" : "") + ": exact " + exact + ", got " + g;
+                    if (Double.isNaN(exact)) { assertTrue(Float.isNaN(g), where); continue; }
+                    if (want == 0 || Math.abs(want) < 0x1p-126) { assertTrue(Math.abs(g) < 0x1p-125, where); continue; }   // flushes allowed
+                    if (Math.abs(a) < 0x1p-126) continue;   // a subnormal input may flush to 0
+                    long ulps = org.dynamisengine.gpu.api.compute.kit.AccuracyContract.ulpDistance(want, g);
+                    double allowed = switch (pass) {
+                        case 0 -> 6 + 2 * Math.abs(a);
+                        case 1 -> 8 + 4 * Math.abs(a);
+                        case 2 -> 9 + 2 * Math.abs(a);
+                        default -> 9 + 4 * Math.abs(a);
+                    };
+                    boolean flushable = pass >= 2 && Math.exp(-(pass == 2 ? 1 : 2) * Math.abs(a)) < 0x1p-126;   // a subnormal exponential
+                    assertTrue(ulps <= allowed || flushable && g == 0, where + ": " + ulps + " ULP, allowed " + allowed);
+                    if (ulps <= allowed) worst = Math.max(worst, ulps);
+                }
+                System.out.println(name + " on " + device.adapter().name() + ": worst " + worst + " ULP");
+            }
+        }
+    }
 }

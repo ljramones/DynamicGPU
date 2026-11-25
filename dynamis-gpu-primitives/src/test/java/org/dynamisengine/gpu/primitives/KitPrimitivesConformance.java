@@ -114,6 +114,8 @@ abstract class KitPrimitivesConformance {
                             case LOG -> Math.log(a);
                             case SILU -> a / (1 + Math.exp(-(double) a));
                             case GELU -> 0.5 * a * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (a + 0.044715 * a * a * (double) a)));
+                            case SIGMOID -> 1 / (1 + Math.exp(-(double) a));
+                            case TANH -> Math.tanh(a);
                             default -> 1.0 / a;
                         };
                         float want = (float) exact;
@@ -136,6 +138,8 @@ abstract class KitPrimitivesConformance {
                             case EXP -> Math.max(4, 3 + 2 * Math.abs(a));
                             case LOG -> (a < 0.5 || a > 2) ? 4 : Math.max(4, 0x1p-21 / Math.ulp(want));
                             case SILU -> 7 + 2 * Math.abs(a);
+                            case SIGMOID -> 6 + 2 * Math.abs(a);
+                            case TANH -> 8 + 4 * Math.abs(a);
                             default -> contract.bound().ulps();
                         };
                         assertTrue(ulps <= allowed, where + ": " + ulps + " ULP, contract " + contract.bound().formula());
@@ -157,6 +161,8 @@ abstract class KitPrimitivesConformance {
             for (var op : Elementwise.Binary.values()) {
                 // the bounded backward passes have their own test (InferenceConformance.activationGradientsWithinTheirBound)
                 if (op == Elementwise.Binary.SILU_BACKWARD || op == Elementwise.Binary.GELU_BACKWARD) continue;
+                // and so do sigmoid's and tanh's (TensorOpsConformance.sigmoidAndTanhMeetTheirBounds, 1.14.0)
+                if (op == Elementwise.Binary.SIGMOID_BACKWARD || op == Elementwise.Binary.TANH_BACKWARD) continue;
                 float[] y;
                 try (var ga = buffer(4L * a.length); var gb = buffer(4L * b.length); var gy = buffer(4L * rows * cols); var e = device.encoder()) {
                     e.upload(ga, bytes(a)).upload(gb, bytes(b));
@@ -212,6 +218,7 @@ abstract class KitPrimitivesConformance {
                 var xv = StridedView.matrix(rows, n);
                 var yv = StridedView.contiguous(rows);
                 for (var op : Reduce.Op.values()) {
+                    if (op == Reduce.Op.MEAN) continue;   // bounded, not bit for bit off Metal: TensorOpsConformance (1.14.0)
                     float[] y = reduce(reduce, op, x, xv, rows, yv), want = new float[rows];
                     Reduce.reference(op, x, xv, want, yv);
                     for (int r = 0; r < rows; r++) assertSameBits(want[r], y[r], op + " of row " + r + " of length " + n);
@@ -230,6 +237,7 @@ abstract class KitPrimitivesConformance {
             var xv = StridedView.of(0, new long[] {6, 4, 300}, new long[] {300, 6 * 300, 1});
             var yv = StridedView.of(0, new long[] {6, 4}, new long[] {1, 6});
             for (var op : Reduce.Op.values()) {
+                    if (op == Reduce.Op.MEAN) continue;   // bounded, not bit for bit off Metal: TensorOpsConformance (1.14.0)
                 float[] y = reduce(reduce, op, x, xv, 24, yv), want = new float[24];
                 Reduce.reference(op, x, xv, want, yv);
                 for (int r = 0; r < 24; r++) assertSameBits(want[r], y[r], op + " of batched row " + r);
@@ -278,6 +286,7 @@ abstract class KitPrimitivesConformance {
                 var xv = StridedView.matrix(0, rows, n, ld);
                 var yv = StridedView.matrix(rows, n);
                 for (var op : Reduce.Op.values()) {
+                    if (op == Reduce.Op.MEAN) continue;   // bounded, not bit for bit off Metal: TensorOpsConformance (1.14.0)
                     float[] y;
                     try (var gx = buffer(4L * x.length); var gy = buffer(4L * rows * n); var e = device.encoder()) {
                         e.upload(gx, bytes(x));

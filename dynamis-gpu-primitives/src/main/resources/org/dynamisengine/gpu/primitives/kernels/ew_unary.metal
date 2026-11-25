@@ -92,62 +92,86 @@ bool dg_in_range_0(uint device* errors_1, uint index_1, uint length_0, uint at_0
 
 constant uint fc_OP_0 [[function_constant(0)]];
 constant uint OP_0 = is_function_constant_defined(fc_OP_0) ? fc_OP_0 : 0U;
-float unary_0(float x_0)
+float ewTanh_0(float x_0)
+{
+    uint _S16 = (as_type<uint>((x_0)));
+    float ax_0 = (as_type<float>((_S16 & 2147483647U)));
+    if(ax_0 < (as_type<float>((964689920U))))
+    {
+        return x_0;
+    }
+    if(ax_0 < 0.625)
+    {
+        float z_0 = x_0 * x_0;
+        return x_0 + x_0 * (z_0 * ((((((((((((as_type<float>((931498391U))) * z_0 + (as_type<float>((3089415879U)))) * z_0 + (as_type<float>((952844044U)))) * z_0 + (as_type<float>((3111829180U)))) * z_0 + (as_type<float>((974826514U)))) * z_0 + (as_type<float>((3133067698U)))) * z_0 + (as_type<float>((996895208U)))) * z_0 + (as_type<float>((3155244827U)))) * z_0 + (as_type<float>((1018374052U)))) * z_0 + (as_type<float>((3176992209U)))) * z_0 + (as_type<float>((1040746633U)))) * z_0 + (as_type<float>((3198855851U)))));
+    }
+    return (as_type<float>(((as_type<uint>((1.0 - 2.0 / (exp(2.0 * ax_0) + 1.0)))) | (_S16 & 2147483648U))));
+}
+
+float unary_0(float x_1)
 {
     switch(OP_0)
     {
     case 0U:
         {
-            return x_0;
+            return x_1;
         }
     case 1U:
         {
-            return (as_type<float>(((as_type<uint>((x_0))) ^ 2147483648U)));
+            return (as_type<float>(((as_type<uint>((x_1))) ^ 2147483648U)));
         }
     case 2U:
         {
-            return (as_type<float>(((as_type<uint>((x_0))) & 2147483647U)));
+            return (as_type<float>(((as_type<uint>((x_1))) & 2147483647U)));
         }
     case 3U:
         {
-            return x_0 * x_0;
+            return x_1 * x_1;
         }
     case 4U:
         {
-            float _S16;
-            if(x_0 < 0.0)
+            float _S17;
+            if(x_1 < 0.0)
             {
-                _S16 = 0.0;
+                _S17 = 0.0;
             }
             else
             {
-                _S16 = x_0;
+                _S17 = x_1;
             }
-            return _S16;
+            return _S17;
         }
     case 5U:
         {
-            return sqrt(x_0);
+            return sqrt(x_1);
         }
     case 6U:
         {
-            return exp(x_0);
+            return exp(x_1);
         }
     case 7U:
         {
-            return log(x_0);
+            return log(x_1);
         }
     case 8U:
         {
-            return 1.0 / x_0;
+            return 1.0 / x_1;
         }
     case 9U:
         {
-            return x_0 / (1.0 + exp(- x_0));
+            return x_1 / (1.0 + exp(- x_1));
+        }
+    case 10U:
+        {
+            return 0.5 * x_1 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (x_1 + 0.04471499845385551 * x_1 * x_1 * x_1))) + 1.0)));
+        }
+    case 11U:
+        {
+            return 1.0 / (1.0 + exp(- x_1));
         }
     default:
         {
-            return 0.5 * x_0 * (1.0 + (1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (x_0 + 0.04471499845385551 * x_0 * x_0 * x_0))) + 1.0)));
+            return ewTanh_0(x_1);
         }
     }
 }
@@ -183,44 +207,44 @@ struct KernelContext_0
     UnaryParams_0 constant* p_0;
     uint device* errors_2;
     float device* y_0;
-    float device* x_1;
+    float device* x_2;
 };
 
-[[kernel]] void ew_unary(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], UnaryParams_0 constant* p_1 [[buffer(3)]], uint device* errors_3 [[buffer(2)]], float device* y_1 [[buffer(1)]], float device* x_2 [[buffer(0)]])
+[[kernel]] void ew_unary(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], UnaryParams_0 constant* p_1 [[buffer(3)]], uint device* errors_3 [[buffer(2)]], float device* y_1 [[buffer(1)]], float device* x_3 [[buffer(0)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
     (&kernelContext_0)->errors_2 = errors_3;
     (&kernelContext_0)->y_0 = y_1;
-    (&kernelContext_0)->x_1 = x_2;
+    (&kernelContext_0)->x_2 = x_3;
     uint i_3 = dg_linear_thread_0(group_2, local_1, p_1->gridX_2, 256U);
     if(i_3 >= (p_1->count_0))
     {
         return;
     }
     DgView_0 yv_0 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
-    thread DgView_0 _S17 = yv_0;
-    uint4 _S18 = dg_coords_0(&_S17, i_3);
-    thread DgView_0 _S19 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
-    uint _S20 = dg_at_broadcast_0(&_S19, _S18);
-    thread DgView_0 _S21 = yv_0;
-    uint _S22 = dg_at_0(&_S21, _S18);
-    bool _S23 = dg_in_range_0((&kernelContext_0)->errors_2, _S20, (&kernelContext_0)->p_0->xLength_0, i_3);
-    bool _S24;
-    if(!_S23)
+    thread DgView_0 _S18 = yv_0;
+    uint4 _S19 = dg_coords_0(&_S18, i_3);
+    thread DgView_0 _S20 = dg_view_0((&kernelContext_0)->p_0->xOffset_0, uint4((&kernelContext_0)->p_0->xExtent0_0, (&kernelContext_0)->p_0->xExtent1_0, (&kernelContext_0)->p_0->xExtent2_0, (&kernelContext_0)->p_0->xExtent3_0), uint4((&kernelContext_0)->p_0->xStride0_0, (&kernelContext_0)->p_0->xStride1_0, (&kernelContext_0)->p_0->xStride2_0, (&kernelContext_0)->p_0->xStride3_0));
+    uint _S21 = dg_at_broadcast_0(&_S20, _S19);
+    thread DgView_0 _S22 = yv_0;
+    uint _S23 = dg_at_0(&_S22, _S19);
+    bool _S24 = dg_in_range_0((&kernelContext_0)->errors_2, _S21, (&kernelContext_0)->p_0->xLength_0, i_3);
+    bool _S25;
+    if(!_S24)
     {
-        _S24 = true;
+        _S25 = true;
     }
     else
     {
-        bool _S25 = dg_in_range_0((&kernelContext_0)->errors_2, _S22, (&kernelContext_0)->p_0->yLength_0, i_3);
-        _S24 = !_S25;
+        bool _S26 = dg_in_range_0((&kernelContext_0)->errors_2, _S23, (&kernelContext_0)->p_0->yLength_0, i_3);
+        _S25 = !_S26;
     }
-    if(_S24)
+    if(_S25)
     {
         return;
     }
-    *((&kernelContext_0)->y_0+_S22) = unary_0(*((&kernelContext_0)->x_1+_S20));
+    *((&kernelContext_0)->y_0+_S23) = unary_0(*((&kernelContext_0)->x_2+_S21));
     return;
 }
 

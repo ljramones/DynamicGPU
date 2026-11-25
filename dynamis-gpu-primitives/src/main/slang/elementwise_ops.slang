@@ -30,6 +30,33 @@ struct BinaryParams
 
 static const uint THREADS = 256;
 
+// tanh (1.14.0): an odd polynomial below |x| = 0.625 (the Taylor series through x^25, no cancellation), and
+// 1 - 2 / (exp(2|x|) + 1) with x's sign above, where the subtraction amplifies exp's error at most 0.8 times.
+float ewTanh(float x)
+{
+    float ax = asfloat(asuint(x) & 0x7FFFFFFFu);
+    if (ax < asfloat(0x39800000u)) return x;   // |x| < 2^-12: tanh x rounds to x (keeps -0, and subnormals unflushed)
+    if (ax < 0.625f)
+    {
+        float z = x * x;
+        float q = asfloat(0x37858997u);
+        q = q * z + asfloat(0xb824bec7u);
+        q = q * z + asfloat(0x38cb3f0cu);
+        q = q * z + asfloat(0xb97abebcu);
+        q = q * z + asfloat(0x3a1aac12u);
+        q = q * z + asfloat(0xbabed1b2u);
+        q = q * z + asfloat(0x3b6b69e8u);
+        q = q * z + asfloat(0xbc11371bu);
+        q = q * z + asfloat(0x3cb327a4u);
+        q = q * z + asfloat(0xbd5d0dd1u);
+        q = q * z + asfloat(0x3e088889u);
+        q = q * z + asfloat(0xbeaaaaabu);
+        return x + x * (z * q);
+    }
+    float t = 1.0f - 2.0f / (exp(2.0f * ax) + 1.0f);   // NaN stays NaN; overflow gives 1
+    return asfloat(asuint(t) | (asuint(x) & 0x80000000u));
+}
+
 // Elementwise.Unary, in declaration order.
 float unary(float x)
 {
@@ -45,11 +72,13 @@ float unary(float x)
     case 7: return log(x);                                  // LOG
     case 8: return 1.0f / x;                                // RECIPROCAL
     case 9: return x / (1.0f + exp(-x));                    // SILU (1.10.0)
-    default:                                                // GELU, its tanh form (1.10.0): as GemmF16's epilogue
+    case 10:                                                // GELU, its tanh form (1.10.0): as GemmF16's epilogue
     {
         float u = 0.7978845608f * (x + 0.044715f * x * x * x);
         return 0.5f * x * (1.0f + (1.0f - 2.0f / (exp(2.0f * u) + 1.0f)));
     }
+    case 11: return 1.0f / (1.0f + exp(-x));                // SIGMOID (1.14.0)
+    default: return ewTanh(x);                              // TANH (1.14.0)
     }
 }
 
@@ -72,12 +101,23 @@ float binary(float a, float b)
         float s = 1.0f / (1.0f + exp(-a));
         return b * (s * (1.0f + a * (1.0f - s)));
     }
-    default:                                                // GELU_BACKWARD, the tanh form's derivative
+    case 9:                                                 // GELU_BACKWARD, the tanh form's derivative
     {
         float u = 0.7978845608f * (a + 0.044715f * a * a * a);
         float t = 1.0f - 2.0f / (exp(2.0f * u) + 1.0f);
         float du = 0.7978845608f * (1.0f + 3.0f * 0.044715f * a * a);
         return b * (0.5f * (1.0f + t) + 0.5f * a * (1.0f - t * t) * du);
+    }
+    // 1.14.0, from the forward input and without cancellation: both derivatives are even, in e = exp(-|x|) or exp(-2|x|)
+    case 10:                                                // SIGMOID_BACKWARD: dy s (1 - s) = dy e / (1 + e)^2
+    {
+        float e = exp(-asfloat(asuint(a) & 0x7FFFFFFFu));
+        return b * (e / ((1.0f + e) * (1.0f + e)));
+    }
+    default:                                                // TANH_BACKWARD: dy (1 - t^2) = dy 4e / (1 + e)^2
+    {
+        float e = exp(-2.0f * asfloat(asuint(a) & 0x7FFFFFFFu));
+        return b * (4.0f * e / ((1.0f + e) * (1.0f + e)));
     }
     }
 }

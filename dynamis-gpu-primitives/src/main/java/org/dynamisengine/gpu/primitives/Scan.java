@@ -53,6 +53,7 @@ public final class Scan implements AutoCloseable {
     /** Records the inclusive scan of each row of {@code x} into {@code y} (same shape). */
     public GpuCommandEncoder rows(GpuCommandEncoder encoder, Reduce.Op op, GpuBuffer x, StridedView xv, GpuBuffer y, StridedView yv) {
         Checks.notNull(op, "op");
+        if (op == Reduce.Op.MEAN) throw new IllegalArgumentException("a scan takes SUM, MAX or MIN");
         var x4 = xv.withRank(4);
         var y4 = yv.withRank(4);
         for (int d = 0; d < 4; d++) {

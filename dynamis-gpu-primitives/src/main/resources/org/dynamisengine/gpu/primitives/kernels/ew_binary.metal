@@ -227,10 +227,22 @@ float binary_0(float a_2, float b_2)
             float s_0 = 1.0 / (1.0 + exp(- a_2));
             return b_2 * (s_0 * (1.0 + a_2 * (1.0 - s_0)));
         }
-    default:
+    case 9U:
         {
             float t_0 = 1.0 - 2.0 / (exp(2.0 * (0.79788458347320557 * (a_2 + 0.04471499845385551 * a_2 * a_2 * a_2))) + 1.0);
             return b_2 * (0.5 * (1.0 + t_0) + 0.5 * a_2 * (1.0 - t_0 * t_0) * (0.79788458347320557 * (1.0 + 0.13414499163627625 * a_2 * a_2)));
+        }
+    case 10U:
+        {
+            float e_0 = exp(- (as_type<float>(((as_type<uint>((a_2))) & 2147483647U))));
+            float _S23 = 1.0 + e_0;
+            return b_2 * (e_0 / (_S23 * _S23));
+        }
+    default:
+        {
+            float e_1 = exp(-2.0 * (as_type<float>(((as_type<uint>((a_2))) & 2147483647U))));
+            float _S24 = 1.0 + e_1;
+            return b_2 * (4.0 * e_1 / (_S24 * _S24));
         }
     }
 }
@@ -294,39 +306,39 @@ struct KernelContext_0
         return;
     }
     DgView_0 yv_0 = dg_view_0((&kernelContext_0)->p_0->yOffset_0, uint4((&kernelContext_0)->p_0->yExtent0_0, (&kernelContext_0)->p_0->yExtent1_0, (&kernelContext_0)->p_0->yExtent2_0, (&kernelContext_0)->p_0->yExtent3_0), uint4((&kernelContext_0)->p_0->yStride0_0, (&kernelContext_0)->p_0->yStride1_0, (&kernelContext_0)->p_0->yStride2_0, (&kernelContext_0)->p_0->yStride3_0));
-    thread DgView_0 _S23 = yv_0;
-    uint4 _S24 = dg_coords_0(&_S23, i_3);
-    thread DgView_0 _S25 = dg_view_0((&kernelContext_0)->p_0->aOffset_0, uint4((&kernelContext_0)->p_0->aExtent0_0, (&kernelContext_0)->p_0->aExtent1_0, (&kernelContext_0)->p_0->aExtent2_0, (&kernelContext_0)->p_0->aExtent3_0), uint4((&kernelContext_0)->p_0->aStride0_0, (&kernelContext_0)->p_0->aStride1_0, (&kernelContext_0)->p_0->aStride2_0, (&kernelContext_0)->p_0->aStride3_0));
-    uint _S26 = dg_at_broadcast_0(&_S25, _S24);
-    thread DgView_0 _S27 = dg_view_0((&kernelContext_0)->p_0->bOffset_0, uint4((&kernelContext_0)->p_0->bExtent0_0, (&kernelContext_0)->p_0->bExtent1_0, (&kernelContext_0)->p_0->bExtent2_0, (&kernelContext_0)->p_0->bExtent3_0), uint4((&kernelContext_0)->p_0->bStride0_0, (&kernelContext_0)->p_0->bStride1_0, (&kernelContext_0)->p_0->bStride2_0, (&kernelContext_0)->p_0->bStride3_0));
-    uint _S28 = dg_at_broadcast_0(&_S27, _S24);
-    thread DgView_0 _S29 = yv_0;
-    uint _S30 = dg_at_0(&_S29, _S24);
-    bool _S31 = dg_in_range_0((&kernelContext_0)->errors_2, _S26, (&kernelContext_0)->p_0->aLength_0, i_3);
-    bool _S32;
-    if(!_S31)
+    thread DgView_0 _S25 = yv_0;
+    uint4 _S26 = dg_coords_0(&_S25, i_3);
+    thread DgView_0 _S27 = dg_view_0((&kernelContext_0)->p_0->aOffset_0, uint4((&kernelContext_0)->p_0->aExtent0_0, (&kernelContext_0)->p_0->aExtent1_0, (&kernelContext_0)->p_0->aExtent2_0, (&kernelContext_0)->p_0->aExtent3_0), uint4((&kernelContext_0)->p_0->aStride0_0, (&kernelContext_0)->p_0->aStride1_0, (&kernelContext_0)->p_0->aStride2_0, (&kernelContext_0)->p_0->aStride3_0));
+    uint _S28 = dg_at_broadcast_0(&_S27, _S26);
+    thread DgView_0 _S29 = dg_view_0((&kernelContext_0)->p_0->bOffset_0, uint4((&kernelContext_0)->p_0->bExtent0_0, (&kernelContext_0)->p_0->bExtent1_0, (&kernelContext_0)->p_0->bExtent2_0, (&kernelContext_0)->p_0->bExtent3_0), uint4((&kernelContext_0)->p_0->bStride0_0, (&kernelContext_0)->p_0->bStride1_0, (&kernelContext_0)->p_0->bStride2_0, (&kernelContext_0)->p_0->bStride3_0));
+    uint _S30 = dg_at_broadcast_0(&_S29, _S26);
+    thread DgView_0 _S31 = yv_0;
+    uint _S32 = dg_at_0(&_S31, _S26);
+    bool _S33 = dg_in_range_0((&kernelContext_0)->errors_2, _S28, (&kernelContext_0)->p_0->aLength_0, i_3);
+    bool _S34;
+    if(!_S33)
     {
-        _S32 = true;
+        _S34 = true;
     }
     else
     {
-        bool _S33 = dg_in_range_0((&kernelContext_0)->errors_2, _S28, (&kernelContext_0)->p_0->bLength_0, i_3);
-        _S32 = !_S33;
+        bool _S35 = dg_in_range_0((&kernelContext_0)->errors_2, _S30, (&kernelContext_0)->p_0->bLength_0, i_3);
+        _S34 = !_S35;
     }
-    if(_S32)
+    if(_S34)
     {
-        _S32 = true;
+        _S34 = true;
     }
     else
     {
-        bool _S34 = dg_in_range_0((&kernelContext_0)->errors_2, _S30, (&kernelContext_0)->p_0->yLength_0, i_3);
-        _S32 = !_S34;
+        bool _S36 = dg_in_range_0((&kernelContext_0)->errors_2, _S32, (&kernelContext_0)->p_0->yLength_0, i_3);
+        _S34 = !_S36;
     }
-    if(_S32)
+    if(_S34)
     {
         return;
     }
-    *((&kernelContext_0)->y_0+_S30) = binary_0(*((&kernelContext_0)->a_3+_S26), *((&kernelContext_0)->b_3+_S28));
+    *((&kernelContext_0)->y_0+_S32) = binary_0(*((&kernelContext_0)->a_3+_S28), *((&kernelContext_0)->b_3+_S30));
     return;
 }
 

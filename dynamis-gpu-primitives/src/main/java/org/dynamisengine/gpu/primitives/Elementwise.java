@@ -41,7 +41,11 @@ public final class Elementwise implements AutoCloseable {
         /** {@code x / (1 + exp(-x))} (1.10.0). */
         SILU,
         /** GELU in its tanh form, as {@code GemmF16}'s epilogue (1.10.0). */
-        GELU;
+        GELU,
+        /** {@code 1 / (1 + exp(-x))} (1.14.0). */
+        SIGMOID,
+        /** tanh (1.14.0): an odd polynomial below |x| = 0.625, {@code 1 - 2 / (exp(2|x|) + 1)} with x's sign above. */
+        TANH;
 
         /** Whether the result is the same bits on every device ({@link #apply}). */
         public boolean exact() { return ordinal() <= RELU.ordinal(); }
@@ -68,10 +72,17 @@ public final class Elementwise implements AutoCloseable {
          */
         SILU_BACKWARD,
         /** The backward pass of GELU's tanh form (1.12.0), for {@code a = x}, {@code b = dy}. */
-        GELU_BACKWARD;
+        GELU_BACKWARD,
+        /**
+         * Sigmoid's backward pass (1.14.0) from the forward input: {@code dy s (1 - s)} for {@code a = x}, {@code b = dy},
+         * computed as {@code dy e / (1 + e)^2}, {@code e = exp(-|x|)}, with no cancellation for large |x|.
+         */
+        SIGMOID_BACKWARD,
+        /** tanh's backward pass (1.14.0) from the forward input: {@code dy (1 - tanh^2 x)} as {@code dy 4e / (1 + e)^2}, {@code e = exp(-2|x|)}. */
+        TANH_BACKWARD;
 
         /** Whether the result is the same bits on every device ({@link #apply}). */
-        public boolean exact() { return this != DIV && this != SWIGLU && this != SILU_BACKWARD && this != GELU_BACKWARD; }
+        public boolean exact() { return ordinal() <= MIN.ordinal() && this != DIV || this == RELU_BACKWARD; }
     }
 
     private static final int THREADS = 256;
@@ -161,6 +172,8 @@ public final class Elementwise implements AutoCloseable {
                 float u = GemmF16.GELU_SCALE * (x + GemmF16.GELU_CUBIC * x * x * x);
                 yield 0.5f * x * (1f + (1f - 2f / ((float) Math.exp(2f * u) + 1f)));
             }
+            case SIGMOID -> 1f / (1f + (float) Math.exp(-x));
+            case TANH -> (float) Math.tanh(x);
         };
     }
 
@@ -185,6 +198,14 @@ public final class Elementwise implements AutoCloseable {
                 float du = GemmF16.GELU_SCALE * (1f + 3f * GemmF16.GELU_CUBIC * a * a);
                 yield b * (0.5f * (1f + t) + 0.5f * a * (1f - t * t) * du);
             }
+            case SIGMOID_BACKWARD -> {
+                double e = Math.exp(-Math.abs((double) a));
+                yield (float) (b * (e / ((1 + e) * (1 + e))));
+            }
+            case TANH_BACKWARD -> {
+                double e = Math.exp(-2 * Math.abs((double) a));
+                yield (float) (b * (4 * e / ((1 + e) * (1 + e))));
+            }
         };
     }
 
@@ -201,6 +222,9 @@ public final class Elementwise implements AutoCloseable {
             case SILU -> Bound.formula("(7 + 2|x|) ULP: exp's (3 + 2|x| on Vulkan) through 1 + e and a 2.5 ULP division");
             case GELU -> Bound.formula("(8 + 4|u|) ULP of y plus |x| 2^-22 absolute, u = sqrt(2/pi)(x + 0.044715 x^3): exp's error, and "
                     + "the cancellation of 1 + tanh(u) for x below about -3");
+            case SIGMOID -> Bound.formula("(6 + 2|x|) ULP: exp's (3 + 2|x| on Vulkan) through 1 + e and a 2.5 ULP division");
+            case TANH -> Bound.formula("(8 + 4|x|) ULP: below |x| = 0.625 the polynomial's rounding (a few ULP); above, exp(2|x|)'s "
+                    + "(3 + 4|x|) through the division and a subtraction that amplifies it at most 0.8 times");
             default -> Bound.ulps(2.5, "Vulkan: 1 / x within 2.5 ULP for |x| in [2^-126, 2^126]");
         };
         return new AccuracyContract(name, List.of("FP32"), "none", "FP32", Order.DEVICE, bound, "");
@@ -222,6 +246,13 @@ public final class Elementwise implements AutoCloseable {
                     Bound.formula("absolute, |dy| times the error of s (1 + x (1 - s)) carried through each step from sigmoid's "
                             + "(7 + 2|x|) ULP, each step's rounding relative to the magnitude of its terms (the derivative "
                             + "crosses zero near x = -1.28, where a relative bound cannot hold)"), "");
+        }
+        if (op == Binary.SIGMOID_BACKWARD || op == Binary.TANH_BACKWARD) {
+            String e = op == Binary.SIGMOID_BACKWARD ? "exp(-|x|)'s (3 + 2|x|)" : "exp(-2|x|)'s (3 + 4|x|)";
+            return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
+                    Bound.formula("(9 + " + (op == Binary.SIGMOID_BACKWARD ? "2" : "4") + "|x|) ULP of dx: " + e + " ULP, three roundings, a 2.5 ULP "
+                            + "division and the product with dy; relative everywhere (no cancellation). Where the exponential is below 2^-126 (|x| above "
+                            + "about 87, or 43.6 for tanh) a device that flushes subnormals may give 0"), "");
         }
         if (op == Binary.GELU_BACKWARD) {
             return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
