@@ -97,3 +97,4 @@ softmax_backward_f16 softmax_backward_f16.slang softmax_backward_f16
 norm_backward_f32 norm_backward_f32.slang norm_backward_f32
 norm_backward_f16 norm_backward_f16.slang norm_backward_f16
 norm_backward_columns norm_backward_columns.slang norm_backward_columns
+cross_entropy cross_entropy.slang cross_entropy

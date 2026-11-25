@@ -341,6 +341,72 @@ abstract class InferenceConformance {
     // --- activations and log-sum-exp -------------------------------------------------------------------------------
 
     /**
+     * CrossEntropy (1.12.0): the loss of each row and the gradient, against double from the same logits, within the
+     * log-sum-exp's bound carried through; ignored rows exactly 0; in place and loss-only; a bad target fails.
+     */
+    @Test void crossEntropyWithinItsBound() {
+        final double U = 0x1p-24;
+        var r = new SplittableRandom(80);
+        try (var ce = CrossEntropy.create(device)) {
+            for (int vocab : new int[] {300, 128256}) for (int mode = 0; mode < 3; mode++) {   // gradient, in place, loss only
+                int rows = 6, ld = vocab + (mode == 0 ? 5 : 0);
+                float[] logits = values(rows * ld, r, 8, Precision.FP32);
+                int[] targets = {0, vocab - 1, CrossEntropy.IGNORE, r.nextInt(vocab), r.nextInt(vocab), 7 % vocab};
+                float scale = 1f / 5;
+                var s = new CrossEntropy.Shape(rows, vocab, ld, ld);
+                byte[][] got = new byte[2][];
+                try (var gl = buffer(4L * logits.length); var gt = buffer(4L * rows); var gloss = buffer(4L * rows);
+                     var gd = buffer(4L * logits.length); var e = device.encoder()) {
+                    e.upload(gl, encode(logits, Precision.FP32)).upload(gt, ints(targets));
+                    ce.encode(e, gl, gt, gloss, mode == 0 ? gd : mode == 1 ? gl : null, scale, s);
+                    var a = e.download(gloss); var b = e.download(mode == 1 ? gl : gd);
+                    try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                    got[0] = a.bytes(); got[1] = b.bytes();
+                }
+                float[] loss = decode(got[0], Precision.FP32, rows), dl = decode(got[1], Precision.FP32, logits.length);
+                double worstLoss = 0, worstGrad = 0;
+                for (int row = 0; row < rows; row++) {
+                    int off = row * ld, t = targets[row];
+                    double mx = Double.NEGATIVE_INFINITY;
+                    for (int j = 0; j < vocab; j++) mx = Math.max(mx, logits[off + j]);
+                    double sum = 0, dev = 0;
+                    for (int j = 0; j < vocab; j++) { sum += Math.exp(logits[off + j] - mx); dev = Math.max(dev, mx - logits[off + j]); }
+                    double lse = mx + Math.log(sum);
+                    double dLse = U * Math.abs(mx) + (vocab + 10 + 2 * dev) * U + 4 * Math.ulp((float) Math.log(sum));
+                    double exactLoss = CrossEntropy.lossExact(logits, off, vocab, t);
+                    if (t == CrossEntropy.IGNORE) assertEquals(0f, loss[row], "ignored row's loss");
+                    else {
+                        double bound = dLse + U * (Math.abs(exactLoss) + Math.abs(logits[off + t])) + 0x1p-126;
+                        assertTrue(Math.abs(loss[row] - exactLoss) <= bound, "loss[" + row + "] = " + loss[row] + ", exact " + exactLoss + ", bound " + bound);
+                        worstLoss = Math.max(worstLoss, Math.abs(loss[row] - exactLoss) / bound);
+                    }
+                    if (mode == 2) continue;
+                    for (int j = 0; j < vocab; j++) {
+                        float g = dl[off + j];
+                        if (t == CrossEntropy.IGNORE) { assertEquals(0f, g, "ignored row's gradient"); continue; }
+                        double x = logits[off + j] - lse, p = Math.exp(x), exact = scale * (p - (j == t ? 1 : 0));
+                        double bound = Math.abs(scale) * (p * (dLse + U * Math.abs(x) + (8 + 4 * Math.abs(x)) * U) * 1.01 + U * Math.abs(p - (j == t ? 1 : 0)))
+                                + U * Math.abs(exact) + 0x1p-126;
+                        double err = Math.abs(g - exact);
+                        assertTrue(err <= bound, "dl[" + row + "][" + j + "] = " + g + ", exact " + exact + ", bound " + bound + " (vocab " + vocab + ")");
+                        worstGrad = Math.max(worstGrad, err / bound);
+                    }
+                }
+                if (vocab == 128256 && mode < 2)
+                    System.out.printf("cross-entropy %s on %s: worst loss error/bound %.3g, gradient %.3g%n", mode == 1 ? "in place" : "", device.adapter().name(), worstLoss, worstGrad);
+            }
+            try (var gl = buffer(4L * 40); var gt = buffer(4); var gloss = buffer(4); var gd = buffer(4L * 40)) {
+                var ex = assertThrows(ComputeException.class, () -> run(e -> {
+                    e.upload(gt, ints(new int[] {40}));
+                    ce.encode(e, gl, gt, gloss, gd, 1f, CrossEntropy.Shape.of(1, 40));
+                    return e.download(gloss);
+                }));
+                assertEquals(ComputeException.Code.KERNEL_ERROR, ex.code());
+            }
+        }
+    }
+
+    /**
      * Norms.backward (1.12.0): dv, and the weight and bias gradients accumulated over the rows, against the backward
      * pass in double from the same v, w and dy, within the contract's bound; with and without accumulation into dv.
      */
