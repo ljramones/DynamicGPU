@@ -151,4 +151,28 @@ class GradientReferenceTest {
             close(0.5 * (1 + t) + 0.5 * x * (1 - t * t) * c * (1 + 3 * k * x * x), fd(gelu, x), 1, "gelu'(" + x + ")");
         }
     }
+
+    @Test void ropeBackwardIsTheRotationsGradient() {
+        // L = sum dy . rope(x) is linear in x, so dL/dx is exact: referenceBackward's dx must equal it to rounding (1.14.0)
+        var r = new SplittableRandom(9);
+        var table = Rope.Table.scaled(64, 16, 10000, 1);
+        for (var layout : Rope.Layout.values()) {
+            var shape = new Rope.Shape(2, 2, 24, 16, 48, 48, 24, layout);
+            int len = 96;
+            float[] dy = new float[len];
+            for (int i = 0; i < len; i++) dy[i] = (float) r.nextDouble(-2, 2);
+            int[] pos = {5, 63};
+            float[] dx = new float[len];
+            Rope.referenceBackward(dy, pos, table, dx, shape, Precision.FP32);
+            for (int j = 0; j < len; j++) {
+                float[] e = new float[len];
+                e[j] = 1f;   // y(e_j): the j-th column of the rotation
+                float[] y = new float[len];
+                Rope.reference(e, pos, table, y, shape, Precision.FP32);
+                double g = 0;
+                for (int i = 0; i < len; i++) g += (double) dy[i] * y[i];
+                close(dx[j], g, Math.abs(dy[j]) + 2, layout + " rope dx[" + j + "]");
+            }
+        }
+    }
 }

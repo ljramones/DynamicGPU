@@ -36,6 +36,7 @@ struct RopeParams_0
     uint count_0;
     uint gridX_2;
     uint inPlace_0;
+    uint inverse_0;
 };
 
 struct KernelContext_0
@@ -128,21 +129,29 @@ struct KernelContext_0
         {
             b_0 = *((&kernelContext_0)->x_0+(bx_0 + ib_0));
         }
-        float2 device* _S8 = (&kernelContext_0)->table_0+(position_0 * halfRot_0 + i_0);
-        float _S9 = (*_S8).x;
-        float _S10 = (*_S8).y;
-        *((&kernelContext_0)->y_0+(by_0 + ia_0)) = half(a_0 * _S9 - b_0 * _S10);
-        *((&kernelContext_0)->y_0+(by_0 + ib_0)) = half(a_0 * _S10 + b_0 * _S9);
+        float2 cs_0 = *((&kernelContext_0)->table_0+(position_0 * halfRot_0 + i_0));
+        float sn_0;
+        if(((&kernelContext_0)->p_0->inverse_0) != 0U)
+        {
+            sn_0 = - cs_0.y;
+        }
+        else
+        {
+            sn_0 = cs_0.y;
+        }
+        float _S8 = cs_0.x;
+        *((&kernelContext_0)->y_0+(by_0 + ia_0)) = half(a_0 * _S8 - b_0 * sn_0);
+        *((&kernelContext_0)->y_0+(by_0 + ib_0)) = half(a_0 * sn_0 + b_0 * _S8);
     }
     else
     {
         uint e_0 = (&kernelContext_0)->p_0->rotaryDim_0 + 2U * (i_0 - halfRot_0);
         if(((&kernelContext_0)->p_0->inPlace_0) == 0U)
         {
-            uint _S11 = by_0 + e_0;
-            uint _S12 = bx_0 + e_0;
-            *((&kernelContext_0)->y_0+_S11) = half(*((&kernelContext_0)->x_0+_S12));
-            *((&kernelContext_0)->y_0+(_S11 + 1U)) = half(*((&kernelContext_0)->x_0+(_S12 + 1U)));
+            uint _S9 = by_0 + e_0;
+            uint _S10 = bx_0 + e_0;
+            *((&kernelContext_0)->y_0+_S9) = half(*((&kernelContext_0)->x_0+_S10));
+            *((&kernelContext_0)->y_0+(_S9 + 1U)) = half(*((&kernelContext_0)->x_0+(_S10 + 1U)));
         }
     }
     return;

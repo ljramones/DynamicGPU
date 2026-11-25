@@ -107,7 +107,8 @@ abstract class InferenceConformance {
         for (var in : Precision.values()) for (var out : Precision.values()) {
             try (var rope = Rope.create(device, in, out); var gt = buffer(4L * table.cosSin().length); var gp = buffer(4L * partial.cosSin().length)) {
                 run(e -> { e.upload(gt, table.bytes()).upload(gp, partial.bytes()); return e.download(gt); });
-                for (var layout : Rope.Layout.values()) for (boolean inPlace : in == out ? new boolean[] {false, true} : new boolean[] {false}) {
+                for (var layout : Rope.Layout.values()) for (boolean inPlace : in == out ? new boolean[] {false, true} : new boolean[] {false})
+                        for (boolean backward : new boolean[] {false, true}) {   // the backward pass (1.14.0): the inverse rotation
                     for (var cs : new Object[][] {{Rope.Shape.of(5, 4, 96, layout), table, gt},
                             {new Rope.Shape(3, 2, 64, 32, 2 * 64 + 8, 2 * 64 + 8, 64, layout), partial, gp}}) {
                         var s = (Rope.Shape) cs[0]; var tab = (Rope.Table) cs[1]; var gtab = (GpuBuffer) cs[2];
@@ -119,16 +120,19 @@ abstract class InferenceConformance {
                         try (var gx = buffer(encode(x, in).length); var gpos = buffer(4L * pos.length); var gy = buffer(encode(x, out).length)) {
                             got = run(e -> {
                                 e.upload(gx, encode(x, in)).upload(gpos, ints(pos)).upload(gy, encode(x, out));
-                                rope.encode(e, gx, gpos, tab, gtab, inPlace ? gx : gy, s);
+                                if (backward) rope.encodeBackward(e, gx, gpos, tab, gtab, inPlace ? gx : gy, s);
+                                else rope.encode(e, gx, gpos, tab, gtab, inPlace ? gx : gy, s);
                                 return e.download(inPlace ? gx : gy);
                             });
                         }
                         float[] expect = new float[len];
                         for (int i = 0; i < len; i++) expect[i] = round(x[i], out);   // untouched gaps keep the input
-                        Rope.reference(x, pos, tab, expect, s, out);
+                        if (backward) Rope.referenceBackward(x, pos, tab, expect, s, out);
+                        else Rope.reference(x, pos, tab, expect, s, out);
                         float[] y = decode(got, out, len);
                         for (int i = 0; i < len; i++)
-                            assertEquals(Float.floatToRawIntBits(expect[i]), Float.floatToRawIntBits(y[i]), layout + " " + in + "->" + out + " in place " + inPlace + " element " + i);
+                            assertEquals(Float.floatToRawIntBits(expect[i]), Float.floatToRawIntBits(y[i]), layout + " " + in + "->" + out + " in place " + inPlace
+                                    + (backward ? " backward" : "") + " element " + i);
                     }
                 }
                 // a position past the table fails the submission

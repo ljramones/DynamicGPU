@@ -8,6 +8,10 @@
 // products and one unfused add each: the same bits on every device (Rope.reference). y may be x itself, bound once
 // (inPlace; x then read through y).
 //
+// Backward (1.14.0, inverse = 1): the inverse rotation, sin negated, which is the gradient of the rotation: dx from dy,
+//     a' = a cos + b sin,    b' = -a sin + b cos
+// with the same products and add (b (-sin) is -(b sin) exactly), so it is bit for bit Rope.reference too.
+//
 // One thread per pair (and per two passed-through elements). A position beyond the table is reported
 // (DG_ERROR_INDEX, index = the token) and its token left untouched.
 #include "dynamis/kit.slang"
@@ -26,6 +30,7 @@ struct RopeParams
     uint count;        // tokens * heads * headDim / 2 threads
     uint gridX;
     uint inPlace;      // y is x (one binding: x is read through y)
+    uint inverse;      // 1: rotate by -angle (the backward pass, 1.14.0)
 };
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<IN_T> x;
@@ -58,8 +63,9 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         float a = p.inPlace != 0 ? float(y[by + ia]) : float(x[bx + ia]);
         float b = p.inPlace != 0 ? float(y[by + ib]) : float(x[bx + ib]);
         float2 cs = table[position * halfRot + i];
-        y[by + ia] = OUT_T(a * cs.x - b * cs.y);
-        y[by + ib] = OUT_T(a * cs.y + b * cs.x);
+        float sn = p.inverse != 0 ? -cs.y : cs.y;
+        y[by + ia] = OUT_T(a * cs.x - b * sn);
+        y[by + ib] = OUT_T(a * sn + b * cs.x);
     }
     else
     {

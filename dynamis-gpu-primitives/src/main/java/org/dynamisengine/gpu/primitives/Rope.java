@@ -25,6 +25,9 @@ import java.util.Set;
  * <p>
  * <b>Layouts.</b> {@link Layout#INTERLEAVED} rotates {@code (2i, 2i + 1)} (GPT-J); {@link Layout#HALVES} rotates
  * {@code (i, i + rotaryDim / 2)} (GPT-NeoX, llama). Elements from rotaryDim to headDim pass through.
+ * <p>
+ * <b>Backward</b> (1.14.0): {@link #encodeBackward} rotates by the negated angle, which is the rotation's gradient (it is
+ * orthogonal): {@code da = dy_a cos + dy_b sin, db = -dy_a sin + dy_b cos}, bit for bit {@link #referenceBackward}.
  */
 public final class Rope implements AutoCloseable {
     /** Which elements form a pair. */
@@ -114,6 +117,21 @@ public final class Rope implements AutoCloseable {
      * position beyond the table fails the submission with {@link ComputeException.Code#KERNEL_ERROR}.
      */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer x, GpuBuffer positions, Table tab, GpuBuffer table, GpuBuffer y, Shape s) {
+        return encode(encoder, x, positions, tab, table, y, s, false);
+    }
+
+    /**
+     * Records the backward pass (1.14.0): {@code dx} from {@code dy}, the rotation by the negated angle, for the same
+     * positions, table and shape as the forward pass ({@code dx} may be {@code dy} when the types match). Elements past
+     * rotaryDim pass their gradient through.
+     */
+    public GpuCommandEncoder encodeBackward(GpuCommandEncoder encoder, GpuBuffer dy, GpuBuffer positions, Table tab, GpuBuffer table, GpuBuffer dx,
+            Shape s) {
+        return encode(encoder, dy, positions, tab, table, dx, s, true);
+    }
+
+    private GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer x, GpuBuffer positions, Table tab, GpuBuffer table, GpuBuffer y, Shape s,
+            boolean inverse) {
         Checks.notNull(tab, "table"); Checks.notNull(s, "shape");
         if (tab.rotaryDim() != s.rotaryDim()) throw new IllegalArgumentException("the table is for rotaryDim " + tab.rotaryDim());
         Checks.range(x, 0, s.elements(s.ldx()), input.bytes(), "x");
@@ -126,11 +144,12 @@ public final class Rope implements AutoCloseable {
         var grid = Grid.forThreads(device.capabilities(), count, 256);
         byte[] params = layout.block().u32("tokens", s.tokens()).u32("heads", s.heads()).u32("headDim", s.headDim()).u32("rotaryDim", s.rotaryDim())
                 .u32("ldx", s.ldx()).u32("ldy", s.ldy()).u32("strideHead", s.strideHead()).u32("layout", s.layout().ordinal())
-                .u32("positions", tab.positions()).u32("count", count).u32("gridX", grid.gridX()).bool("inPlace", inPlace).bytes();
+                .u32("positions", tab.positions()).u32("count", count).u32("gridX", grid.gridX()).bool("inPlace", inPlace).bool("inverse", inverse).bytes();
         try (var errors = device.allocate(KernelErrors.descriptor().withLabel("rope-errors"))) {
             encoder.resetErrors(errors);
             if (placeholders == null) placeholders = org.dynamisengine.gpu.api.compute.kit.PipelineSet.compile(device, List.of());
-            encoder.dispatch(pipeline, Map.of(0, inPlace ? placeholders.placeholder() : x, 1, positions, 2, table, 3, y, 4, errors), params, grid.groups(), "rope");
+            encoder.dispatch(pipeline, Map.of(0, inPlace ? placeholders.placeholder() : x, 1, positions, 2, table, 3, y, 4, errors), params, grid.groups(),
+                    inverse ? "rope.backward" : "rope");
             encoder.checkErrors(errors);
         }
         return encoder;
@@ -141,6 +160,15 @@ public final class Rope implements AutoCloseable {
      * widened), {@code y} the output's rounding applied; y may be x.
      */
     public static void reference(float[] x, int[] positions, Table tab, float[] y, Shape s, Precision output) {
+        reference(x, positions, tab, y, s, output, false);
+    }
+
+    /** {@link #encodeBackward} on the CPU, bit for bit: dx from dy, as {@link #reference}. @since 1.14.0 */
+    public static void referenceBackward(float[] dy, int[] positions, Table tab, float[] dx, Shape s, Precision output) {
+        reference(dy, positions, tab, dx, s, output, true);
+    }
+
+    private static void reference(float[] x, int[] positions, Table tab, float[] y, Shape s, Precision output, boolean inverse) {
         int half = s.rotaryDim() / 2;
         for (int t = 0; t < s.tokens(); t++) {
             int p = positions[t];
@@ -150,7 +178,7 @@ public final class Rope implements AutoCloseable {
                 System.arraycopy(x, bx, head, 0, s.headDim());
                 for (int i = 0; i < half; i++) {
                     int ia = s.layout() == Layout.INTERLEAVED ? 2 * i : i, ib = s.layout() == Layout.INTERLEAVED ? 2 * i + 1 : i + half;
-                    float a = head[ia], b = head[ib], c = tab.cos(p, i), sn = tab.sin(p, i);
+                    float a = head[ia], b = head[ib], c = tab.cos(p, i), sn = inverse ? -tab.sin(p, i) : tab.sin(p, i);
                     y[by + ia] = round(a * c - b * sn, output);
                     y[by + ib] = round(a * sn + b * c, output);
                 }
