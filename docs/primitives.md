@@ -13,7 +13,8 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | `Reduce` | fixed-order sum, max, min and argmax along the last dimension | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
-| `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M): the CPU encoder and decoder, and the GPU's, bit for bit | 1.9.0 |
+| `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M; the K formats Q4K, Q5K, Q6K): CPU and GPU encoders and decoders, bit for bit | 1.9.0 (K formats 1.9.1) |
+| `GgufBlocks` | llama.cpp's GGML blocks (Q4_0, Q4_1, Q8_0, Q4_K, Q5_K, Q6_K) to and from `QuantizedMatrix`, without loss | 1.9.1 |
 | `QuantizedGemm` | matrix multiply with quantized weights, dequantized in the kernel, for decode and prefill | 1.9.0 |
 
 Every primitive since 1.7.0 publishes its accuracy contract as data (`contract(...)`, a kit `AccuracyContract`):
@@ -261,6 +262,21 @@ Q4_1 schemes.
 | `Q4` | `q d` | -8 .. 7 | `d = fp16(v * (-1/8))`, `v` the value of largest magnitude, which maps to -8 | 0.5625 |
 | `Q4M` | `fl(q d + m)` | 0 .. 15 | `m = fp16(min)`, `d = fp16((max - min) * (1/15))` | 0.625 |
 
+- **Block size:** 32, 64 or 128 (1.9.1; the group size of GPTQ and AWQ models).
+- **K formats** (1.9.1; llama.cpp's Q4_K, Q5_K and Q6_K, the formats most GGUF models ship in):
+
+  | Format | Value | Codes | Scales | Bytes per weight |
+  |---|---|---|---|---|
+  | `Q4K` | `fl(D q - M)` | 0 .. 15 | per 256: FP16 `d`, `dmin`; per 32: 6-bit `sc`, `mn`; `D = d sc`, `M = dmin mn` | 0.578 |
+  | `Q5K` | `fl(D q - M)` | 0 .. 31 | as Q4K | 0.703 |
+  | `Q6K` | `fl(D q)` | -32 .. 31 | per 256: FP16 `d`; per 16: int8 `sc`; `D = d sc` | 0.828 |
+
+  - **Exact:** `D` and `M` are exact in FP32, and the values are bit for bit llama.cpp's dequantization.
+  - **Encoding:** `quantize` has a simple encoder: scales from each sub-block's range, codes nearest. llama.cpp's
+    tools search the scales and are more accurate; import their output with `GgufBlocks`. There is no GPU encoder
+    for these formats.
+  - **Layout:** a code plane in element order, then Q5K's and Q6K's high bits (`highOffset`), then the scales,
+    including llama.cpp's 12 packed scale bytes as they are. It is within 3 % of llama.cpp's size.
 - **Codes:** each is the integer nearest to `x / d` (Q4M: `fl(x - m) / d`), ties to even, then clamped. A block with
   `d = 0` has codes 0.
 - **The same bits on every device:**
@@ -279,10 +295,26 @@ var w = new QuantizedMatrix(QuantizedMatrix.Format.Q4, 32, n, k);
 byte[] packed = w.quantize(weights);                       // or Quantize.pack on the GPU: the same bytes
 ```
 
+### `GgufBlocks`: llama.cpp's blocks (1.9.1)
+
+`fromGgml(type, data, offset, rows, cols)` converts a tensor's GGML blocks to a packed `QuantizedMatrix`, and
+`toGgml` converts back. No information is lost: the codes and scales move unchanged.
+
+- **Types:** `Q4_0`, `Q4_1` and `Q8_0` (block 32), and `Q4_K`, `Q5_K` and `Q6_K`.
+- **Shapes:** a GGUF tensor of `ne0 x ne1` is `ne1` rows of `ne0`, so a linear layer's weights are `rows = n`,
+  `cols = k`.
+- **Not included:** reading the GGUF container (header, metadata, tensor table) is left to the caller;
+  `bytes(type, rows, cols)` gives a tensor's size.
+- **Checked against gguf-py** (llama.cpp's Python package), bit for bit:
+  - **Synthetic blocks:** every supported type (`ggml-blocks.bin`, written by `scripts/ggml-oracle.py`).
+  - **Real models (opt-in):** with `-Dgguf.samples`, slices of real models' Q4_0, Q4_K, Q6_K and Q8_0 tensors. They
+    import, dequantize on the GPU and multiply bit for bit on native Metal, MoltenVK and lavapipe.
+
 ### `Quantize`: on the GPU
 
 `pack(encoder, values, matrix, packed)` and `unpack(encoder, matrix, packed, values)` quantize FP32 weights already on
-the GPU and dequantize them, bit for bit as `QuantizedMatrix.quantize` and `dequantize`. A non-finite value, or a
+the GPU and dequantize them, bit for bit as `QuantizedMatrix.quantize` and `dequantize`. `pack` takes Q8, Q4 and
+Q4M; `unpack` takes every format. A non-finite value, or a
 scale beyond FP16, fails the submission with `KERNEL_ERROR`.
 
 ### `QuantizedGemm`
@@ -303,24 +335,30 @@ try (var gemm = QuantizedGemm.create(device, GemmF16.Input.FP16, Precision.FP32)
   - **TILED:** 64 x 64 tiles, k in steps of 32, each block's term added as the block ends.
   - **Specialization:** the pipelines are compiled on first use per format, block size and (SKINNY) rows tier (1, 4
     or 16). A decode step then holds one row of accumulators instead of sixteen.
+  - **The K formats** work in units of 32 elements: a Q4K or Q5K sub-block adds `fl(fl(D s) - fl(M sum a))`, and a
+    unit of Q6K adds its two sub-blocks' `fl(D s)` in turn.
+  - **Group memory:** the tiled kernel stages each unit's scales with the tiles (reading them after the step's
+    barrier made Q4K prefill take 64 ms instead of 4.0). It packs two rows of A per word, to stay within 16 KiB.
 - **Accuracy: the same bits on every device,** native Metal, MoltenVK and lavapipe:
   - **Exact products:** an activation (11 or 8 significant bits) times a code (at most 8) is exact in FP32. So each
     block's `s = sum a q` depends only on its order, which both algorithms fix.
   - **Unfused terms:** the block adds `fl(d s)`, and Q4M also `fl(m sum a)`, with the adds unfused.
   - **The reference:** `QuantizedGemm.reference` computes the same bits. Against A times the dequantized W, the error
     is within `(k + 2) 2^-24 sum |a w|`.
-- **Decode, measured** (`-Dquant.decode=true`): M4 Max, m = 1, GPU time per product. The quantized weights rotate
-  through copies over 256 MiB so the system cache cannot serve them.
+- **Decode, measured** (`-Dquant.decode=true`): M4 Max, m = 1, GPU time per product (1.9.1).
+  - **Method:** the quantized weights rotate through copies over 256 MiB, so the system cache cannot serve them.
+    Each figure is the best of rounds of about 20 ms, after a warm-up round.
 
-  | n x k | FP16 (`GemmF16` SKINNY) | Q8 | Q4 | Q4M |
-  |---|---|---|---|---|
-  | 4096 x 4096 | 83 us | 43 us (1.9x) | 29 us (2.9x) | 35 us (2.4x) |
-  | 11008 x 4096 | 250 us | 105 us (2.4x) | 62 us (4.0x) | 68 us (3.7x) |
-  | 4096 x 11008 | 228 us | 110 us (2.1x) | 70 us (3.3x) | 73 us (3.1x) |
+  | n x k | FP16 (`GemmF16` SKINNY) | Q8 | Q4 | Q4M | Q4M, block 128 | Q4K | Q5K | Q6K |
+  |---|---|---|---|---|---|---|---|---|
+  | 4096 x 4096 | 87 us | 44 (2.0x) | 29 (3.0x) | 30 (2.9x) | 38 (2.3x) | 30 (2.9x) | 38 (2.3x) | 41 (2.1x) |
+  | 11008 x 4096 | 254 us | 108 (2.4x) | 62 (4.1x) | 68 (3.8x) | 76 (3.3x) | 68 (3.7x) | 85 (3.0x) | 92 (2.8x) |
+  | 4096 x 11008 | 229 us | 112 (2.0x) | 68 (3.4x) | 74 (3.1x) | 87 (2.6x) | 75 (3.1x) | 94 (2.4x) | 101 (2.3x) |
 
-  - **More rows:** at m = 4 the quantized product runs 1.3 to 2.2 times faster than FP16. At m = 16 it is about
-    even (0.74 to 1.16).
-- **Prefill:** TILED runs about 4.6 TFLOP/s at 512 x 4096 x 4096, a little below the FP16 tiled kernel's 5.3. The matrix kernel's
+  - **More rows:** at m = 4 the quantized product runs 1.2 to 2.3 times faster than FP16. At m = 16 it ranges from
+    about even (Q4, Q8) to half (Q6K).
+- **Prefill:** TILED takes 3.5 to 4.1 ms at 512 x 4096 x 4096 for every format (4.2 to 4.9 TFLOP/s), a little below
+  the FP16 tiled kernel's 5.3. The matrix kernel's
   12.7 TFLOP/s for FP16 weights has no quantized form yet.
 
 ## `Softmax`

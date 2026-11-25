@@ -121,6 +121,8 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
     Cooperative matrices are SPIR-V only, with `using namespace linalg; CoopMat<...>`.
   - **Capabilities:** 16- and 8-bit buffers declare the `UniformAndStorageBuffer16/8BitAccess` capabilities.
   - **Constants:** build infinities from bits, for example `asfloat(0xFF800000u)`, not `1.0 / 0.0`.
+  - **Specialization constants:** a `static const` computed from one (`static const bool QK = QFORMAT >= 3`) aborts
+    the SPIR-V emitter ("Unhandled global inst"). Use a macro or a function.
 - **Hand-written MSL** is for what Slang cannot emit, such as `simdgroup_matrix`. Put it under
   `src/main/resources/.../metal/`, use the same ABI as the Slang kernel, and build a `KernelBundle` with only a
   `METAL` executable (see `GemmF16.simdgroupBundle`).
@@ -158,6 +160,13 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **Measuring bandwidth:** warm the GPU up first (its clocks ramp up under load; the first shape measured ran 1.7
   times slow). Rotate through copies of the data larger than the system cache (256 MiB on an M4 Max is enough), or a
   repeated matrix is served from the cache, faster than memory.
+  - **Round length:** size each timed round to about 20 ms of GPU work, after an untimed round. Rounds of 1 ms after
+    host-side setup ran up to twice slow, and a busy desktop (WindowServer composites on the GPU) makes them noisier.
+- **Read per-tile parameters with the tiles.** A load issued after a step's last barrier, and used at once, leaves
+  every thread waiting on it: staging the quantized kernel's scales with the tiles took Q4K prefill from 64 ms to
+  4.0.
+- **Neighbouring lanes, different branches:** a branch that depends on the lane's data (the K scales' `j < 4`)
+  diverges within a SIMD group. Compute both sides and select.
 - **Benchmarks record many dispatches per submission.** Long command lists are a good stress test; keep
   `-Dgemm.shapes=true` and `-Dgemm.benchmark=true` running on MoltenVK as well as Metal.
 
@@ -245,11 +254,13 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.8.0 are on GitHub.
+- **Published:** 1.0.x to 1.9.0 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
   - **1.7.0:** the kernel kit, and the `Elementwise`, `Reduce`, `Scan` and `NanCheck` primitives.
 - **1.8.0:** the GEMM family.
-- **1.9.0 (quantized weights):** built on branch `feat/quantized-weights`; see `docs/releases/1.9.0.md`.
+- **1.9.0:** quantized weights.
+- **1.9.1 (K formats, block 128, GGUF import):** built on branch `feat/quant-formats`; see `docs/releases/1.9.1.md`.
+  `scripts/ggml-oracle.py` (with gguf-py) writes the GGML test samples.
 - **Next:** milestone 1.10 (inference kernels).

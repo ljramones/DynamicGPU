@@ -343,7 +343,7 @@ backend.
 
 ### 1.9: Quantized weights and packing
 
-**Status: complete, released as 1.9.0.** Done:
+**Status: complete, released as 1.9.0; extended in 1.9.1.** Done:
 - **Formats** (`QuantizedMatrix`): Q8, Q4 and Q4M (the meanings of Q8_0, Q4_0 and Q4_1), blocks of 32 and 64, FP16
   parameters, with the CPU encoder and decoder.
 - **Quantize and dequantize kernels** (`Quantize`): bit for bit the CPU's on every device. Scales come from one
@@ -365,6 +365,14 @@ Differences from the plan:
 
 Not done:
 - **A quantized matrix kernel** for prefill: `TILED` runs about 4.6 TFLOP/s against the FP16 matrix kernel's 12.7.
+
+**1.9.1** (agreed after 1.9.0, from a survey of the local models: most GGUF models ship as Q4_K with Q6_K):
+- **K formats** `Q4K`, `Q5K`, `Q6K`: llama.cpp's dequantization bit for bit, in the quantized GEMM and `Quantize.unpack`.
+- **Block size 128** for Q8, Q4 and Q4M (the group size of GPTQ and AWQ models).
+- **`GgufBlocks`:** GGML Q4_0, Q4_1, Q8_0, Q4_K, Q5_K and Q6_K to and from `QuantizedMatrix`, without loss. Checked
+  against gguf-py on synthetic blocks and on real models.
+- **Not included:** Q5_0 and Q5_1 (seen in one local model), the IQ and 2- to 3-bit formats, FP8 weights, and a GGUF
+  container reader (left to NNJava).
 
 The plan as agreed:
 
