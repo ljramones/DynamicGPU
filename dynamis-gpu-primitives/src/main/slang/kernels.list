@@ -108,3 +108,8 @@ attn_bwd_kv_256 attn_bwd_kv_256.slang attn_bwd_kv_256
 attn_bwd_q_256 attn_bwd_q_256.slang attn_bwd_q_256
 attn_bwd_dot attn_bwd_dot_f32.slang attn_bwd_dot
 attn_bwd_dot_h attn_bwd_dot_h.slang attn_bwd_dot_h
+# tensor programs (1.14.0): comparisons, masks, select, int32 arithmetic and casts
+logic_unary logic_unary.slang logic_unary
+logic_binary logic_binary.slang logic_binary
+logic_select logic_select.slang logic_select
+cast cast.slang cast

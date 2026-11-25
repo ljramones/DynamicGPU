@@ -40,6 +40,17 @@ final class Views {
         return y4;
     }
 
+    /**
+     * Writes a broadcast input ({@link #broadcast}'s result) as {@code prefixOffset} and {@code prefixStride0..3}, the
+     * stride 0 along each dimension of extent 1: the kernel reads it with the output's coordinates (1.14.0).
+     */
+    static org.dynamisengine.gpu.api.compute.kit.ParameterLayout.Block broadcastStrides(
+            org.dynamisengine.gpu.api.compute.kit.ParameterLayout.Block block, String prefix, StridedView in4) {
+        block.u32(prefix + "Offset", in4.offset());
+        for (int d = 0; d < 4; d++) block.u32(prefix + "Stride" + d, in4.extent(d) == 1 ? 0 : in4.stride(d));
+        return block;
+    }
+
     /** The rows of a rank-4 view: the product of its first three extents, within 32 bits. */
     static long rowCount(StridedView x4) {
         long rows = x4.extent(0) * x4.extent(1) * x4.extent(2);
