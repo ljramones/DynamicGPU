@@ -571,6 +571,31 @@ try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
 }
 ```
 
+### Valid key lengths (1.14.1)
+
+The fused inference, training forward and backward, paged forward and batched paged decode
+overloads accept a GPU storage buffer of unsigned 32-bit lengths and a positive head count per length.
+Flattening a batch of sequences into the dense head dimension gives this training pair:
+
+```java
+var shape = AttentionF16.Shape.of(batch * headsPerSequence, queries, keys, headDim)
+        .withKvHeads(batch * kvHeadsPerSequence).asCausal();
+attention.encode(encoder, q, k, v, o, lse, shape, lengths, headsPerSequence);
+attention.backward(encoder, q, k, v, o, lse, dO, dQ, dK, dV, shape, lengths, headsPerSequence);
+```
+
+Query head `h` in a dense shape reads `lengths[h / lengthGroup]`. Batched paged decode reads
+`lengths[(sequenceIndex * heads + h) / lengthGroup]`. Any positive group size works, including one group shared
+by all heads. Pass the same lengths to both training calls. The buffer needs one word per group, rounding the
+group count up. A length at or above the physical key count admits all available keys.
+
+A length limits **key columns**. Causality still uses the physical key count of that sequence, so query row
+`i` sees keys below both the length and `i + keys - queries + 1`. A zero length produces zero O,
+FP32 negative-infinity LSE, zero dQ and zero contributions to dK and dV. Shared KV heads still receive the
+gradients from their visible query heads. Cache capacity beyond `shape.keys()` retains the existing write rules.
+Ordinary attention uses the original overloads. The fused kernels retain their published forward and backward
+accuracy bounds over the visible keys. [Release notes](releases/1.14.1.md)
+
 ### Fused (1.11.0)
 
 One pass over the keys with an online softmax (FlashAttention-2): the scores never reach memory, so memory is linear
@@ -1014,7 +1039,6 @@ layouts and partial rotary dimensions. `b (-sin)` is `-(b sin)` exactly, so it i
   chunks of several sequences into one dispatch is not covered.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
 - **Quantized weights:** a quantized form of the matrix kernel for prefill.
-- **Masks in fused attention:** padding (valid-length) masks in `AttentionF16`'s flash, decode and backward kernels.
 - **GELU's erf form,** convolution and pooling (NNJava's G-T8), and mixed-precision training support (G-T9).
 
 ## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)

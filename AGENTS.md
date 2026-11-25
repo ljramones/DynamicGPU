@@ -322,8 +322,12 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.12.1 (matrix attention backward):** built on branch `feat/matrix-backward`; see `docs/releases/1.12.1.md`.
 - **1.13.0:** QuantizedMatrix on Vectrix 4.0's BlockQuant (published 2026-11-25).
 - **1.14.0 (NNJava's tensor programs):** `Logic`, `Cast`, `Gather`, `GradientClip`, reductions along any axis, sigmoid
-  and tanh, RoPE backward, Softmax valid-length masks; prepared on `feat/1.14`. See `docs/releases/1.14.0.md`.
-- **Next:** masks in fused attention, then the rest of NNJava's requests (see `docs/roadmap.md`).
+  and tanh, RoPE backward, Softmax valid-length masks. See `docs/releases/1.14.0.md`.
+- **1.14.1:** fused valid-key-length masking for inference and training. Use the same GPU uint32 length buffer
+  and positive query-head group size for forward and backward. Empty rows have zero output, negative-infinity LSE
+  and zero gradient contributions. The NNJava adapter example and raw shader binding changes are in
+  [the release notes](docs/releases/1.14.1.md). The independent [KV study](docs/paged-kv-study.md) retains FP16 cache pages.
+- **Next:** convolution/pooling and mixed-precision training follow NNJava's priorities in `docs/roadmap.md`.
 - **Incremental kernel builds:** `build-slang-kernels.sh` rebuilds every kernel (about 90 s). While iterating, building
   a subset into a scratch directory and merging its lines into `kernels.properties` works, but run the full script
   before committing: it also refreshes `source.sha256`, which `ShaderBuildTest.sourceHashMatchesTheManifest` checks.

@@ -532,7 +532,7 @@ The plan as agreed:
 
 ## 1.14: NNJava's tensor programs
 
-**Status: complete, prepared as 1.14.0.** NNJava's design review (its `docs/numerical-coverage.md`, 2026-11-25) mapped
+**Released in 1.14.0 and 1.14.1.** NNJava's design review (its `docs/numerical-coverage.md`, 2026-11-25) mapped
 every NNJava operation onto Vectrix, vectrix-gpu and these primitives, and filed what a GPU training step was missing
 as requests G-T1 to G-T9. Done:
 - **G-T1, tensor programs:** `Logic` (comparisons into uint32 masks, AND/OR/XOR/NOT, FP32 classification, int32
@@ -547,12 +547,11 @@ as requests G-T1 to G-T9. Done:
   indices in order. Bit for bit everywhere.
 - **G-T5, sigmoid and tanh:** with backward passes from the forward input, free of cancellation.
 - **G-T6, RoPE backward:** `Rope.encodeBackward`, the inverse rotation, bit for bit.
-- **G-T7, masks (partly):** valid-length masks in `Softmax`, forward and backward; a row of -infinity scores gives
-  zeros.
+- **G-T7, valid lengths:** 1.14.0 added grouped valid lengths to softmax. 1.14.1 adds them to fused
+  flash, decode and training backward, including paged and batched paged inference. Fully masked rows have
+  zero output and zero gradient contributions. [Adapter example and mask layout](primitives.md#valid-key-lengths-1141)
 
 Not done, and why:
-- **Masks in `AttentionF16`'s fused kernels** (the rest of G-T7): about twenty flash, decode and backward kernels.
-  Padded attention composes from `GemmF16` and `Softmax` with lengths meanwhile. Next milestone.
 - **GELU's erf form** (optional in G-T5).
 - **G-T8, convolution and pooling,** and **G-T9, mixed-precision training support:** later, as NNJava's roadmap
   orders them (P2).
@@ -566,7 +565,7 @@ Changed from the requests:
 
 - **NNJava:** planned on top of the finished stack: tensors, autograd and models, choosing exact (vectrix-gpu) or
   throughput (primitives) kernels per operation. Its design review is done (2026-11-25), and 1.14 fills its throughput
-  requests; masks in fused attention, convolution and mixed precision follow.
+  requests through grouped valid lengths. Convolution/pooling and mixed-precision training remain on the roadmap.
 - **Graphics:**
   - images and samplers;
   - API consolidation (retiring the Vulkan-shaped `api.buffer` and `api.gpu`);
