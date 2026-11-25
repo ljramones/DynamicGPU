@@ -381,6 +381,27 @@ abstract class AttentionConformance {
         }
     }
 
+    /** Whole submissions containing four layers of paged decode for the same sequence. */
+    @Test void benchmarkPagedDecode() {
+        Assumptions.assumeTrue(Boolean.getBoolean("gemm.benchmark"), "set -Dgemm.benchmark=true");
+        var shape = Shape.of(32, 1, 512, 128).withKvHeads(8);
+        var config = new PagedKvCache.Config(4, 8, 128, 32, 16);
+        try (var a = AttentionF16.create(device, Precision.FP16); var cache = PagedKvCache.create(device, config);
+             var seq = cache.newSequence(); var q = buffer(shape.qBytes()); var o = buffer(shape.oBytes(Precision.FP16));
+             var init = device.encoder()) {
+            init.fill(q, 0x3800b800);
+            cache.reserve(init, seq, shape.keys());
+            for (int layer = 0; layer < config.layers(); layer++)
+                init.fill(cache.keys(layer), 0x34003800).fill(cache.values(layer), 0xbc003c00);
+            try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+            var timing = GpuBenchmark.measure(device, e -> {
+                for (int layer = 0; layer < config.layers(); layer++) a.encode(e, q, cache, layer, seq, o, shape);
+            });
+            System.out.printf("attention %s four paged decodes, keys=512: encode %.1f us, GPU %.1f us, wall %.1f us%n",
+                    device.adapter().name(), timing.encodeMicros(), timing.gpuMicros(), timing.wallMicros());
+        }
+    }
+
     /** Seconds per run of {@code body}: an untimed round, then the best of 4 rounds of at least 20 ms. */
     double time(java.util.function.Consumer<GpuCommandEncoder> body) {
         return GpuBenchmark.measure(device, body).gpuMicros() / 1e6;

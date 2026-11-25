@@ -605,6 +605,13 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   The register softmax passed the elementwise attention tests on the M4 Max. Its lane layout is hardware-specific.
   Pre-scaling introduces a new FP16 rounding and can overflow half Q at supported scales. Neither variant is used.
 
+- **Host recording time.** Each fused encode checks its kernel's group-memory requirement. The byte count is now
+  read from the packaged SPIR-V once per head-dimension variant and shared across devices. With the release kernels,
+  recording four layers of paged decode (512 keys, 32 query heads, 8 KV heads, D128, FP16 O) on the M4 Max took
+  4,149 µs before caching and 54 µs after. End-to-end time including completion fell from 4,810 to 347 µs.
+  The timed work included the original page-table uploads. Run the opt-in `benchmarkPagedDecode` to measure
+  host encoding, GPU execution and wall time separately.
+
 - **Decode:** one query on 32 heads with 8 KV heads, head dimension 128.
 
   | Keys | Fused (decode kernel) | K and V read |

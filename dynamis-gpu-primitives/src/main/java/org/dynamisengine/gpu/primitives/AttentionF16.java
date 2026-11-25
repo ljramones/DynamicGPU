@@ -166,11 +166,18 @@ public final class AttentionF16 implements AutoCloseable {
     static int variant(int headDim) { return headDim <= 64 ? 64 : headDim <= 128 ? 128 : 256; }
     /** Keys per block of a variant. */
     static int keyBlock(int variant) { return variant == 256 ? 16 : 32; }
+    // Reflection reads immutable packaged SPIR-V. Share its result across devices and output precisions.
+    private static final Map<Integer, Long> GROUP_BYTES = new java.util.concurrent.ConcurrentHashMap<>();
+
     /**
      * The group memory a variant's kernels declare, in bytes, read from their SPIR-V: above the 16 KiB every device
      * has (up to 26 KiB), so devices with less refuse the fused attention.
      */
     static long groupBytes(int variant) {
+        return GROUP_BYTES.computeIfAbsent(variant, AttentionF16::readGroupBytes);
+    }
+
+    private static long readGroupBytes(int variant) {
         long most = 0;
         for (String k : List.of("attn_flash_" + variant, "attn_flash_" + variant + "_f32", "attn_decode_" + variant, "attn_decode_" + variant + "_f32"))
             most = Math.max(most, GemmF16.KERNELS.groupSharedBytes(k));
