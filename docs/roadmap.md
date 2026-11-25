@@ -394,7 +394,7 @@ The plan as agreed:
 
 ### 1.10: Inference kernels
 
-**Status: complete, to be released as 1.10.0.** Done:
+**Status: complete, released as 1.10.0.** Done:
 - **`Norms`:** RMSNorm and LayerNorm, with the fused residual add (h exact, in place or not).
 - **`Rope`:** both layouts and partial rotary dimensions, from a host table in double. It is bit for bit everywhere.
 - **Activations:** `Elementwise` `SILU`, `GELU` and `SWIGLU`; the residual add is `ADD`.
