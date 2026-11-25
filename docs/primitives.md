@@ -668,6 +668,23 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   one row independently, then the group shares its weights for the value product. On devices with subgroup
   arithmetic, the FP32 probability sum rounds in subgroup reduction order. The scalar attention bound covers
   this order. Devices without subgroup arithmetic use the fixed-tree version.
+  On MoltenVK on the same M4 Max, matched 512 / 4096 / 32768-key encodes took 50.6 / 78.7 / 432.9 us with
+  the release kernels, 46.4 / 63.7 / 359.4 us with row specialization, and 39.9 / 58.0 / 335.6 us with both.
+  All three Vulkan runs cached immutable kernel metadata. With eight rows per KV head, dimension 256 and 4096
+  keys, the release / specialized / subgroup times were 164.8 / 159.5 / 155.6 us on MoltenVK and
+  158.4 / 149.7 / 157.0 us on native Metal.
+- **Short decode, native Metal.** At 32 / 128 / 257 / 512 keys, the release took 39.5 / 54.5 / 61.4 / 64.8 us.
+  One group per output row folded the combine into a single dispatch and took 5.2 / 6.6 / 9.7 / 14.0 us in the
+  same benchmark. At 512 keys with 1 / 3 / 8 rows per KV head, direct decode took 14.7 / 13.7 / 18.9 us
+  against 39.9 / 52.3 / 85.0 us on the release. Its FP32 dot products, probability sums and value sums round in
+  a different reduction order within the existing scalar bound.
+- **Padded matrix decode, native Metal.** One SIMD-group matrix tile with four active rows padded to eight took
+  87.0 / 123.9 / 759.9 us at 512 / 4096 / 32768 keys against 98.0 / 100.7 / 412.4 us in its paired
+  release run. It also rounded P to FP16 for the value product. The direct and subgroup kernels retain FP32 P.
+- **Cross-group atomic combine.** A last-group counter needs release/acquire ordering to publish partials from
+  other groups. SDK Slang 2026.1 lowered `Atomic<uint>.add(1, MemoryOrder.AcquireRelease)` to a Metal
+  `atomic_fetch_add_explicit` with `memory_order_seq_cst` on ordinary device storage. The M4 Max runtime
+  compiler rejected that overload, so this candidate has no GPU time.
 
 - **Alternatives that lost:**
   - **The portable flash kernel on Metal:** 0.66 / 2.5 / 9.9 ms at 512 / 1024 / 2048.

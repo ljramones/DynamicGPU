@@ -393,13 +393,16 @@ public final class AttentionF16 implements AutoCloseable {
      * The contract of the fused attention: bounded. Each weight {@code exp(s - max)} carries the scores' GemmF16
      * error, the rounding of its exponent's argument, one device exp per key block it is rescaled through (and one
      * per combined key range), and a rounding per rescale; the sums of P and P V add {@code (keys + 2 + 2 blocks) 2^-24}
-     * of their magnitudes, and {@code acc / l} rounds once, then O. @since 1.11.0
+     * of their magnitudes, and {@code acc / l} rounds once, then O. Subgroup decode changes the order of the FP32
+     * probability sum. Direct short decode also changes the FP32 dot-product and value summation orders.
+     * These orders satisfy the same bound. @since 1.11.0
      */
     public AccuracyContract fusedContract() {
         return new AccuracyContract("AttentionF16 fused, " + output() + " O", List.of("FP16", "FP16", "FP16"), "FP32",
                 output() == Precision.FP32 ? "FP32" : "FP32 rounded once to half", AccuracyContract.Order.DEVICE,
                 AccuracyContract.Bound.formula("|O - exact| <= sum_j (2 eps_max + eps_j) P_j |V_j| + (keys + 2 + 2 B) 2^-24 sum (P + dP) |V| "
-                        + "+ rounding of acc / l and of O; eps_j = 2 max|dS| + (max - s_j + 2 max|dS|) 2^-24 + (B + 2) exp error, B the key blocks"), "");
+                        + "+ rounding of acc / l and of O; eps_j = 2 max|dS| + (max - s_j + 2 max|dS|) 2^-24 + (B + 2) exp error, B the key blocks. "
+                        + "Subgroup decode sums P in subgroup order. Direct short decode reorders the FP32 dot products, sums of P and sums of P V."), "");
     }
 
     @Override public void close() {
