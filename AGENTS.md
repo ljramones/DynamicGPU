@@ -113,6 +113,15 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - Put `[ForceUnroll]` on every fixed-trip loop. Without it the SPIR-V keeps per-thread arrays in memory, and
     MoltenVK ran a GEMM 14 times slower.
   - Hoist uniform branches out of inner loops. Testing `transB` inside the k loop cost the matrix GEMM about 15 %.
+- **Check the kernel build's exit status.** A failed `spirv-val` stops `build-slang-kernels.sh` partway, and the
+  kernels after the failing one keep their old binaries: three rounds of 1.11 measurements ran stale kernels. For
+  example, a `break` inside a `[ForceUnroll]` loop gave "ID ... does not dominate its use"; use a guard instead.
+- **Metal limits on generated code:** a fully unrolled 128-step `fma` chain nests one expression past Metal's 256
+  brackets. Unroll an inner block of 8 inside a plain loop.
+- **Occupancy follows group memory:** the decode kernel ran 550 us with 16 KiB of scores per group and 396 us with
+  4 KiB. One reduction tree for all rows, with 8 times the group memory, was slower than eight trees.
+- **simdgroup_matrix kernels:** stage blocks that several SIMD-groups read in threadgroup memory, with 16-byte copies.
+  Loading K and V from device memory, one product per load, made fused attention slower than the scalar kernel.
 - **Group-wide work on one row** (the 1.10.1 sampler and log-sum-exp):
   - **Spread across groups:** one group per row leaves the GPU idle when there are few rows. Split the row into
     chunks, one group each, and combine the chunks in a second dispatch.
@@ -268,7 +277,7 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.10.0 are on GitHub.
+- **Published:** 1.0.x to 1.10.1 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
@@ -278,5 +287,6 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.9.1:** K formats, block 128 and GGUF import. `scripts/ggml-oracle.py` (with gguf-py) writes the GGML test
   samples.
 - **1.10.0:** inference kernels (norms, RoPE, embedding, sampling, activations, log-sum-exp).
-- **1.10.1 (fast sampling):** built on branch `feat/fast-sampling`; see `docs/releases/1.10.1.md`.
-- **Next:** milestone 1.11 (attention at scale).
+- **1.10.1:** fast sampling and log-sum-exp.
+- **1.11.0 (attention at scale):** built on branch `feat/attention-at-scale`; see `docs/releases/1.11.0.md`.
+- **Next:** milestone 1.12 (training kernels).

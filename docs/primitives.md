@@ -8,7 +8,8 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 |---|---|---|
 | `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
 | `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
-| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V` | 1.4.0 |
+| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0 | 1.4.0 |
+| `PagedKvCache` | a KV cache in fixed-size pages, shared across sequences with copy on write | 1.11.0 |
 | `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0) | 1.7.0 |
 | `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1) | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
@@ -499,50 +500,147 @@ try (Softmax softmax = Softmax.create(device, Precision.FP16)) {      // FP16 ou
 ## `AttentionF16`
 
 `O = softmax(scale Q K^T + mask) V` for every head.
-- **Layout:** Q is `[heads][queries][headDim]`, K and V `[heads][keys][headDim]`, all FP16, densely packed. O has the
-  layout of Q, in FP16 or FP32.
+- **Layout:** Q is `[heads][queries][headDim]`, K and V `[kvHeads][cacheKeys][headDim]` (of which the first `keys` are
+  attended), all FP16. O has the layout of Q, in FP16 or FP32.
+- **Grouped-query attention (1.11.0):** `kvHeads` divides `heads`; query head `h` reads KV head `h / (heads / kvHeads)`.
+- **A cache (1.11.0):** `cacheKeys` is the keys K and V hold per head; only the first `keys` are read.
 
 ```java
 try (AttentionF16 attention = AttentionF16.create(device, Precision.FP16)) {
-    var shape = AttentionF16.Shape.of(heads, queries, keys, headDim).asCausal();   // scale = 1/sqrt(headDim)
-    attention.encode(encoder, q, k, v, o, scores, probs, shape);   // scores: shape.scoresBytes(); probs: probsBytes()
+    var shape = AttentionF16.Shape.of(heads, queries, keys, headDim).asCausal()   // scale = 1/sqrt(headDim)
+            .withKvHeads(kvHeads).withCacheKeys(capacity);
+    attention.encode(encoder, q, k, v, o, shape);                  // fused: no scratch
+    attention.encode(encoder, q, cache, layer, sequence, o, shape); // fused, over a PagedKvCache
 }
 ```
 
-- **The steps:** it records three dispatches.
+### Fused (1.11.0)
+
+One pass over the keys with an online softmax (FlashAttention-2): the scores never reach memory, so memory is linear
+in the sequence, and with the causal mask key blocks that no query of a group sees are skipped.
+
+- **Kernels:** `fusedKernel` names the one a shape runs.
+  - **Flash, portable** (Slang): 16 rows x 8 threads a group, key blocks of 32 (16 at head dimension 256) in group
+    memory. Head dimensions are even and at most 256.
+  - **Flash, Metal matrix** (hand-written MSL, `simdgroup_matrix`): native Metal at head dimensions 64 and 128. Each
+    SIMD-group owns 8 rows: `S = Q K^T` and `P V` are matrix products, the accumulators are rescaled by a diagonal
+    matrix, and K and V blocks are staged in threadgroup memory. P is rounded to FP16 for its product.
+  - **Decode** (Slang): at most 8 rows per KV head (a decode step's query heads). A group takes one range of keys of a
+    KV head and keeps its scores, so it uses one exact max and sum.
+- **Grouped-query attention:** a group's rows are the queries of one KV head's query heads, so each K and V block is
+  read once for all of them.
+- **Key ranges:** with few rows, the keys are split into ranges across groups (aiming at 256 groups), and a second
+  dispatch combines their maxima, sums and accumulators.
+- **Group memory:** up to 26 KiB, more than the 16 KiB every device guarantees; `fusedSupports` refuses a device with
+  less.
+- **Accuracy (`fusedContract`):** bounded. Each weight carries:
+  - the scores' error;
+  - the rounding of its exponent's argument;
+  - one device exp per key block it is rescaled through, plus one per combined range, and a rounding per rescale.
+
+  The sums add `(keys + 2 + 2 blocks) 2^-24` of their magnitudes, `acc / l` rounds once, and so does O. The matrix
+  path adds the FP16 rounding of P. The tests check every element against that bound, computed in double precision
+  from the same half inputs.
+  - **Shapes checked:**
+    - head dimensions 2 to 256;
+    - causal and unmasked;
+    - grouped-query;
+    - caches with a NaN tail, which must not be read;
+    - decode, and ranges split 2 to 128 ways.
+  - **Backends:** native Metal, MoltenVK and lavapipe.
+  - **Worst measured error:** 2 % of the bound with FP32 O on the portable kernels, and 63 % on the matrix path.
+    With FP16 O it reaches 90 %, which is the rounding of O itself.
+
+### Composed
+
+The overload with scratch buffers records three dispatches. It needs `kvHeads == heads` and `cacheKeys == keys`.
   1. `S = scale Q K^T`: `GemmF16` with transposed B, FP32.
   2. `P = softmax(S)`: FP16, causal if asked.
   3. `O = P V`.
 - **Algorithm:** both products use the fastest `GemmF16` algorithm the device has.
-- **Memory:** the scratch buffers hold `heads * queries * keys` scores and probabilities, so memory grows with the
-  square of the sequence. A fused (flash) kernel is planned.
+- **Memory:** the scratch buffers hold `heads * queries * keys` scores and probabilities.
 - **Causal:** query `i` sees keys `0 .. i + keys - queries`, so new queries at the end of a KV cache see the whole
-  cache. One decode step (`queries = 1`) sees every key.
+  cache. One decode step (`queries = 1`) sees every key. The fused attention uses the same mask.
 - **Accuracy:** the error of O is the composition of the steps' bounds.
   - The scores' `GemmF16` error perturbs P by at most `2 P max|dS|`.
   - `Softmax` adds its bound, and P adds one rounding to half.
   - The value product adds `(keys + 2) 2^-24 sum P |V|`, then the rounding of O.
-  - The tests check every element of O against that composition, computed in double precision from the same half
-    inputs: on native Metal, MoltenVK and lavapipe, for causal and unmasked shapes and both outputs. The worst
-    measured error is 37 % of the bound.
-- **Measured** on an Apple M4 Max (native Metal, `SIMDGROUP_MATRIX`), 32 heads, head dimension 128, causal, FP16, by
-  GPU time:
+  - The tests check every element of O against that composition. The worst measured error is 37 % of the bound.
 
-  | Sequence | Time | Dense-equivalent rate |
+### Measured
+
+On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
+
+- **Prefill:** 32 heads, head dimension 128, causal, FP16 O.
+
+  | Sequence | Composed (`SIMDGROUP_MATRIX`) | Fused (matrix path) |
   |---|---|---|
-  | 512 | 0.82 ms | 5.3 TFLOP/s |
-  | 1024 | 2.1 ms | 8.1 TFLOP/s |
-  | 2048 | 7.4 ms | 9.3 TFLOP/s |
+  | 512 | 0.67 ms | 0.42 ms |
+  | 1024 | 2.22 ms | 1.42 ms |
+  | 2048 | 8.47 ms | 5.28 ms (13 TFLOP/s dense-equivalent) |
 
-  The rate counts both products in full. A causal mask makes half of the scores unnecessary, so a kernel that skips
-  them would do better.
+- **Decode:** one query on 32 heads with 8 KV heads, head dimension 128.
+
+  | Keys | Fused (decode kernel) | K and V read |
+  |---|---|---|
+  | 512 | 40 us | 52 GB/s |
+  | 4096 | 61 us | 276 GB/s |
+  | 32768 | 396 us | 340 GB/s |
+
+- **Alternatives that lost:**
+  - **The portable flash kernel on Metal:** 0.66 / 2.5 / 9.9 ms at 512 / 1024 / 2048.
+  - **The matrix kernel loading K and V from device memory:** 0.85 / 3.0 / 11.4 ms. Each matrix served one product, and
+    all four SIMD-groups loaded it.
+  - **16 rows per SIMD-group:** 0.98 / 3.2 / 11.4 ms; the extra matrices per lane cost more than the reuse saved.
+  - **The flash kernel for decode:** 967 us at 32768 keys, because 12 of a group's 16 rows were idle.
+  - **The decode kernel:**
+    - one V load at a time: 740 us;
+    - 4096 scores per group: 550 us, since fewer groups fit a core;
+    - one reduction tree for all rows: 87 against 57 us at 4096 keys.
+
+## `PagedKvCache`
+
+Keys and values of many sequences in fixed-size pages of a pool (1.11.0).
+
+```java
+try (var cache = PagedKvCache.create(device, new PagedKvCache.Config(layers, kvHeads, headDim, 64, pages))) {
+    var seq = cache.newSequence();
+    cache.reserve(encoder, seq, tokens);                    // pages, copy on write
+    for (int l = 0; l < layers; l++)
+        cache.write(encoder, l, seq, position, k, v, tokens, tokens * headDim, headDim);   // [kvHeads][tokens][headDim]
+    attention.encode(encoder, q, cache, layer, seq, o, shape.withKvHeads(kvHeads));
+    var branch = cache.fork(seq);                           // shares every page
+}
+```
+
+- **Pages:** a page holds `pageSize` tokens (a multiple of 32) of every KV head, `[kvHeads][pageSize][headDim]` FP16.
+  Each layer has its own K and V pools, and a page index means the same tokens in every layer, so one page list
+  serves the whole model.
+- **Steps:**
+  - `reserve` grows a sequence by n tokens: it takes pages from the pool and records any copy on write.
+  - `write` stores one layer's new keys and values. Its strides take head-major and token-major sources.
+  - `truncate` shortens a sequence (a rejected speculation).
+- **Sharing:**
+  - **`fork`:** shares all of a sequence's pages (reference counts): the mechanism prefix caching needs. The prefix
+    index itself belongs to the serving layer.
+  - **Copy on write:** a page is written only while one sequence holds it. `reserve` copies a shared, partly filled
+    last page first, in every layer.
+- **Facts without a sync:**
+  - **`stats()`:** total, free, pinned (referenced by an active sequence), evictable (referenced only by unpinned
+    ones) and shared pages, and open sequences.
+  - **Per sequence:** `tokens()` and `pages()`.
+
+  All of these are host-side bookkeeping.
+- **Attention:** reads K and V through the sequence's page table, uploaded per encode. A key block never crosses a page.
+- **Tests:** a cache built through `reserve`, `write`, `fork` with copy on write, and `truncate` gives the same bits as
+  the contiguous attention over the same keys and values, on all three backends. The test covers decode, prefill and
+  split shapes, and checks the stats at each step.
 
 ## Planned
 
-- **Flash attention:** fused attention that keeps the scores on chip, with memory linear in the sequence, and skips
-  masked blocks.
+- **Batched decode across sequences:** the fused and paged attention takes one sequence per dispatch. A dispatch over
+  many sequences of different lengths, as continuous batching needs, is planned.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.
-- **Other primitives:** layer and RMS norms (1.10).
 - **Quantized weights:** a quantized form of the matrix kernel for prefill.
 
 ## Kit primitives: `Elementwise`, `Reduce`, `Scan`, `NanCheck` (1.7.0)

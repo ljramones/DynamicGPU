@@ -425,6 +425,25 @@ The plan as agreed:
 
 ### 1.11: Attention at scale
 
+**Status: complete, to be released as 1.11.0.** Done:
+- **Flash attention** behind `AttentionF16` (a fused `encode`, no scratch), with linear memory and causal block
+  skipping:
+  - a portable Slang kernel for head dimensions up to 256;
+  - the Metal matrix path for 64 and 128, 1.6 times the composition's speed at sequence 2048;
+  - grouped-query attention and longer caches.
+- **Decode attention:** a kernel for few rows per KV head, with keys split across groups and combined.
+- **Paged KV cache:** `PagedKvCache`, with:
+  - page pools per layer, an append kernel (`write`) and attention through page tables;
+  - reference-counted sharing (`fork`) with copy on write, and `truncate`;
+  - host-side facts: free, pinned, evictable and shared pages, and tokens and pages per sequence.
+- **The oracle:** the double-precision check of `AttentionConformance`, with the fused bound.
+
+Not done:
+- **Batched decode across sequences:** a dispatch takes one sequence. Continuous batching needs one over many
+  sequences of different lengths.
+
+The plan as agreed:
+
 - **Flash attention:**
   - fused `softmax(Q K^T) V` that keeps scores on chip;
   - memory linear in the sequence;
