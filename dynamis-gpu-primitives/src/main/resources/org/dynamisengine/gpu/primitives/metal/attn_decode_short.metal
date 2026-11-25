@@ -11,6 +11,7 @@ struct AttnParams {
     uint heads; uint kvHeads; uint queries; uint keys; uint headDim; uint cacheKeys; float scale; uint causal;
     uint splits; uint splitKeys; uint rowBlocks; uint pageSize; uint batch;   // batch: 1.11.1, 0 here
     uint writeLse;   // 1.12.0: unused here
+    uint lengthGroup;
 };
 
 // Short decode: keep all keys in the group and write the final output in one dispatch.
@@ -18,10 +19,11 @@ struct AttnParams {
 // accumulates 128 columns (four per lane) across one sixteenth of V.
 template<typename OutT>
 static void shortDecode(device const packed_half4 *q, device const packed_half4 *k, device const packed_half4 *v, device OutT *o,
-                        device const uint *table, constant AttnParams &p, ulong row, uint t, uint sg, uint lane,
+                        device const uint *table, device const uint *lens, constant AttnParams &p, ulong row, uint t, uint sg, uint lane,
                         threadgroup float *ss, threadgroup float *red, threadgroup float4 *parts) {
     uint kvHead = row / (p.queries * (p.heads / p.kvHeads));
     uint limit = p.causal ? p.keys - p.queries + row % p.queries + 1 : p.keys;
+    if (p.lengthGroup != 0) limit = min(limit, lens[(row / p.queries) / p.lengthGroup]);
     uint sublane = lane % 8;
     float4 query[4];
     for (uint u = 0; u < 4; u++) query[u] = float4(q[ulong(row) * 32 + u * 8 + sublane]);
@@ -46,7 +48,7 @@ static void shortDecode(device const packed_half4 *q, device const packed_half4 
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float mx = simd_max(lane < 16 ? red[lane] : -INFINITY);
     // Sums use separate slots so every SIMD-group can finish reading its maximum.
-    float w = t < limit ? exp(score - mx) : 0;
+    float w = t < limit && mx != -INFINITY ? exp(score - mx) : 0;
     ss[t] = w;
     float sl = simd_sum(w);
     if (lane == 0) red[16 + sg] = sl;
@@ -64,19 +66,19 @@ static void shortDecode(device const packed_half4 *q, device const packed_half4 
     if (sg == 0) {
         float4 out(0.0f);
         for (uint part = 0; part < 16; part++) out += parts[part * 32 + lane];
-        for (uint c = 0; c < 4; c++) o[ulong(row) * 128 + lane * 4 + c] = OutT(out[c] / sum);
+        for (uint c = 0; c < 4; c++) o[ulong(row) * 128 + lane * 4 + c] = OutT(sum == 0.0f ? 0.0f : out[c] / sum);
     }
 }
 
 #define SHORT_ENTRY(NAME, OutT) \
 kernel void NAME(device const packed_half4 *q [[buffer(0)]], device const packed_half4 *k [[buffer(1)]], \
                  device const packed_half4 *v [[buffer(2)]], device OutT *o [[buffer(3)]], \
-                 device const uint *table [[buffer(4)]], constant AttnParams &p [[buffer(5)]], \
+                 device const uint *table [[buffer(4)]], device const uint *lens [[buffer(5)]], constant AttnParams &p [[buffer(6)]], \
                  uint3 group [[threadgroup_position_in_grid]], \
                  uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) { \
     threadgroup float ss[512], red[32]; threadgroup float4 parts[512]; \
     ulong row = ulong(group.y) * p.rowBlocks + group.x; \
-    if (row < ulong(p.heads) * p.queries) shortDecode(q, k, v, o, table, p, row, sg * 32 + lane, sg, lane, ss, red, parts); \
+    if (row < ulong(p.heads) * p.queries) shortDecode(q, k, v, o, table, lens, p, row, sg * 32 + lane, sg, lane, ss, red, parts); \
 }
 
 SHORT_ENTRY(attn_decode_128_direct, half)

@@ -4,14 +4,13 @@
 // time), and O = that / L. The entry file defines ENTRY and, for FP32 output, OUT_F32.
 #include "attn_common.slang"
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<float> partialML;
-[[vk::binding(1, 0)]] RWStructuredBuffer<float> partialAcc;
+[[vk::binding(0, 0)]] RWStructuredBuffer<float> partials;
 #if OUT_F32
-[[vk::binding(2, 0)]] RWStructuredBuffer<float> o;
+[[vk::binding(1, 0)]] RWStructuredBuffer<float> o;
 #else
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint> o;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint> o;
 #endif
-[[vk::binding(3, 0)]] RWStructuredBuffer<float> lse;   // when writeLse (1.12.0)
+[[vk::binding(2, 0)]] RWStructuredBuffer<float> lse;   // when writeLse (1.12.0)
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint THREADS = 128;
@@ -29,7 +28,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint row = dg_linear_group(group, p.rowBlocks);   // rowBlocks: the grid width here
     if (row >= rows) return;   // uniform across the group
     float acc = dg_negative_infinity();
-    for (uint s = t; s < p.splits; s += THREADS) acc = max(acc, partialML[2 * (s * rows + row)]);
+    for (uint s = t; s < p.splits; s += THREADS) acc = max(acc, partials[2 * (s * rows + row)]);
     red[t] = acc;
     DG_GROUP_REDUCE(red, t, THREADS, dg_op_max)
     DG_GROUP_BROADCAST(red, t, rowM)
@@ -38,16 +37,17 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     acc = 0.0f;
     for (uint s = t; s < p.splits; s += THREADS)
     {
-        float ms = partialML[2 * (s * rows + row)];
+        float ms = partials[2 * (s * rows + row)];
         float w = ms == dg_negative_infinity() ? 0.0f : exp(ms - mx);
         ws[s] = w;
-        acc = fma(partialML[2 * (s * rows + row) + 1], w, acc);
+        acc = fma(partials[2 * (s * rows + row) + 1], w, acc);
     }
     red[t] = acc;
     DG_GROUP_REDUCE(red, t, THREADS, dg_op_add)
     DG_GROUP_BROADCAST(red, t, rowL)
     float l = rowL;
-    if (p.writeLse != 0 && t == 0) lse[row] = mx + log(l);
+    if (p.writeLse != 0 && t == 0) lse[row] = l == 0.0f ? dg_negative_infinity() : mx + log(l);
+    uint accBase = attnAccBase(p.splits, rows);
     for (uint pair = t; pair < d2; pair += THREADS)
     {
         float lo = 0.0f, hi = 0.0f;
@@ -57,8 +57,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             [ForceUnroll]
             for (uint u = 0; u < 8; u++)
             {
-                uint s = s0 + u, at = ((s * rows + row) * p.headDim) + 2 * pair;
-                a[u] = s < p.splits ? float2(partialAcc[at], partialAcc[at + 1]) : float2(0.0f, 0.0f);
+                uint s = s0 + u, at = accBase + ((s * rows + row) * p.headDim) + 2 * pair;
+                a[u] = s < p.splits ? float2(partials[at], partials[at + 1]) : float2(0.0f, 0.0f);
             }
             [ForceUnroll]
             for (uint u = 0; u < 8; u++)
@@ -71,7 +71,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
                 }
             }
         }
-        lo = lo / l; hi = hi / l;
+        lo = l == 0.0f ? 0.0f : lo / l;
+        hi = l == 0.0f ? 0.0f : hi / l;
 #if OUT_F32
         o[row * p.headDim + 2 * pair] = lo;
         o[row * p.headDim + 2 * pair + 1] = hi;

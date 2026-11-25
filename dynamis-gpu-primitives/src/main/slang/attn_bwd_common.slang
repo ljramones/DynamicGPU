@@ -17,7 +17,7 @@ struct AttnBwdParams
     float scale;
     uint causal;
     uint gridX;       // attn_bwd_dot
-    uint pad0;
+    uint lengthGroup; // query heads per valid-key length; 0 disables the length buffer
     uint pad1;
     uint pad2;
 };

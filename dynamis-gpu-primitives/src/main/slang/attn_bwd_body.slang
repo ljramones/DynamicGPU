@@ -14,7 +14,7 @@
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> v;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> dO;
 [[vk::binding(4, 0)]] RWStructuredBuffer<float> lse;
-[[vk::binding(5, 0)]] RWStructuredBuffer<float> dD;
+[[vk::binding(5, 0)]] RWStructuredBuffer<uint> dD; // D as FP32 bits, then valid lengths already clamped to p.keys
 [[vk::binding(6, 0)]] RWStructuredBuffer<float> out0;   // KV: dK; Q: dQ
 #ifdef KV
 [[vk::binding(7, 0)]] RWStructuredBuffer<float> out1;   // dV
@@ -39,11 +39,25 @@ groupshared float dss[BQ * BK];
 
 float half2At(uint w, uint c) { return (c & 1) == 0 ? attnLo(w) : attnHi(w); }
 
-// S, P, dP and dS of the tile's pairs (rows r0 .., keys k0 ..) into ps and dss; rows past `rows`, keys past `keys`
-// and masked pairs give 0
-void pairs(uint t, uint r0, uint rows, uint k0, uint d2)
+uint validKeys(uint row)
 {
-    uint offset = p.keys - p.queries;
+    if (p.lengthGroup == 0) return p.keys;
+    return dD[p.heads * p.queries + (row / p.queries) / p.lengthGroup];
+}
+
+// Only stage keys used by at least one of these rows. Padding can contain nonfinite data.
+uint maxValidKeys(uint firstHead, uint lastHead)
+{
+    if (p.lengthGroup == 0) return p.keys;
+    uint end = 0;
+    for (uint g = firstHead / p.lengthGroup; g <= lastHead / p.lengthGroup; g++)
+        end = max(end, dD[p.heads * p.queries + g]);
+    return end;
+}
+
+// S, P, dP and dS of the staged rows and keys into ps and dss. P and dS are zero outside each row's visible keys.
+void pairs(uint t, uint k0, uint d2)
+{
     // the thread's pairs side by side: their dot products as independent chains (one pair after the other left each
     // thread waiting on its own fma chain)
     float sv[PPT], dp[PPT];
@@ -73,8 +87,8 @@ void pairs(uint t, uint r0, uint rows, uint k0, uint d2)
     [ForceUnroll]
     for (uint u = 0; u < PPT; u++)
     {
-        uint i = ii[u], kk = kv[u], r = r0 + i, key = k0 + kk;
-        bool live = r < rows && key < p.keys && (p.causal == 0 || key <= (r % p.queries) + offset);
+        uint i = ii[u], kk = kv[u], key = k0 + kk;
+        bool live = key < qs[i * STRIDE + D2];
         float pv = live ? exp(sv[u] * p.scale - ls[i]) : 0.0f;
         ps[i * BK + kk] = pv;
         dss[i * BK + kk] = live ? pv * (dp[u] - ds[i]) : 0.0f;
@@ -86,20 +100,28 @@ void loadRows(uint t, uint base, uint r0, uint rows, uint d2)
     for (uint e = t; e < BQ * D2; e += THREADS)
     {
         uint i = e / D2, pr = e % D2, r = r0 + i;
-        bool ok = r < rows && pr < d2;
+        bool ok = r < rows && pr < d2 && validKeys(base + r) != 0;
         qs[i * STRIDE + pr] = ok ? q[(base + r) * d2 + pr] : 0u;
         dos[i * (DMAX + 1) + 2 * pr] = ok ? dO[(base + r) * p.headDim + 2 * pr] : 0.0f;
         dos[i * (DMAX + 1) + 2 * pr + 1] = ok ? dO[(base + r) * p.headDim + 2 * pr + 1] : 0.0f;
     }
-    if (t < BQ) { uint r = r0 + t; ls[t] = r < rows ? lse[base + r] : 0.0f; ds[t] = r < rows ? dD[base + r] : 0.0f; }
+    if (t < BQ)
+    {
+        uint r = r0 + t;
+        uint end = r < rows ? validKeys(base + r) : 0u;
+        if (p.causal != 0) end = min(end, r % p.queries + (p.keys - p.queries) + 1);
+        qs[t * STRIDE + D2] = end; // the padding word after the query holds its exclusive key limit
+        ls[t] = end != 0 ? lse[base + r] : 0.0f;
+        ds[t] = end != 0 ? asfloat(dD[base + r]) : 0.0f;
+    }
 }
 
-void loadKeys(uint t, uint kvHead, uint k0, uint d2)
+void loadKeys(uint t, uint kvHead, uint k0, uint d2, uint end)
 {
     for (uint e = t; e < BK * D2; e += THREADS)
     {
         uint kk = e / D2, pr = e % D2, key = k0 + kk;
-        bool ok = key < p.keys && pr < d2;
+        bool ok = key < end && pr < d2;
         uint at = (kvHead * p.cacheKeys + key) * d2 + pr;
         ks[kk * STRIDE + pr] = ok ? k[at] : 0u;
         vs[kk * STRIDE + pr] = ok ? v[at] : 0u;
@@ -118,8 +140,9 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     [ForceUnroll] for (uint c = 0; c < CPT; c++) { a0[c] = 0.0f; a1[c] = 0.0f; }
 #ifdef KV
     uint k0 = group.x * BK;
-    loadKeys(t, kvHead, k0, d2);
-    for (uint r0 = 0; r0 < rows; r0 += BQ)
+    uint end = maxValidKeys(kvHead * hpk, (kvHead + 1) * hpk - 1);
+    loadKeys(t, kvHead, k0, d2, end);
+    for (uint r0 = 0; r0 < rows && k0 < end; r0 += BQ)
     {
         if (p.causal != 0)
         {
@@ -131,7 +154,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         GroupMemoryBarrierWithGroupSync();   // the previous tile's rows are no longer read
         loadRows(t, base, r0, rows, d2);
         GroupMemoryBarrierWithGroupSync();
-        pairs(t, r0, rows, k0, d2);
+        pairs(t, k0, d2);
         GroupMemoryBarrierWithGroupSync();
         // key `owner` (16 keys, 8 threads each): dV += P dO, dK += dS Q, row by row
         for (uint i = 0; i < BQ; i++)
@@ -154,25 +177,25 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         for (uint c = 0; c < CPT; c++)
         {
             uint col = part + 8 * c;
-            if (col < p.headDim) { out0[at + col] = a0[c] * p.scale; out1[at + col] = a1[c]; }
+            if (col < p.headDim) { out0[at + col] = key < end ? a0[c] * p.scale : 0.0f; out1[at + col] = a1[c]; }
         }
     }
 #else
     uint r0 = group.x * BQ;
     loadRows(t, base, r0, rows, d2);
-    uint kEnd = p.keys;
+    uint rLast = min(r0 + BQ, rows) - 1;
+    uint kEnd = maxValidKeys(kvHead * hpk + r0 / p.queries, kvHead * hpk + rLast / p.queries);
     if (p.causal != 0)
     {
-        uint rLast = min(r0 + BQ, rows) - 1;
         uint iMax = (r0 / p.queries != rLast / p.queries) ? p.queries - 1 : rLast % p.queries;
         kEnd = min(kEnd, iMax + offset + 1);
     }
     for (uint k0 = 0; k0 < kEnd; k0 += BK)
     {
         GroupMemoryBarrierWithGroupSync();   // the previous tile's keys are no longer read
-        loadKeys(t, kvHead, k0, d2);
+        loadKeys(t, kvHead, k0, d2, kEnd);
         GroupMemoryBarrierWithGroupSync();
-        pairs(t, r0, rows, k0, d2);
+        pairs(t, k0, d2);
         GroupMemoryBarrierWithGroupSync();
         // row `owner` (BQ rows, 128 / BQ threads each): dQ += dS K, key by key
         if (owner < BQ)
@@ -193,11 +216,12 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     if (owner < BQ && r < rows)
     {
         uint at = (base + r) * p.headDim;
+        bool live = validKeys(base + r) != 0;
         [ForceUnroll]
         for (uint c = 0; c < CPT; c++)
         {
             uint col = part + 8 * c;
-            if (col < p.headDim) out0[at + col] = a0[c] * p.scale;
+            if (col < p.headDim) out0[at + col] = live ? a0[c] * p.scale : 0.0f;
         }
     }
 #endif

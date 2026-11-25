@@ -1,6 +1,7 @@
 // AttentionF16.backward on Apple GPU matrix hardware (simdgroup_matrix; 1.12.1). Hand-written: Slang cannot emit Metal
 // SIMD-group matrices. Same ABI as attn_bwd_body.slang (attn_bwd_common.slang): q, k, v, dO, lse, D and the outputs at
-// buffers 0 to 7 (dQ at 6; dK, dV at 6, 7), the parameters after them. Head dimensions 64 and 128.
+// buffers 0 to 7 (dQ at 6; dK, dV at 6, 7), the parameters after them. D holds FP32 bits and any valid lengths
+// follow its rows as uint32 words, clamped to p.keys by the dot prepass. Head dimensions 64 and 128.
 //     P = exp(scale Q K^T - L) (masked: 0),  dS = P (dO V^T - D)
 //     dQ = scale dS K  (attn_bwd_q_*_simdgroup),  dV = P^T dO,  dK = scale dS^T Q  (attn_bwd_kv_*_simdgroup)
 // The products take FP16 operands, as the forward matrix path's P V does: dO, P and dS are rounded to FP16 for them
@@ -16,8 +17,20 @@ using namespace metal;
 
 struct AttnBwdParams {
     uint heads; uint kvHeads; uint queries; uint keys; uint headDim; uint cacheKeys; float scale; uint causal;
-    uint gridX; uint pad0; uint pad1; uint pad2;
+    uint gridX; uint lengthGroup; uint pad1; uint pad2;
 };
+
+static inline uint validKeys(constant AttnBwdParams &p, device const uint *lens, uint head) {
+    return p.lengthGroup == 0 ? p.keys : lens[head / p.lengthGroup];
+}
+
+// Exclude padding before the matrix products: multiplying a masked NaN key or value by zero would propagate it.
+static inline uint maxValidKeys(constant AttnBwdParams &p, device const uint *lens, uint firstHead, uint lastHead) {
+    if (p.lengthGroup == 0) return p.keys;
+    uint end = 0;
+    for (uint g = firstHead / p.lengthGroup; g <= lastHead / p.lengthGroup; g++) end = max(end, lens[g]);
+    return end;
+}
 
 // ---- dQ: a group of 4 SIMD-groups takes 32 rows of a KV head (8 each) and walks its keys in blocks of 32 ----
 
@@ -25,17 +38,18 @@ constant constexpr uint QR = 32, QK = 32, THREADS = 128;
 
 template <uint D>
 static void bwdQ(device const half *q, device const half *k, device const half *v, device const float *dO,
-                 device const float *lse, device const float *dD, device float *dQ, constant AttnBwdParams &p,
+                 device const float *lse, device const uint *dD, device float *dQ, constant AttnBwdParams &p,
                  uint3 group, uint tid, uint sg, uint lane, threadgroup half *sK, threadgroup half *sV,
                  threadgroup float *sS, threadgroup float *sP, threadgroup half *sDs) {
     const uint kvHead = group.y, hpk = p.heads / p.kvHeads, rowsKv = hpk * p.queries, r0 = group.x * QR;
     const uint offset = p.keys - p.queries, base = kvHead * rowsKv;
+    device const uint *lens = dD + ulong(p.heads) * p.queries;
     device const half *kHead = k + ulong(kvHead) * p.cacheKeys * D, *vHead = v + ulong(kvHead) * p.cacheKeys * D;
 
     // the SIMD-group's Q and dO (to FP16) as matrices, through zero-filled copies in the K and V blocks' memory
     for (uint e = tid; e < QR * D; e += THREADS) {
         uint rr = r0 + e / D, c = e % D;
-        bool ok = rr < rowsKv;
+        bool ok = rr < rowsKv && validKeys(p, lens, kvHead * hpk + rr / p.queries) != 0;
         sK[e] = ok ? q[ulong(base + rr) * D + c] : half(0.0h);
         sV[e] = ok ? half(dO[ulong(base + rr) * D + c]) : half(0.0h);
     }
@@ -52,11 +66,12 @@ static void bwdQ(device const half *q, device const half *k, device const half *
     const uint lr = lane / 4, c4 = lane % 4, rr = r0 + sg * 8 + lr;
     const bool live = rr < rowsKv;
     const uint qi = live ? rr % p.queries : 0;
-    const uint limit = !live ? 0 : p.causal != 0 ? qi + offset + 1 : p.keys;
-    const float L = live ? lse[base + rr] : 0.0f, Dr = live ? dD[base + rr] : 0.0f;
-    uint kEnd = p.keys;
+    const uint length = live ? validKeys(p, lens, kvHead * hpk + rr / p.queries) : 0u;
+    const uint limit = p.causal != 0 ? min(length, qi + offset + 1) : length;
+    const float L = live ? lse[base + rr] : 0.0f, Dr = live ? as_type<float>(dD[base + rr]) : 0.0f;
+    uint rLast = min(r0 + QR, rowsKv) - 1;
+    uint kEnd = maxValidKeys(p, lens, kvHead * hpk + r0 / p.queries, kvHead * hpk + rLast / p.queries);
     if (p.causal != 0) {
-        uint rLast = min(r0 + QR, rowsKv) - 1;
         uint iMax = (r0 / p.queries != rLast / p.queries) ? p.queries - 1 : rLast % p.queries;
         kEnd = min(kEnd, iMax + offset + 1);
     }
@@ -69,7 +84,7 @@ static void bwdQ(device const half *q, device const half *k, device const half *
             threadgroup uint4 *dk = (threadgroup uint4 *) sK, *dv = (threadgroup uint4 *) sV;
             device const uint4 *ks = (device const uint4 *) (kHead + ulong(b) * D), *vs = (device const uint4 *) (vHead + ulong(b) * D);
             for (uint e = tid; e < QK * D / 8; e += THREADS) {
-                bool ok = b + e / (D / 8) < p.keys;
+                bool ok = b + e / (D / 8) < kEnd;
                 dk[e] = ok ? ks[e] : uint4(0);
                 dv[e] = ok ? vs[e] : uint4(0);
             }
@@ -92,7 +107,7 @@ static void bwdQ(device const half *q, device const half *k, device const half *
         for (uint c = 0; c < 8; c++) {
             uint col = c4 * 8 + c, key = b + col;
             float pv = key < limit ? exp(tS[lr * QK + col] * p.scale - L) : 0.0f;
-            tDs[lr * QK + col] = half(pv * (tP[lr * QK + col] - Dr));
+            tDs[lr * QK + col] = key < limit ? half(pv * (tP[lr * QK + col] - Dr)) : half(0.0h);
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
         // dQ += dS K
@@ -114,7 +129,10 @@ static void bwdQ(device const half *q, device const half *k, device const half *
         simdgroup_barrier(mem_flags::mem_threadgroup);
         for (uint e = lane; e < 64; e += 32) {
             uint row = r0 + sg * 8 + e / 8, c = d * 8 + e % 8;
-            if (row < rowsKv) dQ[ulong(base + row) * D + c] = tile[e] * p.scale;
+            if (row < rowsKv) {
+                bool used = validKeys(p, lens, kvHead * hpk + row / p.queries) != 0;
+                dQ[ulong(base + row) * D + c] = used ? tile[e] * p.scale : 0.0f;
+            }
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
     }
@@ -123,8 +141,8 @@ static void bwdQ(device const half *q, device const half *k, device const half *
 #define BWD_Q_ENTRY(NAME, D)                                                                                       \
 kernel void NAME(device const half *q [[buffer(0)]], device const half *k [[buffer(1)]],                             \
                  device const half *v [[buffer(2)]], device const float *dO [[buffer(3)]],                           \
-                 device const float *lse [[buffer(4)]], device const float *dD [[buffer(5)]],                        \
-                 device float *dQ [[buffer(6)]], constant AttnBwdParams &p [[buffer(7)]],                            \
+                 device const float *lse [[buffer(4)]], device const uint *dD [[buffer(5)]],                        \
+                 device float *dQ [[buffer(6)]], constant AttnBwdParams &p [[buffer(7)]],                          \
                  uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],            \
                  uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {             \
     threadgroup half sK[QK * D];                                                                                  \
@@ -144,19 +162,21 @@ constant constexpr uint KK = 32, KR = 16;
 
 template <uint D>
 static void bwdKV(device const half *q, device const half *k, device const half *v, device const float *dO,
-                  device const float *lse, device const float *dD, device float *dK, device float *dV,
+                  device const float *lse, device const uint *dD, device float *dK, device float *dV,
                   constant AttnBwdParams &p, uint3 group, uint tid, uint sg, uint lane, threadgroup half *sK,
                   threadgroup half *sV, threadgroup half *sQ, threadgroup half *sO, threadgroup float *sL,
                   threadgroup float *sD, threadgroup float *sS, threadgroup float *sP, threadgroup half *sPh,
                   threadgroup half *sDs) {
     const uint kvHead = group.y, hpk = p.heads / p.kvHeads, rowsKv = hpk * p.queries, k0 = group.x * KK;
     const uint offset = p.keys - p.queries, base = kvHead * rowsKv;
+    device const uint *lens = dD + ulong(p.heads) * p.queries;
+    const uint end = maxValidKeys(p, lens, kvHead * hpk, (kvHead + 1) * hpk - 1);
     device const half *kHead = k + ulong(kvHead) * p.cacheKeys * D, *vHead = v + ulong(kvHead) * p.cacheKeys * D;
     {
         threadgroup uint4 *dk = (threadgroup uint4 *) sK, *dv = (threadgroup uint4 *) sV;
         device const uint4 *ks = (device const uint4 *) (kHead + ulong(k0) * D), *vs = (device const uint4 *) (vHead + ulong(k0) * D);
         for (uint e = tid; e < KK * D / 8; e += THREADS) {
-            bool ok = k0 + e / (D / 8) < p.keys;
+            bool ok = k0 + e / (D / 8) < end;
             dk[e] = ok ? ks[e] : uint4(0);
             dv[e] = ok ? vs[e] : uint4(0);
         }
@@ -172,7 +192,7 @@ static void bwdKV(device const half *q, device const half *k, device const half 
     threadgroup half *tPh = sPh + sg * 8 * KR, *tDs = sDs + sg * 8 * KR;
     threadgroup const half *kSg = sK + sg * 8 * D, *vSg = sV + sg * 8 * D;
 
-    for (uint r0 = 0; r0 < rowsKv; r0 += KR) {
+    for (uint r0 = 0; r0 < rowsKv && k0 < end; r0 += KR) {
         if (p.causal != 0) {
             uint rLast = min(r0 + KR, rowsKv) - 1;
             uint iMax = (r0 / p.queries != rLast / p.queries) ? p.queries - 1 : rLast % p.queries;
@@ -181,11 +201,11 @@ static void bwdKV(device const half *q, device const half *k, device const half 
         threadgroup_barrier(mem_flags::mem_threadgroup);   // the previous tile is no longer read (and K, V are staged)
         for (uint e = tid; e < KR * D; e += THREADS) {
             uint rr = r0 + e / D, c = e % D;
-            bool ok = rr < rowsKv;
+            bool ok = rr < rowsKv && validKeys(p, lens, kvHead * hpk + rr / p.queries) != 0;
             sQ[e] = ok ? q[ulong(base + rr) * D + c] : half(0.0h);
             sO[e] = ok ? half(dO[ulong(base + rr) * D + c]) : half(0.0h);
         }
-        if (tid < KR) { uint rr = r0 + tid; sL[tid] = rr < rowsKv ? lse[base + rr] : 0.0f; sD[tid] = rr < rowsKv ? dD[base + rr] : 0.0f; }
+        if (tid < KR) { uint rr = r0 + tid; sL[tid] = rr < rowsKv ? lse[base + rr] : 0.0f; sD[tid] = rr < rowsKv ? as_type<float>(dD[base + rr]) : 0.0f; }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         // S^T = K Q^T and dP^T = V dO^T for the SIMD-group's keys
         for (uint rb = 0; rb < KR / 8; rb++) {
@@ -205,10 +225,11 @@ static void bwdKV(device const half *q, device const half *k, device const half 
         simdgroup_barrier(mem_flags::mem_threadgroup);
         for (uint c = 0; c < KR / 4; c++) {
             uint ri = c4 * (KR / 4) + c, rr = r0 + ri;
-            bool visible = rr < rowsKv && key < p.keys && (p.causal == 0 || key <= rr % p.queries + offset);
+            bool visible = rr < rowsKv && key < validKeys(p, lens, kvHead * hpk + rr / p.queries)
+                && (p.causal == 0 || key <= rr % p.queries + offset);
             float pv = visible ? exp(tS[lk * KR + ri] * p.scale - sL[ri]) : 0.0f;
             tPh[lk * KR + ri] = half(pv);
-            tDs[lk * KR + ri] = half(pv * (tP[lk * KR + ri] - sD[ri]));
+            tDs[lk * KR + ri] = visible ? half(pv * (tP[lk * KR + ri] - sD[ri])) : half(0.0h);
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
         // dV += P^T dO, dK += dS^T Q
@@ -235,7 +256,7 @@ static void bwdKV(device const half *q, device const half *k, device const half 
                 uint kk = k0 + sg * 8 + e / 8, c = d * 8 + e % 8;
                 if (kk < p.keys) {
                     ulong at = (ulong(kvHead) * p.cacheKeys + kk) * D + c;
-                    if (w == 0) dK[at] = tile[e] * p.scale; else dV[at] = tile[e];
+                    if (w == 0) dK[at] = kk < end ? tile[e] * p.scale : 0.0f; else dV[at] = tile[e];
                 }
             }
             simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -246,7 +267,7 @@ static void bwdKV(device const half *q, device const half *k, device const half 
 #define BWD_KV_ENTRY(NAME, D)                                                                                      \
 kernel void NAME(device const half *q [[buffer(0)]], device const half *k [[buffer(1)]],                             \
                  device const half *v [[buffer(2)]], device const float *dO [[buffer(3)]],                           \
-                 device const float *lse [[buffer(4)]], device const float *dD [[buffer(5)]],                        \
+                 device const float *lse [[buffer(4)]], device const uint *dD [[buffer(5)]],                         \
                  device float *dK [[buffer(6)]], device float *dV [[buffer(7)]], constant AttnBwdParams &p [[buffer(8)]], \
                  uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],            \
                  uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {             \

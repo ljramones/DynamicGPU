@@ -29,10 +29,10 @@
 #else
 [[vk::binding(3, 0)]] RWStructuredBuffer<uint> o;
 #endif
-[[vk::binding(4, 0)]] RWStructuredBuffer<float> partialML;    // per split and row: m, l (splits > 1)
-[[vk::binding(5, 0)]] RWStructuredBuffer<float> partialAcc;   // per split and row: headDim accumulators
-[[vk::binding(6, 0)]] RWStructuredBuffer<uint> table;        // paged K and V: the sequence's pages
-[[vk::binding(7, 0)]] RWStructuredBuffer<float> lse;         // [heads][queries], when writeLse (1.12.0)
+[[vk::binding(4, 0)]] RWStructuredBuffer<float> partials;
+[[vk::binding(5, 0)]] RWStructuredBuffer<uint> table;        // paged K and V: the sequence's pages
+[[vk::binding(6, 0)]] RWStructuredBuffer<float> lse;         // [heads][queries], when writeLse (1.12.0)
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> lens;
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint BR = 16;
@@ -81,13 +81,15 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 
     // the keys this group covers: its range, and with the causal mask no further than its last row sees
     uint kStart = split * p.splitKeys, kEnd = min(p.keys, kStart + p.splitKeys);
+    uint rLast = min(r0 + BR, rowsKv) - 1;
+    kEnd = attnKeyEnd(lens, p.lengthGroup, kvHead * hpk + r0 / p.queries, kvHead * hpk + rLast / p.queries, kEnd);
     if (p.causal != 0)
     {
-        uint rLast = min(r0 + BR, rowsKv) - 1;
         uint iMax = (r0 / p.queries != rLast / p.queries) ? p.queries - 1 : rLast % p.queries;
         kEnd = min(kEnd, iMax + offset + 1);
     }
     uint limit = p.causal != 0 ? qi + offset + 1 : p.keys;   // this row's keys end
+    if (p.lengthGroup != 0) limit = min(limit, lens[head / p.lengthGroup]);
 
     float m = dg_negative_infinity(), l = 0.0f;
     float accLo[PPT], accHi[PPT];
@@ -189,23 +191,27 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint row = head * p.queries + qi;
     if (p.splits > 1)
     {
-        uint pr = split * p.heads * p.queries + row;
-        if (kk == 0) { partialML[2 * pr] = m; partialML[2 * pr + 1] = l; }
+        uint rows = p.heads * p.queries, pr = split * rows + row;
+        uint acc = attnAccBase(p.splits, rows) + pr * p.headDim;
+        if (kk == 0) { partials[2 * pr] = m; partials[2 * pr + 1] = l; }
         [ForceUnroll]
         for (uint u = 0; u < PPT; u++)
         {
             uint pair = kk + u * TPR;
-            if (pair < d2) { partialAcc[pr * p.headDim + 2 * pair] = accLo[u]; partialAcc[pr * p.headDim + 2 * pair + 1] = accHi[u]; }
+            if (pair < d2) {
+                partials[acc + 2 * pair] = l == 0.0f ? 0.0f : accLo[u];
+                partials[acc + 2 * pair + 1] = l == 0.0f ? 0.0f : accHi[u];
+            }
         }
         return;
     }
-    if (p.writeLse != 0 && kk == 0) lse[row] = m + log(l);
+    if (p.writeLse != 0 && kk == 0) lse[row] = l == 0.0f ? dg_negative_infinity() : m + log(l);
     [ForceUnroll]
     for (uint u = 0; u < PPT; u++)
     {
         uint pair = kk + u * TPR;
         if (pair >= d2) continue;
-        float lo = accLo[u] / l, hi = accHi[u] / l;
+        float lo = l == 0.0f ? 0.0f : accLo[u] / l, hi = l == 0.0f ? 0.0f : accHi[u] / l;
 #if OUT_F32
         o[row * p.headDim + 2 * pair] = lo;
         o[row * p.headDim + 2 * pair + 1] = hi;

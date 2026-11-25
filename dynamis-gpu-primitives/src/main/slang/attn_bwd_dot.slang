@@ -8,7 +8,8 @@
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> o;
 #endif
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> dO;
-[[vk::binding(2, 0)]] RWStructuredBuffer<float> dD;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> dD; // D as FP32 bits, followed by the optional uint32 lengths
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> lens;
 [[vk::push_constant]] ConstantBuffer<AttnBwdParams> p;
 
 [shader("compute")]
@@ -16,7 +17,11 @@
 void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
     uint row = dg_linear_thread(group, local, p.gridX, 256);
-    if (row >= p.heads * p.queries) return;
+    uint rows = p.heads * p.queries;
+    if (row >= rows) return;
+    if (p.lengthGroup != 0) {
+        if (row <= (p.heads - 1) / p.lengthGroup) dD[rows + row] = min(lens[row], p.keys);
+    }
     uint d = p.headDim, base = row * d;
     float acc = 0.0f;
     for (uint c = 0; c < d; c += 2)
@@ -30,5 +35,5 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         acc = acc + dO[base + c] * lo;
         acc = acc + dO[base + c + 1] * hi;
     }
-    dD[row] = acc;
+    dD[row] = asuint(acc);
 }

@@ -23,7 +23,21 @@ struct AttnParams
                       // pages follow at 2 batch + its offset. Q and O are [batch][heads][queries][headDim].
     uint writeLse;    // 1.12.0: the flash kernels and the combine write each row's log-sum-exp of the scaled scores
                       // (lse[row] = m + log l), which the backward pass needs; not the decode kernels
+    uint lengthGroup; // 0: no padding mask; otherwise one valid key length per group of flattened query heads
 };
+
+// Split scratch is FP32: [split][row][m,l], then [split][row][headDim] accumulators.
+uint attnAccBase(uint splits, uint rows) { return 2u * splits * rows; }
+
+// Cap the shared K/V loads at the largest valid length across this workgroup's query heads.
+uint attnKeyEnd(RWStructuredBuffer<uint> lens, uint lengthGroup, uint firstHead, uint lastHead, uint end)
+{
+    if (lengthGroup == 0) return end;
+    uint first = firstHead / lengthGroup, last = lastHead / lengthGroup;
+    uint longest = lens[first];
+    for (uint i = first + 1; i <= last; i++) longest = max(longest, lens[i]);
+    return min(end, longest);
+}
 
 // The word (pair of halves) index of pair pr of key `key` of KV head kvHead, contiguous or through the page table
 // from entry `base` (a batched sequence's pages).

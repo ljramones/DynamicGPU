@@ -27,9 +27,9 @@
 #else
 [[vk::binding(3, 0)]] RWStructuredBuffer<uint> o;
 #endif
-[[vk::binding(4, 0)]] RWStructuredBuffer<float> partialML;
-[[vk::binding(5, 0)]] RWStructuredBuffer<float> partialAcc;
-[[vk::binding(6, 0)]] RWStructuredBuffer<uint> table;        // paged K and V: the sequence's pages
+[[vk::binding(4, 0)]] RWStructuredBuffer<float> partials;
+[[vk::binding(5, 0)]] RWStructuredBuffer<uint> table;        // paged K and V: the sequence's pages
+[[vk::binding(6, 0)]] RWStructuredBuffer<uint> lens;
 [[vk::push_constant]] ConstantBuffer<AttnParams> p;
 
 static const uint THREADS = 128;
@@ -63,10 +63,20 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint rowBase = seq * p.heads * p.queries, totalRows = max(p.batch, 1u) * p.heads * p.queries;
     uint d2 = p.headDim / 2, offset = keys - p.queries;
     uint kStart = split * p.splitKeys, kEnd = min(keys, kStart + p.splitKeys);
+    uint firstHead = seq * p.heads + kvHead * hpk;
+    kEnd = attnKeyEnd(lens, p.lengthGroup, firstHead, firstHead + hpk - 1, kEnd);
     uint n = kEnd > kStart ? kEnd - kStart : 0u;
     // a range is taken in chunks of the scores the group keeps; one chunk unless the range is longer (batched decode)
     uint chunk = max(128u, SK / max(rows, 1u) / 128u * 128u);
     uint sk = chunk;   // the stride of a row's scores
+    uint limit[RMAX];
+    [ForceUnroll]
+    for (uint r = 0; r < RMAX; r++)
+    {
+        limit[r] = p.causal != 0 ? r % p.queries + offset + 1 : keys;
+        if (r < rows && p.lengthGroup != 0)
+            limit[r] = min(limit[r], lens[(firstHead + r / p.queries) / p.lengthGroup]);
+    }
 
 #ifdef WAVE_ROWS
     if (t == 0) waves = 0;
@@ -129,8 +139,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             for (uint r = 0; r < RMAX; r++)
             {
                 if (r >= rows) break;
-                uint i = r % p.queries;
-                bool visible = p.causal == 0 || key <= i + offset;
+                bool visible = key < limit[r];
                 ss[r * sk + j] = visible ? s[r] * p.scale : dg_negative_infinity();
             }
         }
@@ -236,17 +245,20 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
         if (p.splits > 1)
         {
             uint pr = split * totalRows + row;
-            if (pair == 0) { partialML[2 * pr] = n == 0 ? dg_negative_infinity() : rowM[r]; partialML[2 * pr + 1] = n == 0 ? 0.0f : rowL[r]; }
-            partialAcc[pr * p.headDim + 2 * pair] = a;
-            partialAcc[pr * p.headDim + 2 * pair + 1] = b;
+            uint at = attnAccBase(p.splits, totalRows) + pr * p.headDim + 2 * pair;
+            if (pair == 0) { partials[2 * pr] = n == 0 ? dg_negative_infinity() : rowM[r]; partials[2 * pr + 1] = n == 0 ? 0.0f : rowL[r]; }
+            partials[at] = rowL[r] == 0.0f ? 0.0f : a;
+            partials[at + 1] = rowL[r] == 0.0f ? 0.0f : b;
             continue;
         }
         float l = rowL[r];
+        a = l == 0.0f ? 0.0f : a / l;
+        b = l == 0.0f ? 0.0f : b / l;
 #if OUT_F32
-        o[row * p.headDim + 2 * pair] = a / l;
-        o[row * p.headDim + 2 * pair + 1] = b / l;
+        o[row * p.headDim + 2 * pair] = a;
+        o[row * p.headDim + 2 * pair + 1] = b;
 #else
-        o[row * d2 + pair] = attnPack(a / l, b / l);
+        o[row * d2 + pair] = attnPack(a, b);
 #endif
     }
 }
