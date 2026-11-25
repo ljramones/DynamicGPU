@@ -178,6 +178,10 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **Measuring bandwidth:** warm the GPU up first (its clocks ramp up under load; the first shape measured ran 1.7
   times slow). Rotate through copies of the data larger than the system cache (256 MiB on an M4 Max is enough), or a
   repeated matrix is served from the cache, faster than memory.
+  - **Benchmark inputs:** pooled buffers have undefined contents. Initialize Q, K, V and logits before timing.
+    For a data-dependent filter, measure both tied and varied logits.
+  - **GPU timing:** overlapping per-dispatch timestamps cannot be summed into encode latency. Time the submission.
+    GPU clocks can speed up after calibration. Check the duration of each measured round and repeat short rounds.
   - **Round length:** size each timed round to about 20 ms of GPU work, after an untimed round. Rounds of 1 ms after
     host-side setup ran up to twice slow, and a busy desktop (WindowServer composites on the GPU) makes them noisier.
 - **Read per-tile parameters with the tiles.** A load issued after a step's last barrier, and used at once, leaves

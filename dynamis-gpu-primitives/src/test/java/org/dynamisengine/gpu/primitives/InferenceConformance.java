@@ -349,17 +349,7 @@ abstract class InferenceConformance {
 
     /** GPU microseconds per run of {@code body}: an untimed round, then the best of 4 rounds of about 20 ms. */
     double micros(java.util.function.Consumer<GpuCommandEncoder> body) {
-        java.util.function.IntToDoubleFunction round = reps -> {
-            try (var e = device.encoder()) {
-                for (int i = 0; i < reps; i++) body.accept(e);
-                try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); return sub.gpuTime().orElseThrow().toNanos() / 1e3 / reps; }
-            }
-        };
-        double first = round.applyAsDouble(20);
-        int reps = (int) Math.max(20, Math.min(2000, 20e3 / first));
-        double best = Double.MAX_VALUE;
-        for (int r = 0; r < 4; r++) best = Math.min(best, round.applyAsDouble(reps));
-        return best;
+        return GpuBenchmark.measure(device, body).gpuMicros();
     }
 
     /** -Dinference.benchmark=true: a decode step's kernels at llama-like sizes. */

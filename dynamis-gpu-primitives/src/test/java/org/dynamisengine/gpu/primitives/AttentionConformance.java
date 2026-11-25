@@ -345,16 +345,11 @@ abstract class AttentionConformance {
             for (var s : new Shape[] {Shape.of(32, 512, 512, 128).asCausal(), Shape.of(32, 1024, 1024, 128).asCausal(), Shape.of(32, 2048, 2048, 128).asCausal()}) {
                 try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(Precision.FP16));
                      var gs = buffer(s.scoresBytes()); var gp = buffer(s.probsBytes())) {
-                    double best = Double.MAX_VALUE;
-                    for (int round = 0; round < 4; round++) {
-                        try (var e = device.encoder()) {
-                            for (int i = 0; i < 4; i++) a.encode(e, gq, gk, gv, go, gs, gp, s);
-                            try (var sub = device.queue().submit(e)) {
-                                assertTrue(sub.await(WAIT));
-                                var t = sub.gpuTime(); if (t.isPresent()) best = Math.min(best, t.get().toNanos() / 4e9);
-                            }
-                        }
+                    try (var init = device.encoder()) {
+                        init.fill(gq, 0x3800b800).fill(gk, 0x34003800).fill(gv, 0xbc003c00);
+                        try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
                     }
+                    double best = time(e -> a.encode(e, gq, gk, gv, go, gs, gp, s));
                     double fusedBest = time(e -> a.encode(e, gq, gk, gv, go, s));
                     System.out.printf("attention %s %s heads=%d seq=%d dim=%d causal: %.2f ms, %.0f GFLOP/s (dense-equivalent); fused %.2f ms, %.0f GFLOP/s%n", device.adapter().name(),
                             a.algorithm(), s.heads(), s.queries(), s.headDim(), best * 1e3, s.flops() / best / 1e9, fusedBest * 1e3, s.flops() / fusedBest / 1e9);
@@ -364,6 +359,10 @@ abstract class AttentionConformance {
             for (int keys : new int[] {512, 4096, 32768}) {
                 var s = new Shape(32, 1, keys, 128, (float) (1 / Math.sqrt(128)), true, 8, keys);
                 try (var gq = buffer(s.qBytes()); var gk = buffer(s.kBytes()); var gv = buffer(s.vBytes()); var go = buffer(s.oBytes(Precision.FP16))) {
+                    try (var init = device.encoder()) {
+                        init.fill(gq, 0x3800b800).fill(gk, 0x34003800).fill(gv, 0xbc003c00);
+                        try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+                    }
                     double t = time(e -> a.encode(e, gq, gk, gv, go, s));
                     System.out.printf("attention %s decode heads=32/8 keys=%d dim=128: fused %.1f us, %.0f GB/s of K and V (splits %d)%n", device.adapter().name(),
                             keys, t * 1e6, (s.kBytes() + s.vBytes()) / t / 1e9, AttentionF16.split(s)[0]);
@@ -384,16 +383,6 @@ abstract class AttentionConformance {
 
     /** Seconds per run of {@code body}: an untimed round, then the best of 4 rounds of at least 20 ms. */
     double time(java.util.function.Consumer<GpuCommandEncoder> body) {
-        java.util.function.IntToDoubleFunction round = reps -> {
-            try (var e = device.encoder()) {
-                for (int i = 0; i < reps; i++) body.accept(e);
-                try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); return sub.gpuTime().orElseThrow().toNanos() / 1e9 / reps; }
-            }
-        };
-        double first = round.applyAsDouble(1);
-        int reps = (int) Math.max(1, Math.min(2000, 0.02 / first));
-        double best = Double.MAX_VALUE;
-        for (int i = 0; i < 4; i++) best = Math.min(best, round.applyAsDouble(reps));
-        return best;
+        return GpuBenchmark.measure(device, body).gpuMicros() / 1e6;
     }
 }
