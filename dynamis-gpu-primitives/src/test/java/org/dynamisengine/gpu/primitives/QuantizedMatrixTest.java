@@ -30,8 +30,8 @@ class QuantizedMatrixTest {
     /** Every format and block size: dequantized values are within the format's bound and the largest maps exactly. */
     @Test void roundTripsWithinTheBound() {
         var r = new SplittableRandom(3);
-        for (var format : Format.values()) {
-            for (int block : new int[] {32, 64}) {
+        for (var format : new Format[] {Format.Q8, Format.Q4, Format.Q4M}) {
+            for (int block : new int[] {32, 64, 128}) {
                 var m = new QuantizedMatrix(format, block, 7, 4 * block);
                 for (double range : new double[] {1, 1e-3, 3e4}) {
                     float[] x = random(7 * 4 * block, r, range);
@@ -55,6 +55,51 @@ class QuantizedMatrixTest {
         }
     }
 
+    /**
+     * The K formats' simple encoder: every value within half a sub-block step, plus what rounding the sub-block's
+     * scale and minimum to integer multiples of d and dmin costs at the clamp; the codes survive a round trip.
+     */
+    @Test void kFormatsRoundTripWithinTheirBound() {
+        var r = new SplittableRandom(5);
+        for (var format : new Format[] {Format.Q4K, Format.Q5K, Format.Q6K}) {
+            var m = new QuantizedMatrix(format, 256, 5, 512);
+            for (double range : new double[] {1, 1e-3, 100}) {
+                float[] x = random(5 * 512, r, range);
+                for (int i = 0; i < x.length; i += 97) x[i] = Math.abs(x[i]);   // sub-blocks of mixed sign and not
+                byte[] packed = m.quantize(x);
+                float[] y = m.dequantize(packed);
+                int qmax = format == Format.Q4K ? 15 : format == Format.Q5K ? 31 : 32;
+                for (int row = 0; row < 5; row++) {
+                    for (int col = 0; col < 512; col++) {
+                        int at = row * 512 + col;
+                        float[] dm = m.subBlockScale(packed, row, col);
+                        int sb = (int) (m.parameterOffset() + ((long) row * 2 + col / 256) * (format == Format.Q6K ? 20 : 16));
+                        float d = Math.abs(Float.float16ToFloat((short) ((packed[sb] & 0xFF) | (packed[sb + 1] << 8))));
+                        float dmin = format == Format.Q6K ? 0 : Math.abs(Float.float16ToFloat((short) ((packed[sb + 2] & 0xFF) | (packed[sb + 3] << 8))));
+                        // Q6K, like Q4: the extreme maps to -32, so its opposite may clamp from 32 to 31, one step
+                        double bound = Math.abs(dm[0]) / 2 + (format == Format.Q6K ? Math.abs(dm[0]) : 0) + qmax * d / 2 * 1.01 + dmin / 2
+                                + Math.abs(x[at]) * 0x1p-10 + 0x1p-24;
+                        assertTrue(Math.abs(x[at] - y[at]) <= bound, format + " x=" + x[at] + " y=" + y[at] + " D=" + dm[0] + " d=" + d);
+                        assertEquals(m.code(packed, row, col), new QuantizedMatrix(format, 256, 5, 512).code(packed, row, col));
+                    }
+                }
+                var back = GgufBlocks.fromGgml(GgufBlocks.Type.of(m), GgufBlocks.toGgml(m, packed), 0, 5, 512);
+                assertArrayEquals(packed, back.bytes(), format + ": through GGML and back");
+            }
+        }
+    }
+
+    @Test void kLayout() {
+        var q5 = new QuantizedMatrix(Format.Q5K, 256, 3, 512);
+        assertEquals(768, q5.codeBytes()); assertEquals(768, q5.highOffset()); assertEquals(192, q5.highBytes());
+        assertEquals(960, q5.parameterOffset()); assertEquals(16 * 6, q5.parameterBytes()); assertEquals(1056, q5.bytes());
+        var q6 = new QuantizedMatrix(Format.Q6K, 256, 1, 256);
+        assertEquals(128 + 64 + 20, q6.bytes(), "the same bytes as llama.cpp's 210, padded");
+        assertThrows(IllegalArgumentException.class, () -> new QuantizedMatrix(Format.Q4K, 128, 1, 256));
+        assertThrows(IllegalArgumentException.class, () -> new QuantizedMatrix(Format.Q4, 256, 1, 256));
+        assertEquals(64 + 4, new QuantizedMatrix(Format.Q4, 128, 1, 128).bytes(), "block 128: 64 code bytes, one d, padded to a word");
+    }
+
     @Test void codesAreNearestWithTiesToEven() {
         assertEquals(2, QuantizedMatrix.nearest(2.5f, 1f));
         assertEquals(4, QuantizedMatrix.nearest(3.5f, 1f));
@@ -73,7 +118,7 @@ class QuantizedMatrixTest {
     @Test void extremesMapToTheEndCodes() {
         float[] x = new float[32];
         for (int i = 0; i < 32; i++) x[i] = i - 10f;   // -10 .. 21
-        for (var format : Format.values()) {
+        for (var format : new Format[] {Format.Q8, Format.Q4, Format.Q4M}) {
             var m = new QuantizedMatrix(format, 32, 1, 32);
             byte[] p = m.quantize(x);
             switch (format) {
@@ -94,7 +139,7 @@ class QuantizedMatrixTest {
                 for (var out : Precision.values()) {
                     String k = QuantizedGemm.kernel(alg, in, out);
                     assertEquals(java.util.List.of("a", "b", "c", "epBias", "epGate", "epResidual"), GemmF16.KERNELS.buffers(k), k);
-                    assertEquals(68 + 4, GemmF16.KERNELS.parameterBytes(k), k);
+                    assertEquals(68 + 8, GemmF16.KERNELS.parameterBytes(k), k);   // qparams, qhigh
                     var names = GemmF16.KERNELS.constants(k).keySet();
                     assertTrue(names.containsAll(alg == QuantizedGemm.Algorithm.SKINNY ? java.util.List.of("QFORMAT", "QBLOCK", "QROWS")
                             : java.util.List.of("QFORMAT", "QBLOCK")), k + " " + names);

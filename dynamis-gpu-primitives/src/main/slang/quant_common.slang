@@ -3,13 +3,16 @@
 // correctly rounded multiply, and codes found by exact comparisons with the midpoints (2c + 1) d / 2.
 //
 // Formats: 0 Q8 (x = q d, q in [-127, 127]), 1 Q4 (x = q d, q in [-8, 7], stored q + 8), 2 Q4M (x = fl(q d + m),
-// q in [0, 15]). Codes are row-major, Q8 one byte each, Q4 and Q4M a nibble each (element 2t low); the block
+// q in [0, 15]); and the K formats (1.9.1) 3 Q4K, 4 Q5K, 5 Q6K, whose reads are in quant_read.slang. Codes are row-major, Q8 one byte each, Q4 and Q4M a nibble each (element 2t low); the block
 // parameters are FP16, one d per block (Q8, Q4) or a pair d, m (Q4M), from parameter word p.qparams.
 #pragma once
 
 static const uint QF_Q8 = 0;
 static const uint QF_Q4 = 1;
 static const uint QF_Q4M = 2;
+static const uint QF_Q4K = 3;   // 1.9.1: K formats, super-blocks of 256 (quant_read.slang)
+static const uint QF_Q5K = 4;
+static const uint QF_Q6K = 5;
 
 float qInv127() { return asfloat(0x3c010204u); }   // Java's 1f / 127f
 float qInv15() { return asfloat(0x3d888889u); }    // Java's 1f / 15f

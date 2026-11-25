@@ -25,6 +25,7 @@ struct GemmParams
     uint residual;  // r + residual
 #ifdef QUANT
     uint qparams;   // the first word of the block parameters in the packed B (format and block: constants)
+    uint qhigh;     // the first word of Q5K's and Q6K's high bits
 #endif
 #ifdef GROUPED
     uint count;     // problems

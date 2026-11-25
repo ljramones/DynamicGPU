@@ -11,9 +11,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Block quantization on the GPU (1.9.0): FP32 values to a {@link QuantizedMatrix} ({@link #pack}) and back
- * ({@link #unpack}), bit for bit as {@link QuantizedMatrix#quantize} and {@link QuantizedMatrix#dequantize} on every
- * device. Use it to quantize weights that are already on the GPU, at model load, or to check a packed matrix.
+ * Block quantization on the GPU (1.9.0): FP32 values to a {@link QuantizedMatrix} ({@link #pack}; Q8, Q4 and Q4M) and
+ * back ({@link #unpack}; every format, the K formats since 1.9.1), bit for bit as {@link QuantizedMatrix#quantize} and
+ * {@link QuantizedMatrix#dequantize} on every device. Use it to quantize weights that are already on the GPU, at model load, or to check a packed matrix.
  * <p>
  * The values must be finite and each block's scale must fit FP16: a block that breaks that is written as zeros and
  * fails the submission with {@link ComputeException.Code#KERNEL_ERROR}. Devices that flush FP32 subnormals (Apple
@@ -43,6 +43,8 @@ public final class Quantize implements AutoCloseable {
      */
     public GpuCommandEncoder pack(GpuCommandEncoder encoder, GpuBuffer values, QuantizedMatrix m, GpuBuffer packed) {
         Checks.notNull(m, "matrix");
+        if (m.format().kQuant())
+            throw new IllegalArgumentException("there is no GPU encoder for " + m.format() + ": use QuantizedMatrix.quantize or import llama.cpp's blocks (GgufBlocks)");
         Checks.range(values, 0, (long) m.rows() * m.cols(), 4, "values");
         Checks.range(packed, 0, m.bytes() / 4, 4, "packed");
         long blocks = (long) m.rows() * m.blocksPerRow();
@@ -65,7 +67,8 @@ public final class Quantize implements AutoCloseable {
         Checks.range(values, 0, count, 4, "values");
         var grid = Grid.forThreads(device.capabilities(), count, 256);
         byte[] params = unpackLayout.block().u32("rows", m.rows()).u32("cols", m.cols()).u32("format", m.format().ordinal())
-                .u32("block", m.block()).u32("count", count).u32("qparams", m.parameterOffset() / 4).u32("gridX", grid.gridX()).bytes();
+                .u32("block", m.block()).u32("count", count).u32("qparams", m.parameterOffset() / 4).u32("gridX", grid.gridX())
+                .u32("qhigh", m.highOffset() / 4).bytes();
         return encoder.dispatch(pipelines.get(1), Map.of(0, packed, 1, values), params, grid.groups(), "quantize.unpack");
     }
 

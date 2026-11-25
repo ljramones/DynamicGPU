@@ -3,9 +3,10 @@
 // gemm_q_skinny[_bf16][_h].slang; specialized per format, block size and rows (QROWS: 1, 4 or 16, the most rows of A
 // it computes, so a decode step holds one row of accumulators, not sixteen).
 //
-// The order is fixed (QuantizedGemm.reference with SKINNY): the blocks of a row of W are dealt to 32 lanes (block bl
-// to lane bl % 32); each lane takes its blocks in order, each block's s = sum a q in order of k, and adds
-// fl(d s) [+ fl(m sum a)] to its total; then the lanes combine in a fixed tree (lane t takes lane t + w, w = 16 .. 1).
+// The order is fixed (QuantizedGemm.reference with SKINNY): the units of a row of W (blocks; 32 elements of a K
+// format) are dealt to 32 lanes (unit u to lane u % 32); each lane takes its units in order, each unit's s = sum a q in
+// order of k, and adds its term (gemm_q_common.slang) to its total; then the lanes combine in a fixed tree (lane t
+// takes lane t + w, w = 16 .. 1).
 // A group of 256 threads computes 16 columns: 8 sets of 32 lanes, each thread 2 columns, so one read of A serves both.
 #include "gemm_q_common.slang"
 
@@ -35,24 +36,22 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 
     if (col0 < p.n)
     {
-        uint blocks = p.k / QBLOCK;
+        uint units = p.k / QUNIT;
         uint rows[CPT];
         [ForceUnroll] for (uint cc = 0; cc < CPT; cc++) rows[cc] = min(col0 + cc, p.n - 1);
-        for (uint bl = lane; bl < blocks; bl += LANES)
+        for (uint bl = lane; bl < units; bl += LANES)
         {
-            float d[CPT], mn[CPT];
+            float2 sc[CPT];
             [ForceUnroll]
-            for (uint cc = 0; cc < CPT; cc++)
-            {
-                d[cc] = blockParameter(rows[cc], bl, 0);
-                mn[cc] = QFORMAT == QF_Q4M ? blockParameter(rows[cc], bl, 1) : 0.0f;
-            }
-            float s[MAXM][CPT], sumA[MAXM];
+            for (uint cc = 0; cc < CPT; cc++) sc[cc] = unitScale(rows[cc], bl);
+            // s over the unit (Q6K: its first 16 elements, s2 the second 16)
+            float s[MAXM][CPT], s2[MAXM][CPT], sumA[MAXM];
             [ForceUnroll]
-            for (uint i = 0; i < MAXM; i++) { sumA[i] = 0.0f; [ForceUnroll] for (uint cc = 0; cc < CPT; cc++) s[i][cc] = 0.0f; }
-            for (uint c8 = 0; c8 < QBLOCK; c8 += 8)
+            for (uint i = 0; i < MAXM; i++) { sumA[i] = 0.0f; [ForceUnroll] for (uint cc = 0; cc < CPT; cc++) { s[i][cc] = 0.0f; s2[i][cc] = 0.0f; } }
+            for (uint c8 = 0; c8 < QUNIT; c8 += 8)
             {
-                uint q0 = bl * QBLOCK + c8;
+                uint q0 = bl * QUNIT + c8;
+                bool second = QFORMAT == QF_Q6K && c8 >= 16;
                 // this run's codes for both columns, decoded once for every row of A
                 float q[CPT][8];
                 [ForceUnroll]
@@ -66,10 +65,13 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
                     [ForceUnroll]
                     for (uint t = 0; t < 8; t++)
                     {
-                        if (QFORMAT == QF_Q4M) sumA[i] = sumA[i] + av[t];
+                        if (QMIN) sumA[i] = sumA[i] + av[t];
                         [ForceUnroll]
                         for (uint cc = 0; cc < CPT; cc++)
-                            s[i][cc] = fma(av[t], q[cc][t], s[i][cc]);
+                        {
+                            if (second) s2[i][cc] = fma(av[t], q[cc][t], s2[i][cc]);
+                            else s[i][cc] = fma(av[t], q[cc][t], s[i][cc]);
+                        }
                     }
                 }
             }
@@ -77,7 +79,8 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
             for (uint i = 0; i < MAXM; i++)
             {
                 if (i >= m) break;
-                [ForceUnroll] for (uint cc = 0; cc < CPT; cc++) acc[i][cc] = acc[i][cc] + blockTerm(s[i][cc], sumA[i], d[cc], mn[cc]);
+                [ForceUnroll]
+                for (uint cc = 0; cc < CPT; cc++) acc[i][cc] = addTerms(acc[i][cc], s[i][cc], s2[i][cc], sumA[i], sc[cc]);
             }
         }
     }
