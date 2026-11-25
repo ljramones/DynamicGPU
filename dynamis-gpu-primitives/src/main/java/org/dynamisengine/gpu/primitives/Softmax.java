@@ -19,6 +19,11 @@ import java.util.Set;
  * sees keys {@code 0 .. r + causalOffset}. With a cache of {@code n} keys and {@code m} new queries the offset is
  * {@code n - m}. A row with every column masked is all zeros.
  * <p>
+ * <b>Valid lengths</b> (1.14.0, a padding mask): {@link #encode(GpuCommandEncoder, GpuBuffer, GpuBuffer, Shape, GpuBuffer, int)}
+ * also masks the columns of matrix {@code z} at or past {@code lengths[z / lengthGroup]} (uint32 in a GPU buffer; for
+ * attention scores batched as {@code sequences x heads}, lengthGroup is the head count). Since 1.14.0 a row whose
+ * unmasked scores are all -infinity (an additive mask) is all zeros too, not NaN, and its gradient is 0.
+ * <p>
  * <b>Accuracy.</b> The max and the sum are combined in a fixed order, so a device's result does not depend on
  * scheduling. {@code exp} is the device's own (within Vulkan's {@code 3 + 2|x|} ulp; Metal compiles with precise
  * functions), so results are bounded, not bit-identical across devices. For each unmasked element, with
@@ -73,6 +78,7 @@ public final class Softmax implements AutoCloseable {
     private final Precision output;
     private final ParameterLayout layout;
     private GpuComputePipeline backward;
+    private PipelineSet placeholders;
 
     private Softmax(GpuDevice device, GpuComputePipeline pipeline, Precision output) {
         this.device = device; this.pipeline = pipeline; this.output = output;
@@ -82,7 +88,8 @@ public final class Softmax implements AutoCloseable {
     /** Compiles the kernel writing {@code output}; FP16 output needs {@link GpuCapabilities#FP16}. */
     public static Softmax create(GpuDevice device, Precision output) {
         Set<String> types = output == Precision.FP16 ? Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16) : Set.of(GpuCapabilities.FP32);
-        return new Softmax(device, device.pipeline(KERNELS.pipeline(kernel(output), List.of(Access.READ, Access.READ_WRITE), types, Set.of())), output);
+        return new Softmax(device, device.pipeline(KERNELS.pipeline(kernel(output), List.of(Access.READ, Access.READ_WRITE, Access.READ), types, Set.of())),
+                output);
     }
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "softmax_f32" : "softmax_f16"; }
@@ -104,12 +111,31 @@ public final class Softmax implements AutoCloseable {
 
     /** Records the softmax of {@code scores} into {@code out}. */
     public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer scores, GpuBuffer out, Shape s) {
+        return encode(encoder, scores, out, s, null, 1);
+    }
+
+    /**
+     * Records the softmax of {@code scores} into {@code out} with valid lengths (1.14.0): matrix z also masks the
+     * columns at or past {@code lengths[z / lengthGroup]} (uint32). {@code lengths} may be null for none.
+     */
+    public GpuCommandEncoder encode(GpuCommandEncoder encoder, GpuBuffer scores, GpuBuffer out, Shape s, GpuBuffer lengths, int lengthGroup) {
         Checks.range(scores, 0, s.sElements(), 4, "scores"); Checks.range(out, 0, s.yElements(), output.bytes(), "output");
         if ((long) s.m() + s.causalOffset() + 1 > MAX_INDEX) throw new IllegalArgumentException("causalOffset too large");
+        GpuBuffer lens = lengths(lengths, lengthGroup, s);
         byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("lds", s.lds()).u32("ldy", s.ldy())
                 .bool("causal", s.causal()).u32("causalOffset", s.causalOffset()).u32("strideS", s.strideS())
-                .u32("strideY", s.strideY()).bytes();
-        return encoder.dispatch(pipeline, Map.of(0, scores, 1, out), params, new Dimensions(s.m(), 1, s.batch()), "softmax");
+                .u32("strideY", s.strideY()).bool("lengths", lengths != null).u32("lengthGroup", lengthGroup).bytes();
+        return encoder.dispatch(pipeline, Map.of(0, scores, 1, out, 2, lens), params, new Dimensions(s.m(), 1, s.batch()), "softmax");
+    }
+
+    private GpuBuffer lengths(GpuBuffer lengths, int lengthGroup, Shape s) {
+        if (lengthGroup < 1) throw new IllegalArgumentException("lengthGroup must be positive: " + lengthGroup);
+        if (lengths != null) {
+            Checks.range(lengths, 0, Math.ceilDiv(s.batch(), lengthGroup), 4, "lengths");
+            return lengths;
+        }
+        if (placeholders == null) placeholders = PipelineSet.compile(device, List.of());
+        return placeholders.placeholder();
     }
 
     /**
@@ -119,18 +145,24 @@ public final class Softmax implements AutoCloseable {
      * ({@code lds}, {@code strideS}). Bounded ({@link #backwardContract}).
      */
     public GpuCommandEncoder backward(GpuCommandEncoder encoder, GpuBuffer y, GpuBuffer dy, GpuBuffer dx, Shape s) {
+        return backward(encoder, y, dy, dx, s, null, 1);
+    }
+
+    /** The backward pass with the forward pass's valid lengths (1.14.0); {@code lengths} may be null for none. */
+    public GpuCommandEncoder backward(GpuCommandEncoder encoder, GpuBuffer y, GpuBuffer dy, GpuBuffer dx, Shape s, GpuBuffer lengths, int lengthGroup) {
         Checks.range(y, 0, s.yElements(), output.bytes(), "y"); Checks.range(dy, 0, s.yElements(), 4, "dy");
         Checks.range(dx, 0, s.sElements(), 4, "dx");
         if ((long) s.m() + s.causalOffset() + 1 > MAX_INDEX) throw new IllegalArgumentException("causalOffset too large");
         if (backward == null) {
             Set<String> types = output == Precision.FP16 ? Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16) : Set.of(GpuCapabilities.FP32);
             String name = output == Precision.FP32 ? "softmax_backward_f32" : "softmax_backward_f16";
-            backward = device.pipeline(KERNELS.pipeline(name, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of()));
+            backward = device.pipeline(KERNELS.pipeline(name, List.of(Access.READ, Access.READ, Access.WRITE, Access.READ), types, Set.of()));
         }
+        GpuBuffer lens = lengths(lengths, lengthGroup, s);
         byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("lds", s.lds()).u32("ldy", s.ldy())
                 .bool("causal", s.causal()).u32("causalOffset", s.causalOffset()).u32("strideS", s.strideS())
-                .u32("strideY", s.strideY()).bytes();
-        return encoder.dispatch(backward, Map.of(0, y, 1, dy, 2, dx), params, new Dimensions(s.m(), 1, s.batch()), "softmax.backward");
+                .u32("strideY", s.strideY()).bool("lengths", lengths != null).u32("lengthGroup", lengthGroup).bytes();
+        return encoder.dispatch(backward, Map.of(0, y, 1, dy, 2, dx, 3, lens), params, new Dimensions(s.m(), 1, s.batch()), "softmax.backward");
     }
 
     /** The backward pass's contract: bounded by its fixed-order sum and three roundings. @since 1.12.0 */
@@ -152,5 +184,5 @@ public final class Softmax implements AutoCloseable {
     /** The device this softmax runs on. */
     public GpuDevice device() { return device; }
 
-    @Override public void close() { PipelineSet.closeAll(pipeline, backward); }
+    @Override public void close() { PipelineSet.closeAll(pipeline, backward, placeholders); }
 }

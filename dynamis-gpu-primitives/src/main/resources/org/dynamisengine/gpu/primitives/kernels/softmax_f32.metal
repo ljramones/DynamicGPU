@@ -14,11 +14,14 @@ struct SoftmaxParams_0
     uint causalOffset_0;
     uint strideS_0;
     uint strideY_0;
+    uint lengths_0;
+    uint lengthGroup_0;
 };
 
 struct KernelContext_0
 {
     SoftmaxParams_0 constant* p_0;
+    uint device* lens_0;
     float device* s_0;
     float device* y_0;
     array<float, int(256)> threadgroup* red_0;
@@ -153,10 +156,11 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
     return;
 }
 
-[[kernel]] void softmax_f32(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], SoftmaxParams_0 constant* p_1 [[buffer(2)]], float device* s_1 [[buffer(0)]], float device* y_1 [[buffer(1)]])
+[[kernel]] void softmax_f32(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], SoftmaxParams_0 constant* p_1 [[buffer(3)]], uint device* lens_1 [[buffer(2)]], float device* s_1 [[buffer(0)]], float device* y_1 [[buffer(1)]])
 {
     thread KernelContext_0 kernelContext_1;
     (&kernelContext_1)->p_0 = p_1;
+    (&kernelContext_1)->lens_0 = lens_1;
     (&kernelContext_1)->s_0 = s_1;
     (&kernelContext_1)->y_0 = y_1;
     threadgroup array<float, int(256)> red_1;
@@ -170,21 +174,26 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
     uint _S2 = group_0.z;
     uint _S3 = _S2 * p_1->strideS_0 + r_0 * p_1->lds_0;
     uint _S4 = _S2 * p_1->strideY_0 + r_0 * p_1->ldy_0;
-    uint _S5;
+    uint limit_0;
     if((p_1->causal_0) != 0U)
     {
-        _S5 = min((&kernelContext_1)->p_0->n_0, r_0 + (&kernelContext_1)->p_0->causalOffset_0 + 1U);
+        limit_0 = min((&kernelContext_1)->p_0->n_0, r_0 + (&kernelContext_1)->p_0->causalOffset_0 + 1U);
     }
     else
     {
-        _S5 = (&kernelContext_1)->p_0->n_0;
+        limit_0 = (&kernelContext_1)->p_0->n_0;
+    }
+    if(((&kernelContext_1)->p_0->lengths_0) != 0U)
+    {
+        uint _S5 = _S2 / (&kernelContext_1)->p_0->lengthGroup_0;
+        limit_0 = min(limit_0, *((&kernelContext_1)->lens_0+_S5));
     }
     float _S6 = (as_type<float>((4286578688U)));
     uint j_0 = t_1;
     float local_1 = _S6;
     for(;;)
     {
-        if(j_0 < _S5)
+        if(j_0 < limit_0)
         {
         }
         else
@@ -203,19 +212,19 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
         *(&kernelContext_1)->rowMax_0 = (*(&kernelContext_1)->red_0)[int(0)];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float _S9 = *(&kernelContext_1)->rowMax_0;
+    float mx_0 = *(&kernelContext_1)->rowMax_0;
     j_0 = t_1;
     local_1 = 0.0;
     for(;;)
     {
-        if(j_0 < _S5)
+        if(j_0 < limit_0)
         {
         }
         else
         {
             break;
         }
-        float local_2 = local_1 + exp(*((&kernelContext_1)->s_0+(_S3 + j_0)) - _S9);
+        float local_2 = local_1 + exp(*((&kernelContext_1)->s_0+(_S3 + j_0)) - mx_0);
         j_0 = j_0 + 256U;
         local_1 = local_2;
     }
@@ -226,9 +235,9 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
         *(&kernelContext_1)->rowSum_0 = (*(&kernelContext_1)->red_0)[int(0)];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float threadgroup* _S10 = (&kernelContext_1)->rowSum_0;
-    float sum_0 = *_S10;
-    if((*_S10) > 0.0)
+    float threadgroup* _S9 = (&kernelContext_1)->rowSum_0;
+    float sum_0 = *_S9;
+    if((*_S9) > 0.0)
     {
         local_1 = 1.0 / sum_0;
     }
@@ -236,6 +245,7 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
     {
         local_1 = 0.0;
     }
+    bool _S10 = (as_type<uint>((mx_0))) == 4286578688U;
     j_0 = t_1;
     for(;;)
     {
@@ -247,16 +257,25 @@ void reduce_0(uint t_0, bool isMax_0, KernelContext_0 thread* kernelContext_0)
             break;
         }
         float device* _S11 = (&kernelContext_1)->y_0+(_S4 + j_0);
-        float _S12;
-        if(j_0 < _S5)
+        bool _S12;
+        if(j_0 < limit_0)
         {
-            _S12 = exp(*((&kernelContext_1)->s_0+(_S3 + j_0)) - _S9) * local_1;
+            _S12 = !_S10;
         }
         else
         {
-            _S12 = 0.0;
+            _S12 = false;
         }
-        *_S11 = _S12;
+        float _S13;
+        if(_S12)
+        {
+            _S13 = exp(*((&kernelContext_1)->s_0+(_S3 + j_0)) - mx_0) * local_1;
+        }
+        else
+        {
+            _S13 = 0.0;
+        }
+        *_S11 = _S13;
         j_0 = j_0 + 256U;
     }
     return;

@@ -474,4 +474,61 @@ abstract class TensorOpsConformance {
             }
         }
     }
+
+    @Test void softmaxValidLengthsMaskForwardAndBackward() {
+        // 6 matrices of 5 x 300 (3 sequences x 2 heads), causal at offset 295, valid lengths {300, 120, 0}; row 2 of
+        // matrix 0 has every score -infinity (an additive mask): it and every row of sequence 2 must be zeros
+        int m = 5, n = 300, batch = 6, group = 2;
+        int[] lens = {300, 120, 0};
+        var rng = new SplittableRandom(71);
+        float[] sc = new float[batch * m * n], dy = new float[batch * m * n];
+        for (int i = 0; i < sc.length; i++) { sc[i] = (float) ((rng.nextDouble() * 2 - 1) * 8); dy[i] = (float) (rng.nextDouble() * 2 - 1); }
+        for (int j = 0; j < n; j++) sc[2 * n + j] = Float.NEGATIVE_INFINITY;
+        var shape = Softmax.Shape.of(m, n).batched(batch).causal(n - m);
+        try (var sm = Softmax.create(device, Precision.FP32); var gs = buffer(4L * sc.length); var gy = buffer(4L * sc.length);
+                var gd = buffer(4L * sc.length); var gx = buffer(4L * sc.length); var gl = buffer(4L * lens.length)) {
+            int[][] got = new int[2][];
+            try (var e = device.encoder()) {
+                e.upload(gs, words(bits(sc))).upload(gd, words(bits(dy))).upload(gl, words(lens));
+                sm.encode(e, gs, gy, shape, gl, group);
+                sm.backward(e, gy, gd, gx, shape, gl, group);
+                var ry = e.download(gy); var rx = e.download(gx);
+                try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                got[0] = words(ry.bytes()); got[1] = words(rx.bytes());
+            }
+            float[] y = floats(got[0]), dx = floats(got[1]);
+            for (int z = 0; z < batch; z++) {
+                for (int r = 0; r < m; r++) {
+                    int row = (z * m + r) * n;
+                    int limit = Math.min(Math.min(n, r + (n - m) + 1), lens[z / group]);
+                    boolean none = limit == 0 || z == 0 && r == 2;
+                    double mx = Double.NEGATIVE_INFINITY, sum = 0;
+                    for (int j = 0; j < limit; j++) mx = Math.max(mx, sc[row + j]);
+                    for (int j = 0; j < limit; j++) sum += Math.exp(sc[row + j] - mx);
+                    for (int j = 0; j < n; j++) {
+                        String where = "matrix " + z + " row " + r + " column " + j;
+                        if (none || j >= limit) {
+                            assertEquals(0, got[0][row + j], "masked y is +0 at " + where);
+                            // y = 0 there, so dx = y (dy - sum) is a zero, of either sign where the mask was additive (-infinity scores)
+                            if (j >= limit) assertEquals(0, got[1][row + j], "masked dx is +0 at " + where);
+                            else assertEquals(0, got[1][row + j] & 0x7FFFFFFF, "dx is 0 at " + where);
+                            continue;
+                        }
+                        double exact = Math.exp(sc[row + j] - mx) / sum;
+                        double bound = (n + 10 + 2 * Math.abs(sc[row + j] - mx) + 2 * 16) * 0x1p-24 * exact + 0x1p-126;
+                        assertTrue(Math.abs(y[row + j] - exact) <= bound, "y at " + where + ": " + y[row + j] + ", exact " + exact);
+                    }
+                    if (none) continue;
+                    double[] want = Softmax.backwardExact(y, row, dy, row, n, limit);
+                    double sdy = 0, sabs = 0;
+                    for (int j = 0; j < limit; j++) { sdy += (double) dy[row + j] * y[row + j]; sabs += Math.abs((double) dy[row + j] * y[row + j]); }
+                    int k = (int) Math.ceil(n / 256.0) + 9;
+                    for (int j = 0; j < limit; j++) {
+                        double bound = Math.abs(y[row + j]) * (k * 0x1p-24 * sabs + 0x1p-24 * Math.abs(dy[row + j] - sdy)) + 0x1p-24 * Math.abs(want[j]) + 0x1p-126;
+                        assertTrue(Math.abs(dx[row + j] - want[j]) <= bound, "dx at matrix " + z + " row " + r + " column " + j);
+                    }
+                }
+            }
+        }
+    }
 }

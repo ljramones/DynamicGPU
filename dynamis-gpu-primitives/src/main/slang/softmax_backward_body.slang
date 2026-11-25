@@ -16,11 +16,14 @@ struct SoftmaxParams
     uint causalOffset;
     uint strideS;
     uint strideY;
+    uint lengths;       // 1.14.0: valid lengths, as the forward pass
+    uint lengthGroup;
 };
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<IN_T> y;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> dy;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> dx;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> lens;
 [[vk::push_constant]] ConstantBuffer<SoftmaxParams> p;
 
 static const uint THREADS = 256;
@@ -34,6 +37,7 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
     uint t = local.x, r = group.x;
     uint rowX = group.z * p.strideS + r * p.lds, rowY = group.z * p.strideY + r * p.ldy;
     uint limit = p.causal != 0 ? min(p.n, r + p.causalOffset + 1) : p.n;
+    if (p.lengths != 0) limit = min(limit, lens[group.z / p.lengthGroup]);
 
     float acc = 0.0f;
     for (uint j = t; j < limit; j += THREADS) acc = acc + dy[rowY + j] * float(y[rowY + j]);

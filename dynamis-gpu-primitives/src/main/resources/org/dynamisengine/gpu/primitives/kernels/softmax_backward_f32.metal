@@ -14,11 +14,14 @@ struct SoftmaxParams_0
     uint causalOffset_0;
     uint strideS_0;
     uint strideY_0;
+    uint lengths_0;
+    uint lengthGroup_0;
 };
 
 struct KernelContext_0
 {
     SoftmaxParams_0 constant* p_0;
+    uint device* lens_0;
     float device* dy_0;
     float device* y_0;
     float device* dx_0;
@@ -26,10 +29,11 @@ struct KernelContext_0
     float threadgroup* rowSum_0;
 };
 
-[[kernel]] void softmax_backward_f32(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], SoftmaxParams_0 constant* p_1 [[buffer(3)]], float device* dy_1 [[buffer(1)]], float device* y_1 [[buffer(0)]], float device* dx_1 [[buffer(2)]])
+[[kernel]] void softmax_backward_f32(uint3 group_0 [[threadgroup_position_in_grid]], uint3 local_0 [[thread_position_in_threadgroup]], SoftmaxParams_0 constant* p_1 [[buffer(4)]], uint device* lens_1 [[buffer(3)]], float device* dy_1 [[buffer(1)]], float device* y_1 [[buffer(0)]], float device* dx_1 [[buffer(2)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->p_0 = p_1;
+    (&kernelContext_0)->lens_0 = lens_1;
     (&kernelContext_0)->dy_0 = dy_1;
     (&kernelContext_0)->y_0 = y_1;
     (&kernelContext_0)->dx_0 = dx_1;
@@ -42,20 +46,25 @@ struct KernelContext_0
     uint _S1 = group_0.z;
     uint _S2 = _S1 * p_1->strideS_0 + r_0 * p_1->lds_0;
     uint _S3 = _S1 * p_1->strideY_0 + r_0 * p_1->ldy_0;
-    uint _S4;
+    uint limit_0;
     if((p_1->causal_0) != 0U)
     {
-        _S4 = min((&kernelContext_0)->p_0->n_0, r_0 + (&kernelContext_0)->p_0->causalOffset_0 + 1U);
+        limit_0 = min((&kernelContext_0)->p_0->n_0, r_0 + (&kernelContext_0)->p_0->causalOffset_0 + 1U);
     }
     else
     {
-        _S4 = (&kernelContext_0)->p_0->n_0;
+        limit_0 = (&kernelContext_0)->p_0->n_0;
+    }
+    if(((&kernelContext_0)->p_0->lengths_0) != 0U)
+    {
+        uint _S4 = _S1 / (&kernelContext_0)->p_0->lengthGroup_0;
+        limit_0 = min(limit_0, *((&kernelContext_0)->lens_0+_S4));
     }
     uint j_0 = t_0;
     float acc_0 = 0.0;
     for(;;)
     {
-        if(j_0 < _S4)
+        if(j_0 < limit_0)
         {
         }
         else
@@ -126,7 +135,7 @@ struct KernelContext_0
             break;
         }
         float device* _S8 = (&kernelContext_0)->dx_0+(_S2 + j_0);
-        if(j_0 < _S4)
+        if(j_0 < limit_0)
         {
             uint _S9 = _S3 + j_0;
             acc_0 = *((&kernelContext_0)->y_0+_S9) * (*((&kernelContext_0)->dy_0+_S9) - _S7);
