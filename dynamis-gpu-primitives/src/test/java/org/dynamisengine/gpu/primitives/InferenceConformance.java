@@ -340,6 +340,66 @@ abstract class InferenceConformance {
 
     // --- activations and log-sum-exp -------------------------------------------------------------------------------
 
+    /**
+     * The activations' backward passes (1.12.0) against their derivatives in double, within bounds carried through
+     * each step of the kernels' arithmetic (absolute: the derivatives cross zero).
+     */
+    @Test void activationGradientsWithinTheirBound() {
+        var r = new SplittableRandom(55);
+        int n = 20000;
+        float[] x = values(n, r, 12, Precision.FP32), dy = values(n, r, 3, Precision.FP32);
+        x[0] = -1.2784645f; x[1] = -0.7517916f; x[2] = 0f; x[3] = -0f; x[4] = 40f; x[5] = -40f; x[6] = Float.MIN_NORMAL;
+        final double E = 0x1p-24;
+        try (var ew = Elementwise.create(device); var gx = buffer(4L * n); var gd = buffer(4L * n); var gy = buffer(4L * n)) {
+            var v = StridedView.contiguous(n);
+            for (var op : new Elementwise.Binary[] {Elementwise.Binary.SILU_BACKWARD, Elementwise.Binary.GELU_BACKWARD, Elementwise.Binary.RELU_BACKWARD}) {
+                float[] y = decode(run(e -> {
+                    e.upload(gx, encode(x, Precision.FP32)).upload(gd, encode(dy, Precision.FP32));
+                    ew.binary(e, op, gx, v, gd, v, gy, v);
+                    return e.download(gy);
+                }), Precision.FP32, n);
+                double worst = 0;
+                for (int i = 0; i < n; i++) {
+                    double a = x[i], g = dy[i], exact, bound;
+                    if (op == Elementwise.Binary.RELU_BACKWARD) {
+                        assertEquals(Float.floatToIntBits(Elementwise.apply(op, x[i], dy[i])), Float.floatToIntBits(y[i]), "relu backward at " + a);
+                        continue;
+                    }
+                    if (op == Elementwise.Binary.SILU_BACKWARD) {
+                        double s = 1 / (1 + Math.exp(-a)), q = 1 - s, w = a * q, z = 1 + w, t = s * z;
+                        exact = g * t;
+                        double es = s * (7 + 2 * Math.abs(a)) * 2 * E + 0x1p-126;   // sigmoid, absolute
+                        double eq = es + Math.abs(q) * E;
+                        double ew2 = Math.abs(a) * eq + Math.abs(w) * E;
+                        double ez = ew2 + Math.abs(z) * E;
+                        double et = Math.abs(z) * es + s * ez + Math.abs(t) * E;
+                        bound = Math.abs(g) * et * 1.01 + Math.abs(exact) * E + 0x1p-126;
+                    } else {
+                        double c = Math.sqrt(2 / Math.PI), k = 0.044715;
+                        double u = c * (a + k * a * a * a), du = c * (1 + 3 * k * a * a);
+                        double t = Math.tanh(u), A = 0.5 * (1 + t), B = 0.5 * a * (1 - t * t) * du;
+                        exact = g * (A + B);
+                        double eu = c * (Math.abs(a) + k * Math.abs(a * a * a)) * 4 * E;     // u's roundings, absolute
+                        double uu = Math.min(Math.abs(u), 30);
+                        double e2 = Math.exp(2 * Math.min(u, 40));
+                        double relE = (4 + 4 * uu) * 2 * E + 2 * eu;                           // exp(2u), relative
+                        double frac = 2 / (e2 + 1);
+                        double et = frac * (relE * e2 / (e2 + 1) + 6 * E) + E;                // t, absolute
+                        double eA = 0.5 * (et + Math.abs(1 + t) * E);
+                        double e1t = 2 * Math.abs(t) * et + 2 * E;
+                        double eB = Math.abs(0.5 * a * du) * (e1t + Math.abs(1 - t * t) * 6 * E) + Math.abs(B) * 4 * E;
+                        bound = Math.abs(g) * (eA + eB + (Math.abs(A) + Math.abs(B)) * E) * 1.01 + Math.abs(exact) * E + 0x1p-126;
+                    }
+                    double err = Math.abs(y[i] - exact);
+                    assertTrue(err <= bound, op + "(" + a + ", " + g + ") = " + y[i] + ", exact " + exact + ", bound " + bound);
+                    worst = Math.max(worst, err / bound);
+                }
+                if (op != Elementwise.Binary.RELU_BACKWARD)
+                    System.out.printf("activation gradient %s on %s: worst error/bound %.3g%n", op, device.adapter().name(), worst);
+            }
+        }
+    }
+
     @Test void activationsWithinTheirBound() {
         var r = new SplittableRandom(5);
         int n = 20000;

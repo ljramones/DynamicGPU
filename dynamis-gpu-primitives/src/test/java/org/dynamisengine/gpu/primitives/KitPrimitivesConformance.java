@@ -155,6 +155,8 @@ abstract class KitPrimitivesConformance {
         var yv = StridedView.matrix(rows, cols);
         try (var ew = Elementwise.create(device)) {
             for (var op : Elementwise.Binary.values()) {
+                // the bounded backward passes have their own test (InferenceConformance.activationGradientsWithinTheirBound)
+                if (op == Elementwise.Binary.SILU_BACKWARD || op == Elementwise.Binary.GELU_BACKWARD) continue;
                 float[] y;
                 try (var ga = buffer(4L * a.length); var gb = buffer(4L * b.length); var gy = buffer(4L * rows * cols); var e = device.encoder()) {
                     e.upload(ga, bytes(a)).upload(gb, bytes(b));

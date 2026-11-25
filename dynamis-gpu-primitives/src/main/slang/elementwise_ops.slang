@@ -64,6 +64,20 @@ float binary(float a, float b)
     case 3: return a / b;                                   // DIV
     case 4: return dg_max(a, b);                            // MAX: Java Math.max
     case 5: return dg_min(a, b);                            // MIN: Java Math.min
-    default: return a / (1.0f + exp(-a)) * b;               // SWIGLU (1.10.0): silu(a) * b
+    case 6: return a / (1.0f + exp(-a)) * b;                // SWIGLU (1.10.0): silu(a) * b
+    // the backward passes of the activations (1.12.0): a = x, b = dy, the result dx
+    case 7: return a > 0.0f ? b : 0.0f;                     // RELU_BACKWARD: dy where x > 0, else 0 (NaN x gives 0)
+    case 8:                                                 // SILU_BACKWARD: dy s (1 + x (1 - s)), s = sigmoid(x)
+    {
+        float s = 1.0f / (1.0f + exp(-a));
+        return b * (s * (1.0f + a * (1.0f - s)));
+    }
+    default:                                                // GELU_BACKWARD, the tanh form's derivative
+    {
+        float u = 0.7978845608f * (a + 0.044715f * a * a * a);
+        float t = 1.0f - 2.0f / (exp(2.0f * u) + 1.0f);
+        float du = 0.7978845608f * (1.0f + 3.0f * 0.044715f * a * a);
+        return b * (0.5f * (1.0f + t) + 0.5f * a * (1.0f - t * t) * du);
+    }
     }
 }

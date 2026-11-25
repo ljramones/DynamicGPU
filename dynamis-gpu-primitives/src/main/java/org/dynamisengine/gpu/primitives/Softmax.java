@@ -4,6 +4,7 @@ import org.dynamisengine.gpu.api.compute.*;
 import org.dynamisengine.gpu.api.compute.kit.AccuracyContract;
 import org.dynamisengine.gpu.api.compute.kit.Checks;
 import org.dynamisengine.gpu.api.compute.kit.ParameterLayout;
+import org.dynamisengine.gpu.api.compute.kit.PipelineSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,6 +72,7 @@ public final class Softmax implements AutoCloseable {
     private final GpuComputePipeline pipeline;
     private final Precision output;
     private final ParameterLayout layout;
+    private GpuComputePipeline backward;
 
     private Softmax(GpuDevice device, GpuComputePipeline pipeline, Precision output) {
         this.device = device; this.pipeline = pipeline; this.output = output;
@@ -110,8 +112,45 @@ public final class Softmax implements AutoCloseable {
         return encoder.dispatch(pipeline, Map.of(0, scores, 1, out), params, new Dimensions(s.m(), 1, s.batch()), "softmax");
     }
 
+    /**
+     * Records the backward pass (1.12.0): {@code dx = y (dy - sum(dy y))} over each row's unmasked columns, 0 where
+     * masked, for the forward pass's output {@code y} (this instance's output type) and its FP32 gradient {@code dy},
+     * both in the output layout ({@code ldy}, {@code strideY}); {@code dx} is FP32 in the scores' layout
+     * ({@code lds}, {@code strideS}). Bounded ({@link #backwardContract}).
+     */
+    public GpuCommandEncoder backward(GpuCommandEncoder encoder, GpuBuffer y, GpuBuffer dy, GpuBuffer dx, Shape s) {
+        Checks.range(y, 0, s.yElements(), output.bytes(), "y"); Checks.range(dy, 0, s.yElements(), 4, "dy");
+        Checks.range(dx, 0, s.sElements(), 4, "dx");
+        if ((long) s.m() + s.causalOffset() + 1 > MAX_INDEX) throw new IllegalArgumentException("causalOffset too large");
+        if (backward == null) {
+            Set<String> types = output == Precision.FP16 ? Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16) : Set.of(GpuCapabilities.FP32);
+            String name = output == Precision.FP32 ? "softmax_backward_f32" : "softmax_backward_f16";
+            backward = device.pipeline(KERNELS.pipeline(name, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of()));
+        }
+        byte[] params = layout.block().u32("m", s.m()).u32("n", s.n()).u32("lds", s.lds()).u32("ldy", s.ldy())
+                .bool("causal", s.causal()).u32("causalOffset", s.causalOffset()).u32("strideS", s.strideS())
+                .u32("strideY", s.strideY()).bytes();
+        return encoder.dispatch(backward, Map.of(0, y, 1, dy, 2, dx), params, new Dimensions(s.m(), 1, s.batch()), "softmax.backward");
+    }
+
+    /** The backward pass's contract: bounded by its fixed-order sum and three roundings. @since 1.12.0 */
+    public static AccuracyContract backwardContract() {
+        return new AccuracyContract("Softmax backward", List.of("FP32 or FP16 y", "FP32 dy"), "FP32, fixed tree over 256 threads", "FP32",
+                AccuracyContract.Order.FIXED, AccuracyContract.Bound.formula("|dx - exact| <= |y| (k 2^-24 sum |dy y| + 2^-24 |dy - sum|) "
+                        + "+ 2^-24 |dx|, k = ceil(n / 256) + 9, exact computed from the given y and dy; masked elements are exactly 0"), "Softmax.backwardExact");
+    }
+
+    /** The backward pass in double from the given {@code y} and {@code dy} rows (n values from their offsets). @since 1.12.0 */
+    public static double[] backwardExact(float[] y, int yOff, float[] dy, int dyOff, int n, int limit) {
+        double sum = 0;
+        for (int j = 0; j < limit; j++) sum += (double) dy[dyOff + j] * y[yOff + j];
+        double[] dx = new double[n];
+        for (int j = 0; j < limit; j++) dx[j] = y[yOff + j] * (dy[dyOff + j] - sum);
+        return dx;
+    }
+
     /** The device this softmax runs on. */
     public GpuDevice device() { return device; }
 
-    @Override public void close() { pipeline.close(); }
+    @Override public void close() { PipelineSet.closeAll(pipeline, backward); }
 }

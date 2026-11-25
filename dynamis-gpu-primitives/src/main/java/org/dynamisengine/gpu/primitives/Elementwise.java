@@ -55,10 +55,23 @@ public final class Elementwise implements AutoCloseable {
         /** Java {@code Math.min}. */
         MIN,
         /** {@code silu(a) * b}: the gated unit of SwiGLU, a the gate projection and b the up projection (1.10.0). */
-        SWIGLU;
+        SWIGLU,
+        /**
+         * ReLU's backward pass (1.12.0): {@code a} the forward input x, {@code b} the output gradient dy;
+         * {@code x > 0 ? dy : 0} (a NaN x gives 0).
+         */
+        RELU_BACKWARD,
+        /**
+         * SiLU's backward pass (1.12.0): {@code dy s (1 + x (1 - s))}, {@code s = 1 / (1 + exp(-x))}, for {@code a = x},
+         * {@code b = dy}. SwiGLU's gradients compose from it: {@code d(gate) = SILU_BACKWARD(gate, dy * up)} and
+         * {@code d(up) = dy * silu(gate)}.
+         */
+        SILU_BACKWARD,
+        /** The backward pass of GELU's tanh form (1.12.0), for {@code a = x}, {@code b = dy}. */
+        GELU_BACKWARD;
 
         /** Whether the result is the same bits on every device ({@link #apply}). */
-        public boolean exact() { return this != DIV && this != SWIGLU; }
+        public boolean exact() { return this != DIV && this != SWIGLU && this != SILU_BACKWARD && this != GELU_BACKWARD; }
     }
 
     private static final int THREADS = 256;
@@ -161,6 +174,17 @@ public final class Elementwise implements AutoCloseable {
             case MAX -> Math.max(a, b);
             case MIN -> Math.min(a, b);
             case SWIGLU -> a / (1f + (float) Math.exp(-a)) * b;
+            case RELU_BACKWARD -> a > 0 ? b : 0f;
+            case SILU_BACKWARD -> {
+                float s = 1f / (1f + (float) Math.exp(-a));
+                yield b * (s * (1f + a * (1f - s)));
+            }
+            case GELU_BACKWARD -> {
+                float u = GemmF16.GELU_SCALE * (a + GemmF16.GELU_CUBIC * a * a * a);
+                float t = 1f - 2f / ((float) Math.exp(2f * u) + 1f);
+                float du = GemmF16.GELU_SCALE * (1f + 3f * GemmF16.GELU_CUBIC * a * a);
+                yield b * (0.5f * (1f + t) + 0.5f * a * (1f - t * t) * du);
+            }
         };
     }
 
@@ -192,6 +216,17 @@ public final class Elementwise implements AutoCloseable {
         if (op == Binary.SWIGLU) {
             return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
                     Bound.formula("(8 + 2|a|) ULP: SiLU's (7 + 2|a|), then one rounded product"), "");
+        }
+        if (op == Binary.SILU_BACKWARD) {
+            return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
+                    Bound.formula("absolute, |dy| times the error of s (1 + x (1 - s)) carried through each step from sigmoid's "
+                            + "(7 + 2|x|) ULP, each step's rounding relative to the magnitude of its terms (the derivative "
+                            + "crosses zero near x = -1.28, where a relative bound cannot hold)"), "");
+        }
+        if (op == Binary.GELU_BACKWARD) {
+            return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
+                    Bound.formula("absolute, |dy| times the error of 0.5 (1 + t) + 0.5 x (1 - t^2) du carried through each step "
+                            + "from exp(2u)'s (4 + 4|u|) ULP and the rounding of u, relative to the magnitudes of the terms"), "");
         }
         return new AccuracyContract(name, List.of("FP32", "FP32"), "none", "FP32", Order.DEVICE,
                 Bound.ulps(2.5, "Vulkan: a / b within 2.5 ULP for |b| in [2^-126, 2^126]"), "");

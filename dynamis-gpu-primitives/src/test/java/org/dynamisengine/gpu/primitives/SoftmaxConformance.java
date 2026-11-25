@@ -106,6 +106,71 @@ abstract class SoftmaxConformance {
         });
     }
 
+    /**
+     * The backward pass (1.12.0) from a softmax output y (in the instance's output type) and a random gradient: every
+     * dx within its bound computed in double from the given y and dy, 0 where masked, nothing written outside the rows.
+     */
+    double checkBackward(Softmax softmax, Shape s, long seed) {
+        var r = new SplittableRandom(seed); var out = softmax.output(); boolean fp32 = out == Precision.FP32;
+        int ny = (int) s.yElements(), nx = (int) s.sElements();
+        float[] y = new float[ny], dy = new float[ny];
+        for (int z = 0; z < s.batch(); z++) for (int row = 0; row < s.m(); row++) {
+            int base = (int) (z * s.strideY() + (long) row * s.ldy());
+            double sum = 0; double[] w = new double[s.n()];
+            for (int j = 0; j < s.n(); j++) if (s.visible(row, j)) { w[j] = Math.exp((r.nextDouble() * 2 - 1) * 6); sum += w[j]; }
+            for (int j = 0; j < s.n(); j++) {
+                float v = (float) (w[j] / sum);
+                y[base + j] = fp32 ? v : Float.float16ToFloat(Float.floatToFloat16(v));
+                dy[base + j] = (float) ((r.nextDouble() * 2 - 1) * 3);
+            }
+        }
+        var yb = ByteBuffer.allocate((int) pad4((long) ny * out.bytes())).order(ByteOrder.nativeOrder());
+        for (float v : y) { if (fp32) yb.putFloat(v); else yb.putShort(Float.floatToFloat16(v)); }
+        var db = ByteBuffer.allocate(4 * ny).order(ByteOrder.nativeOrder()); for (float v : dy) db.putFloat(v);
+        var init = ByteBuffer.allocate(4 * nx).order(ByteOrder.nativeOrder()); for (int i = 0; i < nx; i++) init.putFloat(-7f);
+        ByteBuffer got;
+        try (var gy = buffer(yb.capacity()); var gd = buffer(4L * ny); var gx = buffer(4L * nx); var e = device.encoder()) {
+            e.upload(gy, yb.array()).upload(gd, db.array()).upload(gx, init.array());
+            softmax.backward(e, gy, gd, gx, s); var read = e.download(gx);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT), "timeout"); }
+            got = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder());
+        }
+        boolean[] written = new boolean[nx];
+        double worst = 0, U = 0x1p-24;
+        for (int z = 0; z < s.batch(); z++) for (int row = 0; row < s.m(); row++) {
+            int yBase = (int) (z * s.strideY() + (long) row * s.ldy()), xBase = (int) (z * s.strideS() + (long) row * s.lds());
+            int limit = 0; while (limit < s.n() && s.visible(row, limit)) limit++;
+            double[] exact = Softmax.backwardExact(y, yBase, dy, yBase, s.n(), limit);
+            double sum = 0, abs = 0;
+            for (int j = 0; j < limit; j++) { sum += (double) dy[yBase + j] * y[yBase + j]; abs += Math.abs((double) dy[yBase + j] * y[yBase + j]); }
+            double k = Math.ceilDiv(s.n(), 256) + 9;
+            for (int j = 0; j < s.n(); j++) {
+                int idx = xBase + j; written[idx] = true;
+                double v = got.getFloat(4 * idx);
+                String where = "dx[" + z + "][" + row + "][" + j + "] of " + s + " " + out;
+                if (j >= limit) { assertEquals(0.0, v, where + " masked"); continue; }
+                double bound = Math.abs(y[yBase + j]) * (k * U * abs + U * Math.abs(dy[yBase + j] - sum)) * 1.01 + U * Math.abs(exact[j]) + 0x1p-126;
+                double err = Math.abs(v - exact[j]);
+                assertTrue(err <= bound, where + " = " + v + ", exact " + exact[j] + ", bound " + bound);
+                worst = Math.max(worst, err / bound);
+            }
+        }
+        for (int i = 0; i < nx; i++) if (!written[i]) assertEquals(-7.0, got.getFloat(4 * i), "element " + i + " outside the rows written");
+        return worst;
+    }
+
+    @Test void backwardWithinTheBound() {
+        eachOutput(sm -> {
+            double worst = 0;
+            worst = Math.max(worst, checkBackward(sm, Shape.of(37, 1000), 20));
+            worst = Math.max(worst, checkBackward(sm, Shape.of(64, 64).causal(0).batched(4), 21));
+            worst = Math.max(worst, checkBackward(sm, Shape.of(16, 300).causal(284), 22));
+            worst = Math.max(worst, checkBackward(sm, new Shape(10, 50, 64, 52, true, 20, 3, 10 * 64 + 9, 10 * 52 + 4), 23));
+            worst = Math.max(worst, checkBackward(sm, Shape.of(2, 50000), 24));
+            System.out.printf("softmax backward %s y on %s: worst error/bound %.3g%n", sm.output(), device.adapter().name(), worst);
+        });
+    }
+
     @Test void rejectsBadShapes() {
         assertThrows(IllegalArgumentException.class, () -> Shape.of(0, 4));
         assertThrows(IllegalArgumentException.class, () -> new Shape(2, 4, 3, 4, false, 0, 1, 0, 0));
