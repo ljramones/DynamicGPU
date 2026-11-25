@@ -526,7 +526,8 @@ in the sequence, and with the causal mask key blocks that no query of a group se
     SIMD-group owns 8 rows: `S = Q K^T` and `P V` are matrix products, the accumulators are rescaled by a diagonal
     matrix, and K and V blocks are staged in threadgroup memory. P is rounded to FP16 for its product.
   - **Decode** (Slang): at most 8 rows per KV head (a decode step's query heads). A group takes one range of keys of a
-    KV head and keeps its scores, so it uses one exact max and sum.
+    KV head and keeps its scores. Pipelines specialize the maximum row count to 1, 4 or 8. The compiler can then
+    eliminate dot products and accumulators for unused rows. The order within each active row is preserved.
 - **Grouped-query attention:** a group's rows are the queries of one KV head's query heads, so each K and V block is
   read once for all of them.
 - **Key ranges:** with few rows, the keys are split into ranges across groups (aiming at 256 groups), and a second
@@ -611,6 +612,10 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   | 512 | 40 us | 52 GB/s |
   | 4096 | 61 us | 276 GB/s |
   | 32768 | 396 us | 340 GB/s |
+
+- **Decode review, row specialization.** Repeating the whole encode with four timed rounds of at least 20 ms
+  on the M4 Max (32 query heads, 8 KV heads, dimension 128, FP16 O), 512 / 4096 / 32768 keys took
+  64.8 / 94.6 / 410.4 us on 1.11.0 and 51.4 / 71.8 / 345.2 us with row specialization alone.
 
 - **Alternatives that lost:**
   - **The portable flash kernel on Metal:** 0.66 / 2.5 / 9.9 ms at 512 / 1024 / 2048.

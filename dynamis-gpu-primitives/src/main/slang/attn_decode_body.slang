@@ -7,7 +7,9 @@
 //   - P V: thread t takes column pair t % D2 and keys t / D2, t / D2 + TPP, .. (V rows read once, coalesced), for
 //     every row; the TPP parts are added in order.
 // It writes (m, l, accumulators) for attn_combine when the keys are split, else O = acc / l. The entry file defines
-// DMAX, ENTRY and OUT_F32.
+// DMAX, ENTRY and OUT_F32. ROW_TIER (1, 4 or 8) removes unused rows at pipeline compilation.
+// M4 Max Metal, 32/8 heads, D128, 512 / 4096 / 32768 keys: 64.8 / 94.6 / 410.4 us with room for eight
+// rows reduced to 51.4 / 71.8 / 345.2 us by specializing to four. Active rows use the same arithmetic.
 #include "attn_common.slang"
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint> q;
@@ -25,6 +27,7 @@
 
 static const uint THREADS = 128;
 static const uint RMAX = 8;
+[vk::constant_id(0)] const uint ROW_TIER = 8;   // maximum rows processed by the specialized pipeline
 static const uint SK = 1024;              // scores kept: rows * splitKeys <= SK
 static const uint D2 = DMAX / 2;
 static const uint TPP = THREADS / D2;     // threads per column pair, each over its share of the keys
@@ -41,13 +44,13 @@ groupshared float rowL[RMAX];
 void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
 {
     uint t = local.x, kvHead = group.y, split = group.z;
-    uint hpk = p.heads / p.kvHeads, rows = hpk * p.queries;   // at most RMAX
+    uint hpk = p.heads / p.kvHeads, rows = min(hpk * p.queries, ROW_TIER);   // at most RMAX
     uint d2 = p.headDim / 2, offset = p.keys - p.queries;
     uint kStart = split * p.splitKeys, kEnd = min(p.keys, kStart + p.splitKeys);
     uint n = kEnd > kStart ? kEnd - kStart : 0u;
     uint sk = p.splitKeys;   // the stride of a row's scores
 
-    for (uint e = t; e < RMAX * D2; e += THREADS)
+    for (uint e = t; e < ROW_TIER * D2; e += THREADS)
     {
         uint r = e / D2, pr = e % D2, w = 0;
         if (r < rows && pr < d2)
@@ -76,9 +79,12 @@ void ENTRY(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID)
                 [ForceUnroll]
                 for (uint r = 0; r < RMAX; r++)
                 {
-                    uint qw = qs[r * D2 + pr];
-                    s[r] = fma(attnLo(qw), klo, s[r]);   // FP16 products are exact
-                    s[r] = fma(attnHi(qw), khi, s[r]);
+                    if (r < ROW_TIER)
+                    {
+                        uint qw = qs[r * D2 + pr];
+                        s[r] = fma(attnLo(qw), klo, s[r]);   // FP16 products are exact
+                        s[r] = fma(attnHi(qw), khi, s[r]);
+                    }
                 }
             }
         }

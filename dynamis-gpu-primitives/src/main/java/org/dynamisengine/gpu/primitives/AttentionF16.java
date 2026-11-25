@@ -104,6 +104,8 @@ public final class AttentionF16 implements AutoCloseable {
     private final Softmax softmax;
     private final GemmF16 values;
     private final Map<Integer, PipelineSet> fused = new HashMap<>();
+    private record DecodeVariant(int headDim, int rowTier) {}
+    private final Map<DecodeVariant, GpuComputePipeline> decodePipelines = new HashMap<>();
     private boolean closed;
 
     private AttentionF16(GpuDevice device, GemmF16 scores, Softmax softmax, GemmF16 values) {
@@ -192,7 +194,7 @@ public final class AttentionF16 implements AutoCloseable {
 
     /**
      * The key ranges a fused attention of {@code s} uses, {@code {splits, splitKeys}}: more than one when its rows
-     * give few groups, and for the decode kernel at most {@code 4096 / rows} keys each.
+     * give few groups, and for the decode kernel at most {@code 1024 / rows} keys each.
      */
     static int[] split(Shape s) {
         if (decodes(s)) {
@@ -231,8 +233,7 @@ public final class AttentionF16 implements AutoCloseable {
             var types = Set.of(GpuCapabilities.FP32);
             var list = new java.util.ArrayList<>(List.of(
                     GemmF16.KERNELS.pipeline("attn_flash_" + d + suffix, FLASH_ACCESSES, types, Set.of()),
-                    GemmF16.KERNELS.pipeline("attn_combine" + suffix, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of()),
-                    GemmF16.KERNELS.pipeline("attn_decode_" + d + suffix, FLASH_ACCESSES, types, Set.of())));
+                    GemmF16.KERNELS.pipeline("attn_combine" + suffix, List.of(Access.READ, Access.READ, Access.WRITE), types, Set.of())));
             if (matrixPath(d)) {
                 var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
                 for (int i = 0; i < FLASH_ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, FLASH_ACCESSES.get(i), 4));
@@ -242,6 +243,13 @@ public final class AttentionF16 implements AutoCloseable {
             }
             return PipelineSet.compile(device, list);
         });
+    }
+
+    private GpuComputePipeline decodePipeline(int variant, int rows) {
+        int tier = rows == 1 ? 1 : rows <= 4 ? 4 : DECODE_ROWS;
+        return decodePipelines.computeIfAbsent(new DecodeVariant(variant, tier), key ->
+                device.pipeline(GemmF16.KERNELS.pipeline("attn_decode_" + variant + (output() == Precision.FP32 ? "_f32" : ""),
+                        FLASH_ACCESSES, Set.of(GpuCapabilities.FP32), Set.of(), Map.of("ROW_TIER", tier))));
     }
 
     private static KernelBundle matrixBundle() {
@@ -315,9 +323,9 @@ public final class AttentionF16 implements AutoCloseable {
         try (var ml = scratch(splits > 1 ? 8L * splits * rows : 16, "attention-partial-ml");
              var acc = scratch(splits > 1 ? 4L * splits * rows * s.headDim() : 16, "attention-partial-acc")) {
             if (decodes(s))
-                encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(1, s.kvHeads(), splits), "attention.decode");
+                encoder.dispatch(decodePipeline(variant, s.heads() / s.kvHeads() * s.queries()), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(1, s.kvHeads(), splits), "attention.decode");
             else if (matrixPath(s.headDim()))
-                encoder.dispatch(set.get(3), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params,
+                encoder.dispatch(set.get(2), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params,
                         new Dimensions(Math.ceilDiv(s.heads() / s.kvHeads() * s.queries(), MATRIX_ROWS), s.kvHeads(), splits), "attention.flash.simdgroup");
             else
                 encoder.dispatch(set.get(0), Map.of(0, q, 1, k, 2, v, 3, o, 4, ml, 5, acc, 6, table), params, new Dimensions(rowBlocks, s.kvHeads(), splits), "attention.flash");
@@ -343,7 +351,11 @@ public final class AttentionF16 implements AutoCloseable {
     @Override public void close() {
         if (closed) return;
         closed = true;
-        try { for (var set : fused.values()) set.close(); } finally {
+        try {
+            var resources = new java.util.ArrayList<AutoCloseable>(decodePipelines.values());
+            resources.addAll(fused.values());
+            PipelineSet.closeAll(resources.toArray(new AutoCloseable[0]));
+        } finally {
             try { values.close(); } finally { try { softmax.close(); } finally { scores.close(); } }
         }
     }

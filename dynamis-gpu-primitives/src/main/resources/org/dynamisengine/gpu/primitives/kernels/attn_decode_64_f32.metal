@@ -4,6 +4,8 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant uint fc_ROW_TIER_0 [[function_constant(0)]];
+constant uint ROW_TIER_0 = is_function_constant_defined(fc_ROW_TIER_0) ? fc_ROW_TIER_0 : 8U;
 float attnLo_0(uint w_0)
 {
     return (as_type<half>((ushort)((w_0 & 65535U))));
@@ -138,7 +140,7 @@ struct KernelContext_0
     uint _S6 = group_0.y;
     uint split_0 = group_0.z;
     uint hpk_0 = p_1->heads_0 / p_1->kvHeads_0;
-    uint _S7 = hpk_0 * (&kernelContext_0)->p_0->queries_0;
+    uint _S7 = min(hpk_0 * (&kernelContext_0)->p_0->queries_0, ROW_TIER_0);
     uint d2_0 = (&kernelContext_0)->p_0->headDim_0 / 2U;
     uint _S8 = (&kernelContext_0)->p_0->keys_0 - (&kernelContext_0)->p_0->queries_0;
     uint kStart_0 = split_0 * (&kernelContext_0)->p_0->splitKeys_0;
@@ -158,7 +160,7 @@ struct KernelContext_0
     uint e_0 = t_0;
     for(;;)
     {
-        if(e_0 < 256U)
+        if(e_0 < (ROW_TIER_0 * 32U))
         {
         }
         else
@@ -266,14 +268,38 @@ struct KernelContext_0
             }
             float _S33 = attnLo_0(kw_5);
             float _S34 = attnHi_0(kw_5);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[p0_0]), _S33, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S33, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S33, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S33, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S33, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S33, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S33, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S33, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[p0_0]), _S33, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + p0_0]), _S33, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + p0_0]), _S33, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + p0_0]), _S33, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + p0_0]), _S33, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + p0_0]), _S33, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + p0_0]), _S33, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S34, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + p0_0]), _S33, s_0[7U]));
+            }
             uint pr_1 = p0_0 + 1U;
             if(pr_1 < d2_0)
             {
@@ -285,14 +311,38 @@ struct KernelContext_0
             }
             float _S35 = attnLo_0(kw_4);
             float _S36 = attnHi_0(kw_4);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_1]), _S35, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S35, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S35, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S35, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S35, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S35, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S35, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S35, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_1]), _S35, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_1]), _S35, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_1]), _S35, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_1]), _S35, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_1]), _S35, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_1]), _S35, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_1]), _S35, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S36, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_1]), _S35, s_0[7U]));
+            }
             uint pr_2 = p0_0 + 2U;
             if(pr_2 < d2_0)
             {
@@ -304,14 +354,38 @@ struct KernelContext_0
             }
             float _S37 = attnLo_0(kw_3);
             float _S38 = attnHi_0(kw_3);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_2]), _S37, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S37, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S37, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S37, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S37, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S37, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S37, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S37, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_2]), _S37, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_2]), _S37, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_2]), _S37, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_2]), _S37, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_2]), _S37, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_2]), _S37, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_2]), _S37, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S38, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_2]), _S37, s_0[7U]));
+            }
             uint pr_3 = p0_0 + 3U;
             if(pr_3 < d2_0)
             {
@@ -323,14 +397,38 @@ struct KernelContext_0
             }
             float _S39 = attnLo_0(kw_2);
             float _S40 = attnHi_0(kw_2);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_3]), _S39, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S39, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S39, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S39, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S39, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S39, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S39, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S39, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_3]), _S39, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_3]), _S39, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_3]), _S39, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_3]), _S39, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_3]), _S39, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_3]), _S39, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_3]), _S39, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S40, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_3]), _S39, s_0[7U]));
+            }
             uint pr_4 = p0_0 + 4U;
             if(pr_4 < d2_0)
             {
@@ -342,14 +440,38 @@ struct KernelContext_0
             }
             float _S41 = attnLo_0(kw_1);
             float _S42 = attnHi_0(kw_1);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_4]), _S41, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S41, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S41, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S41, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S41, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S41, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S41, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S41, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_4]), _S41, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_4]), _S41, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_4]), _S41, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_4]), _S41, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_4]), _S41, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_4]), _S41, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_4]), _S41, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S42, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_4]), _S41, s_0[7U]));
+            }
             uint pr_5 = p0_0 + 5U;
             if(pr_5 < d2_0)
             {
@@ -361,14 +483,38 @@ struct KernelContext_0
             }
             float _S43 = attnLo_0(kw_0);
             float _S44 = attnHi_0(kw_0);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_5]), _S43, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S43, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S43, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S43, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S43, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S43, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S43, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S43, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_5]), _S43, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_5]), _S43, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_5]), _S43, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_5]), _S43, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_5]), _S43, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_5]), _S43, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_5]), _S43, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S44, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_5]), _S43, s_0[7U]));
+            }
             uint pr_6 = p0_0 + 6U;
             uint kw_6;
             if(pr_6 < d2_0)
@@ -381,14 +527,38 @@ struct KernelContext_0
             }
             float _S45 = attnLo_0(kw_6);
             float _S46 = attnHi_0(kw_6);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_6]), _S45, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S45, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S45, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S45, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S45, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S45, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S45, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S45, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_6]), _S45, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_6]), _S45, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_6]), _S45, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_6]), _S45, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_6]), _S45, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_6]), _S45, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_6]), _S45, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S46, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_6]), _S45, s_0[7U]));
+            }
             uint pr_7 = p0_0 + 7U;
             uint kw_7;
             if(pr_7 < d2_0)
@@ -401,14 +571,38 @@ struct KernelContext_0
             }
             float _S47 = attnLo_0(kw_7);
             float _S48 = attnHi_0(kw_7);
-            s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_7]), _S47, s_0[0U]));
-            s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S47, s_0[1U]));
-            s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S47, s_0[2U]));
-            s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S47, s_0[3U]));
-            s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S47, s_0[4U]));
-            s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S47, s_0[5U]));
-            s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S47, s_0[6U]));
-            s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S47, s_0[7U]));
+            if(0U < ROW_TIER_0)
+            {
+                s_0[0U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[pr_7]), _S47, s_0[0U]));
+            }
+            if(1U < ROW_TIER_0)
+            {
+                s_0[1U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[32U + pr_7]), _S47, s_0[1U]));
+            }
+            if(2U < ROW_TIER_0)
+            {
+                s_0[2U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[64U + pr_7]), _S47, s_0[2U]));
+            }
+            if(3U < ROW_TIER_0)
+            {
+                s_0[3U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[96U + pr_7]), _S47, s_0[3U]));
+            }
+            if(4U < ROW_TIER_0)
+            {
+                s_0[4U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[128U + pr_7]), _S47, s_0[4U]));
+            }
+            if(5U < ROW_TIER_0)
+            {
+                s_0[5U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[160U + pr_7]), _S47, s_0[5U]));
+            }
+            if(6U < ROW_TIER_0)
+            {
+                s_0[6U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[192U + pr_7]), _S47, s_0[6U]));
+            }
+            if(7U < ROW_TIER_0)
+            {
+                s_0[7U] = fma(attnHi_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S48, fma(attnLo_0((*(&kernelContext_0)->qs_0)[224U + pr_7]), _S47, s_0[7U]));
+            }
             p0_0 = p0_0 + 8U;
         }
         for(;;)
