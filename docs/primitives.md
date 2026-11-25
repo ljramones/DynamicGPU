@@ -579,6 +579,31 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   | 1024 | 2.22 ms | 1.42 ms |
   | 2048 | 8.47 ms | 5.28 ms (13 TFLOP/s dense-equivalent) |
 
+- **Prefill mask review (M4 Max, native Metal).** Each row now tests a block's last key once. A fully visible block
+  skips the per-key mask. Tail, padded and causal-edge keys retain the per-key check. The arithmetic and rounding
+  order are identical. With finite seeded FP16 Q, K and V, warmed whole encodes and the best of four rounds of at
+  least 20 ms, the same 512 / 1024 / 2048-token shapes took 0.426 / 1.440 / 5.291 ms before and
+  0.411 / 1.376 / 5.118 ms after. Three runs of the original benchmark inputs gave 5.317–5.334 ms before and
+  5.115–5.121 ms after at 2048 tokens.
+
+  | Other native Metal prefill trials | 512 tokens (ms) | 1024 tokens (ms) | 2048 tokens (ms) |
+  |---|---:|---:|---:|
+  | Release kernel, dimension 128 | 0.424 | 1.429 | 5.317 |
+  | Scores, probabilities and output rescale in matrix fragment registers | 0.449 | 1.473 | 5.357 |
+  | Register fragments plus alternate K/V staging banks | 0.484 | 1.651 | 6.133 |
+  | Register fragments plus prefetch of the next K/V into registers | 0.454 | 1.469 | 5.363 |
+  | Register fragments with 64-key blocks | 0.489 | 1.673 | 6.370 |
+  | Register fragments with 16-key blocks | 0.552 | 1.860 | 6.910 |
+  | Register fragments with a visibility test per block | 0.446 | 1.482 | 5.320 |
+  | Tile-major K/V staging | 0.424 | 1.433 | 5.321 |
+  | Tile-major K/V staging with register fragments | 0.449 | 1.493 | 5.393 |
+  | Pre-scale half Q by scale × log2(e), then use exp2 | 0.428 | 1.431 | 5.272 |
+  | Release portable kernel, dimension 256 | 1.439 | 5.471 | 21.115 |
+  | Matrix kernel, dimension 256, 16-key blocks | 2.605 | 9.828 | 38.548 |
+
+  The register softmax passed the elementwise attention tests on the M4 Max. Its lane layout is hardware-specific.
+  Pre-scaling introduces a new FP16 rounding and can overflow half Q at supported scales. Neither variant is used.
+
 - **Decode:** one query on 32 heads with 8 KV heads, head dimension 128.
 
   | Keys | Fused (decode kernel) | K and V read |

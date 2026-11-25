@@ -18,6 +18,14 @@
 // product, and all four SIMD-groups load it), staged with per-half copies and O through a whole-group buffer 0.61 /
 // 2.21 / 8.64, and 16 rows per SIMD-group (ROW_TILES 2: each K and V matrix serves two products, but twice the
 // matrices per lane) 0.98 / 3.15 / 11.4.
+// Testing the mask once for a fully visible block took 0.411 / 1.376 / 5.118 ms vs 0.426 / 1.440 / 5.291
+// with a per-key mask (finite FP16 data). The score, sum and product order are identical.
+// Other experiments in the same shapes (ms, release baseline 0.424 / 1.429 / 5.317): register fragments
+// 0.449 / 1.473 / 5.357, those fragments with double-buffered K/V 0.484 / 1.651 / 6.133, with register
+// prefetch 0.454 / 1.469 / 5.363, with key blocks of 64 0.489 / 1.673 / 6.370, or of 16 0.552 / 1.860 / 6.910.
+// Tile-major K/V staging took 0.424 / 1.433 / 5.321. Pre-scaling half Q for exp2 took 0.428 / 1.431 / 5.272
+// and rounds Q again. At dimension 256 the matrix kernel took 2.605 / 9.828 / 38.548 against the portable
+// kernel's 1.439 / 5.471 / 21.115, using 16-key blocks on both.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -104,11 +112,19 @@ static void flash(device const half *q, device const half *k, device const half 
         // the online softmax of the SIMD-group's rows
         float sv[CPL];
         float mb = -INFINITY;
-        for (uint c = 0; c < CPL; c++) {
-            uint col = h16 * CPL + c, key = b + col;
-            float x = sS[row * BC + col] * p.scale;
-            sv[c] = key < kEnd && key < limit ? x : -INFINITY;
-            mb = max(mb, sv[c]);
+        // A full block inside this row's visible prefix has no masked keys.
+        if (b + BC <= min(limit, kEnd)) {
+            for (uint c = 0; c < CPL; c++) {
+                sv[c] = sS[row * BC + h16 * CPL + c] * p.scale;
+                mb = max(mb, sv[c]);
+            }
+        } else {
+            for (uint c = 0; c < CPL; c++) {
+                uint col = h16 * CPL + c, key = b + col;
+                float x = sS[row * BC + col] * p.scale;
+                sv[c] = key < kEnd && key < limit ? x : -INFINITY;
+                mb = max(mb, sv[c]);
+            }
         }
         for (uint x = 1; x < LPR; x *= 2) mb = max(mb, simd_shuffle_xor(mb, x));
         float mNew = max(m, mb);
