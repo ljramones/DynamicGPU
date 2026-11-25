@@ -7,16 +7,18 @@ exact GPU twins of Vectrix's kernels are vectrix-gpu.
 | Primitive | Does | Since |
 |---|---|---|
 | `GemmF16` | the GEMM family: FP16, BF16 or FP32 inputs, transposed A or B, batches, fused epilogues, skinny decode, small and grouped multiplies; FP32 or FP16 output | 1.2.0 (forms 1.4.0, family 1.8.0) |
-| `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output | 1.4.0 |
-| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0, batched decode since 1.11.1 | 1.4.0 |
+| `Softmax` | row-wise softmax of FP32 scores, causal mask, FP32 or FP16 output; backward pass (1.12.0) | 1.4.0 |
+| `AttentionF16` | scaled dot-product attention for every head: `softmax(scale Q K^T + mask) V`; fused (flash, decode, grouped-query, paged) since 1.11.0, batched decode since 1.11.1, training forward and backward since 1.12.0 | 1.4.0 |
 | `PagedKvCache` | a KV cache in fixed-size pages, shared across sequences with copy on write | 1.11.0 |
-| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0) | 1.7.0 |
+| `Elementwise` | unary and binary maps over strided FP32 views, with broadcasting; SiLU, GELU, SwiGLU (1.10.0); their backward passes (1.12.0) | 1.7.0 |
 | `Reduce` | fixed-order sum, max, min and argmax along the last dimension; log-sum-exp (1.10.0, multi-group 1.10.1) | 1.7.0 |
 | `Scan` | fixed-order inclusive sum, max and min scans along the last dimension | 1.7.0 |
 | `NanCheck` | reports NaNs and infinities through a `KernelErrors` buffer; tripwires | 1.7.0 |
 | `QuantizedMatrix`, `Quantize` | block-quantized weights (Q8, Q4, Q4M; the K formats Q4K, Q5K, Q6K): CPU and GPU encoders and decoders, bit for bit | 1.9.0 (K formats 1.9.1) |
 | `GgufBlocks` | llama.cpp's GGML blocks (Q4_0, Q4_1, Q8_0, Q4_K, Q5_K, Q6_K) to and from `QuantizedMatrix`, without loss | 1.9.1 |
-| `Norms` | RMSNorm and LayerNorm per row, with an optional fused residual add | 1.10.0 |
+| `Norms` | RMSNorm and LayerNorm per row, with an optional fused residual add; backward pass (1.12.0) | 1.10.0 |
+| `CrossEntropy` | each row's cross-entropy against a GPU target, and its gradient (in place, ignore index) | 1.12.0 |
+| `Optimizer` | AdamW and SGD steps, FP32 or FP16 gradients, a GPU gradient scale, an FP16 weight copy; bit for bit | 1.12.0 |
 | `Rope` | rotary position embedding from a host table, positions on the GPU | 1.10.0 |
 | `Embedding` | rows gathered by GPU-resident tokens from FP32, FP16 or quantized tables | 1.10.0 |
 | `Sampler` | greedy, temperature, top-k and top-p sampling on the GPU, seeded (multi-group 1.10.1) | 1.10.0 |
@@ -802,8 +804,102 @@ attention.encodeBatch(encoder, q, cache, layer, List.of(seqA, seqB, seqC), o, At
   - **The fixed-tree kernel:** forced through the same checks, since every device here would otherwise take the
     subgroup kernel.
 
+## Training kernels (1.12.0)
+
+Backward passes for the forward kernels above, a loss and two optimizers. Every reduction is in a fixed order (no
+atomics), so a device's gradients do not depend on scheduling. Each backward reference (`backwardExact`, and the
+formulas the attention test uses) is checked against finite differences of its forward pass in double
+(`GradientReferenceTest`).
+
+```java
+// forward with the log-sum-exp, then the backward pass
+attention.encode(e, q, k, v, o, lse, shape);
+attention.backward(e, q, k, v, o, lse, dO, dQ, dK, dV, shape);
+norms.backward(e, Norms.Kind.RMS, h, weight, dy, dh, dWeight, null, Norms.BackwardShape.of(rows, n, eps), true);
+crossEntropy.encode(e, logits, targets, loss, logits, 1f / tokens, CrossEntropy.Shape.of(rows, vocab));   // dlogits in place
+optimizer.adamW(e, param, grad, Precision.FP32, m, v, clipScale, fp16Weights, n, Optimizer.AdamW.of(3e-4f, 0.1f), step);
+```
+
+### Activations and softmax
+
+- **`Elementwise.Binary` gains three backward passes:** each takes `a = x`, the forward input, and `b = dy`.
+  - **`RELU_BACKWARD`:** exact.
+  - **`SILU_BACKWARD` and `GELU_BACKWARD`:** bounded. The bounds are absolute, carried through each step from exp's
+    error, because the derivatives cross zero.
+  - **SwiGLU's gradients compose from them:** `d(gate) = SILU_BACKWARD(gate, dy * up)`, `d(up) = dy * silu(gate)`.
+- **`Softmax.backward`:** `dx = y (dy - sum dy y)` over each row's unmasked columns, with the forward pass's mask,
+  batches and layouts, for FP32 or FP16 y.
+  - **Accuracy:** the sum uses the forward pass's fixed tree, and the result is within
+    `|y| (k 2^-24 sum|dy y| + 2^-24 |dy - sum|) + 2^-24 |dx|`.
+  - **Measured:** the worst error is 48 % of that bound.
+
+### `Norms.backward`
+
+RMSNorm's and LayerNorm's dv from v (x, or h after the residual add), w and dy.
+
+- **Statistics:** recomputed as the forward pass computed them.
+- **Accumulate:** adds dv to the existing buffer, which carries the residual stream's gradient. With the forward
+  pass's `h = x + res`, the result is the gradient of both x and res.
+- **The weight and bias gradients** are added to `dWeight` and `dBias`, so zero them before the first micro-batch.
+  - **How:** each group of 16 rows builds column partials row by row, and a column kernel adds the blocks in order.
+- **Tests:** dv, dWeight and dBias are checked against the double reference for both kinds and both input types,
+  including row lengths from 1 to 4096.
+
+### `CrossEntropy`
+
+`loss[r] = lse(row) - l[t]` and `dl = scale (softmax - one-hot)`.
+
+- **Log-sum-exp:** the multi-group `Reduce.logSumExp`.
+- **Loss and gradient:** one dispatch over the elements. The gradient may overwrite the logits.
+- **Targets:** uint32 on the GPU.
+  - `CrossEntropy.IGNORE` gives a row of zeros.
+  - A target past the vocabulary fails the submission.
+- **Accuracy:** within the log-sum-exp's bound carried through, checked at a vocabulary of 128256.
+
+### `Optimizer`
+
+AdamW and SGD (momentum, Nesterov, weight decay) over FP32 parameters.
+
+- **Gradients:** FP32 or FP16.
+- **Gradient scale (optional):** a single float read on the GPU, for clipping or unscaling a loss scale without a host
+  sync.
+- **FP16 copy (optional):** of the updated parameters, the weights a mixed-precision forward pass reads.
+- **Bit for bit `adamWReference` and `sgdReference`:** every operation rounds once, none fused.
+  - **Division and square root:** correctly rounded on all three test backends (0 ULP measured).
+  - **vectrix-gpu's `GpuOptim`** holds twins that fuse two operations, as `Optimizer` does.
+
+### Attention: the training forward pass and the backward pass
+
+- **Forward:** `AttentionF16.encode(..., lse, shape)` also writes each row's log-sum-exp of the scaled scores. The
+  flash kernels and the combine write it. A shape that would decode runs a flash kernel instead.
+- **Backward:** `AttentionF16.backward` gives dQ, dK and dV in FP32 from Q, K, V, O, L and dO.
+  - **Kernels:**
+    1. a pre-pass for `D = rowsum(dO O)`;
+    2. a kernel per block of 16 keys that walks its queries for dK and dV;
+    3. a kernel per block of query rows that walks its keys for dQ.
+  - **P:** recomputed from L in FP32, so it is not rounded to FP16.
+  - **Coverage:** grouped-query attention, the causal mask (with blocks skipped) and caches longer than the keys.
+- **Accuracy:** each gradient element is checked against double from the same half inputs, within a bound that
+  carries the forward pass's errors in O and L and every step of the backward's own. The worst measured error is
+  48 % of the bound, at head dimension 2 with FP16 O. Most shapes measure under 10 %.
+- **Measured** on an M4 Max: 32 heads, head dimension 128, causal, FP16 O.
+
+  | Sequence | Training forward | Backward |
+  |---|---|---|
+  | 512 | 0.41 ms | 3.5 ms |
+  | 1024 | 1.38 ms | 13.3 ms |
+  | 2048 | 5.15 ms | 51.5 ms |
+
+  - **Running dot products one after the other:** the backward took 65.7 ms at 2048. Each thread now runs its two
+    pairs' dot products side by side.
+  - **The cost of determinism:** the dQ kernel recomputes P and dP, about half of the time. FlashAttention-2 instead
+    accumulates dQ with float atomics, whose results depend on scheduling, and that is not used.
+  - **Next:** a Metal matrix backward, as the forward pass has.
+
 ## Planned
 
+- **Attention backward on the Metal matrix hardware:** the backward pass is portable scalar code, at about 10 times
+  the forward pass's time.
 - **Batched prefill across sequences:** batched decode (1.11.1) takes at most 8 rows per KV head. Mixing prompt
   chunks of several sequences into one dispatch is not covered.
 - **GEMM:** a Vulkan cooperative-matrix path, once there is hardware to test it on; a faster FP32 matrix kernel.

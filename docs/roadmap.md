@@ -472,6 +472,27 @@ The plan as agreed:
 
 ### 1.12: Training kernels
 
+**Status: complete, to be released as 1.12.0.** Done:
+- **Backward passes:**
+  - the activations (`Elementwise` `RELU_BACKWARD`, `SILU_BACKWARD`, `GELU_BACKWARD`; SwiGLU's compose from them);
+  - `Softmax.backward`;
+  - `Norms.backward` (dv, with the residual stream's gradient accumulated, and the weight and bias gradients);
+  - attention (`AttentionF16.backward`, after a training forward pass that writes each row's log-sum-exp).
+- **`CrossEntropy`:** the loss and its gradient, multi-group at a vocabulary of 128256.
+- **`Optimizer`:** AdamW and SGD, bit for bit their Java references on all three backends.
+- **Transposed-A GEMM:** in `GemmF16` since 1.8.0 (`Shape.ofTransposedA`).
+- **Gradient checks:** each backward reference against finite differences of its forward (`GradientReferenceTest`).
+
+Changed from the plan:
+- **Gradient accumulation is in fixed orders, not float atomics:** per-block partials added in order, and a separate
+  dQ kernel in the attention backward. Gradients therefore do not depend on scheduling. Atomics would save the dQ
+  kernel's recompute, about half of the attention backward's time.
+
+Not done:
+- **A Metal matrix-path attention backward:** the portable one runs at about 10 times the forward pass's time.
+
+The plan as agreed:
+
 - **Backward passes:** softmax, the norms, attention, and the activations.
 - **Transposed-A GEMM** (from 1.8), and gradient accumulation with float atomics (`ATOMIC_FLOAT32_ADD`).
 - **Optimizers:** AdamW and SGD as throughput kernels. The exact twins stay in vectrix-gpu.

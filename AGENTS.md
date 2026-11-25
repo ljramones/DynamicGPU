@@ -118,6 +118,12 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   decode, against 61 us of GPU time. `AttentionConformance.benchmarkPagedDecode` reports host, GPU and wall time.
 - **Benchmark initialized inputs.** Uninitialized buffers can hold NaNs and subnormals, and the decode times first
   published for 1.11.0 were taken on them.
+- **Slang drops unused buffers from Metal, not from the reflection.** A kernel variant that never touches a binding
+  (the dQ kernel's dV) fails the build's slot check. Declare that binding only in the variant that uses it.
+- **Give each thread independent fma chains.** The attention backward computed a thread's two dot products one after
+  the other and ran 22 % slower than with them side by side in one loop.
+- **Exact optimizers depend on division and sqrt.** `Optimizer` is bit for bit its Java reference only where they are
+  correctly rounded (0 ULP measured on all three backends), and because nothing is fused: lavapipe does not fuse fma.
 - **Force every fallback path in a test.** When all three devices support a fast path (subgroup decode, say), the
   portable path it falls back from never runs on hardware. Give it a package-private switch
   (`AttentionF16.useFixedTreeDecode`) and run its numbers too.
@@ -293,7 +299,7 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 
 ## State at the time of writing (2026-11-24)
 
-- **Published:** 1.0.x to 1.11.0 are on GitHub.
+- **Published:** 1.0.x to 1.11.1 are on GitHub.
   - **1.5.0:** memory pools, blocking waits, recordings, the memory budget, per-dispatch timing and the Vulkan
     pipeline cache.
   - **1.6.0:** queues and synchronization, indirect dispatch, arenas and interop.
@@ -305,5 +311,6 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
 - **1.10.0:** inference kernels (norms, RoPE, embedding, sampling, activations, log-sum-exp).
 - **1.10.1:** fast sampling and log-sum-exp.
 - **1.11.0:** attention at scale (flash, decode, paged KV cache), with an independent optimization review.
-- **1.11.1 (batched decode):** built on branch `feat/batched-decode`; see `docs/releases/1.11.1.md`.
-- **Next:** milestone 1.12 (training kernels).
+- **1.11.1:** batched decode.
+- **1.12.0 (training kernels):** built on branch `feat/training-kernels`; see `docs/releases/1.12.0.md`.
+- **Next:** flowing the stack into Vectrix, then NNJava planning (see `docs/roadmap.md`).
