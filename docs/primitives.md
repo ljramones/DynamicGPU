@@ -469,7 +469,7 @@ embedding.encode(encoder, token, 1, table, tableBuffer, x, dim);    // the next 
 | residual add + RMSNorm | 1 x 4096 / 512 x 4096 | 8.3 us / 54 us |
 | RoPE | 32 heads x 128, 1 / 512 tokens | 21 us / 32 us |
 | embedding gather | 1 row of 4096, FP16 | 16 us |
-| sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 12 / 17 / 76 us |
+| sampling, vocabulary 128256 | greedy / temperature / top-k 40 + top-p | 12 / 17 / 47 us (76 in 1.10.1; 41 on the varied logits below) |
 | log-sum-exp | 128256 | 10 us |
 
 - **Small top-k measurements:** whole-encode GPU times on native Metal, Apple M4 Max, one row of 128256 logits,
@@ -633,9 +633,9 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
 
   | Sequence | Composed (`SIMDGROUP_MATRIX`) | Fused (matrix path) |
   |---|---|---|
-  | 512 | 0.67 ms | 0.42 ms |
-  | 1024 | 2.22 ms | 1.42 ms |
-  | 2048 | 8.47 ms | 5.28 ms (13 TFLOP/s dense-equivalent) |
+  | 512 | 0.68 ms | 0.41 ms |
+  | 1024 | 2.24 ms | 1.38 ms |
+  | 2048 | 8.40 ms | 5.13 ms (13.4 TFLOP/s dense-equivalent) |
 
 - **Portable prefill review.** MoltenVK on the M4 Max, 32 heads, dimension 128, causal, FP16 O.
   Lower is faster. Each column shows milliseconds for a whole encode, with the best of repeated trials.
@@ -684,13 +684,19 @@ On an Apple M4 Max (native Metal), by GPU time (`-Dgemm.benchmark=true`).
   The timed work included the original page-table uploads. Run the opt-in `benchmarkPagedDecode` to measure
   host encoding, GPU execution and wall time separately.
 
-- **Decode:** one query on 32 heads with 8 KV heads, head dimension 128.
+- **Decode:** one query on 32 heads with 8 KV heads, head dimension 128, initialized inputs.
 
-  | Keys | Fused (decode kernel) | K and V read |
-  |---|---|---|
-  | 512 | 40 us | 52 GB/s |
-  | 4096 | 61 us | 276 GB/s |
-  | 32768 | 396 us | 340 GB/s |
+  | Keys | Kernel | Fused | K and V read |
+  |---|---|---|---|
+  | 512 | `decode.short` (one dispatch) | 9.7 us | 216 GB/s |
+  | 4096 | `decode` (subgroup reductions) | 44.6 us | 377 GB/s |
+  | 32768 | `decode` (subgroup reductions) | 326 us | 412 GB/s |
+
+  The benchmark reads the same K and V each round, so the rates can include cache traffic. On the same harness, the
+  decode kernel before the review below took 63.5 / 89.8 / 411 us. The 40 / 61 / 396 us first published for it
+  timed uninitialized buffers.
+- **Four layers of paged decode** (512 keys): 20 us of host encoding, 61 us of GPU time and 90 us wall, against
+  3,916 / 346 / 4,321 us before metadata caching and reusable page tables.
 
 - **Decode review, row specialization.** Repeating the whole encode with four timed rounds of at least 20 ms
   on the M4 Max (32 query heads, 8 KV heads, dimension 128, FP16 O), 512 / 4096 / 32768 keys took

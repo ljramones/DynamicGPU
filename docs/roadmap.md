@@ -429,9 +429,13 @@ The plan as agreed:
 - **Flash attention** behind `AttentionF16` (a fused `encode`, no scratch), with linear memory and causal block
   skipping:
   - a portable Slang kernel for head dimensions up to 256;
-  - the Metal matrix path for 64 and 128, 1.6 times the composition's speed at sequence 2048;
+  - the Metal matrix path for 64 and 128, 1.6 times the composition's speed at sequence 2048 (5.13 against
+    8.40 ms);
   - grouped-query attention and longer caches.
-- **Decode attention:** a kernel for few rows per KV head, with keys split across groups and combined.
+- **Decode attention:** a kernel for few rows per KV head, with keys split across groups and combined (326 us at
+  32768 keys), and on Metal a one-dispatch kernel for short contexts (9.7 us at 512 keys).
+- **A review before release** (`docs/optimization-results-1.11.md`) found the host recording cost, the short and
+  subgroup decode kernels, the Vulkan prefill layout and the sampler's prefilter.
 - **Paged KV cache:** `PagedKvCache`, with:
   - page pools per layer, an append kernel (`write`) and attention through page tables;
   - reference-counted sharing (`fork`) with copy on write, and `truncate`;

@@ -113,6 +113,11 @@ A new hardware test module must be added to the `-pl` lists of the hardware jobs
   - Put `[ForceUnroll]` on every fixed-trip loop. Without it the SPIR-V keeps per-thread arrays in memory, and
     MoltenVK ran a GEMM 14 times slower.
   - Hoist uniform branches out of inner loops. Testing `transB` inside the k loop cost the matrix GEMM about 15 %.
+- **Measure host time on per-step paths.** GPU-time benchmarks can't see host recording cost: in 1.11.0's first
+  build, re-reading kernel metadata and uploading page tables on every encode cost 3.9 ms for four layers of paged
+  decode, against 61 us of GPU time. `AttentionConformance.benchmarkPagedDecode` reports host, GPU and wall time.
+- **Benchmark initialized inputs.** Uninitialized buffers can hold NaNs and subnormals, and the decode times first
+  published for 1.11.0 were taken on them.
 - **Check the kernel build's exit status.** A failed `spirv-val` stops `build-slang-kernels.sh` partway, and the
   kernels after the failing one keep their old binaries: three rounds of 1.11 measurements ran stale kernels. For
   example, a `break` inside a `[ForceUnroll]` loop gave "ID ... does not dominate its use"; use a guard instead.
