@@ -6,8 +6,13 @@ import org.junit.jupiter.api.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.SplittableRandom;
+import java.util.function.Consumer;
+import java.util.function.ObjIntConsumer;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -789,6 +794,101 @@ abstract class AttentionConformance {
             });
             System.out.printf("attention %s four paged decodes, keys=512: encode %.1f us, GPU %.1f us, wall %.1f us%n",
                     device.adapter().name(), timing.encodeMicros(), timing.gpuMicros(), timing.wallMicros());
+        }
+    }
+
+    /** -DpagedDecode.benchmark=true: compare repeated and rotating K/V pages with identical decode calls. */
+    @Test void benchmarkPagedDecodeWorkingSet() {
+        Assumptions.assumeTrue(Boolean.getBoolean("pagedDecode.benchmark"), "set -DpagedDecode.benchmark=true");
+        var b = AttentionF16.DecodeBatch.of(32, 8, 128);
+        try (var attention = AttentionF16.create(device, Precision.FP16)) {
+            for (int keys : new int[] {4096, 32768}) {
+                for (int batch : new int[] {1, 2}) {
+                    long bytesPerLayer = 4L * batch * keys * b.kvHeads() * b.headDim();
+                    int layers = Integer.getInteger("pagedDecode.layers",
+                            Math.max(2, Math.toIntExact(Math.ceilDiv(320L << 20, bytesPerLayer))));
+                    assertTrue(layers >= 2, "pagedDecode.layers must be at least 2");
+                    comparePagedDecode(attention, b, batch, keys, layers);
+                }
+            }
+        }
+    }
+
+    private void comparePagedDecode(AttentionF16 attention, AttentionF16.DecodeBatch b, int batch, int keys, int layers) {
+        int pageSize = 64;
+        var config = new PagedKvCache.Config(layers, b.kvHeads(), b.headDim(), pageSize, batch * Math.ceilDiv(keys, pageSize));
+        var shape = b.shape(keys);
+        var random = new SplittableRandom(20261125);
+        try (var cache = PagedKvCache.create(device, config); var q = buffer(b.qBytes(batch));
+             var o = buffer(b.oBytes(Precision.FP16, batch))) {
+            var seqs = new ArrayList<PagedKvCache.Sequence>();
+            try (var init = device.encoder()) {
+                for (int i = 0; i < batch; i++) {
+                    var seq = cache.newSequence();
+                    cache.reserve(init, seq, keys);
+                    seqs.add(seq);
+                }
+                init.upload(q, bytes(halves(q.bytes() / 2, 1, random)));
+                for (int layer = 0; layer < layers; layer++) {
+                    fillDecodePool(init, cache.keys(layer), random, b.headDim(), 0);
+                    fillDecodePool(init, cache.values(layer), random, b.headDim(), layer + 1);
+                }
+                try (var sub = device.queue().submit(init)) { assertTrue(sub.await(WAIT)); }
+            }
+            ObjIntConsumer<GpuCommandEncoder> decode = batch == 1
+                    ? (e, layer) -> attention.encode(e, q, cache, layer, seqs.getFirst(), o, shape)
+                    : (e, layer) -> attention.encodeBatch(e, q, cache, layer, seqs, o, b);
+
+            // Column zero of every value row holds the layer marker. Its weighted mean identifies the bound pool.
+            for (int layer = 0; layer < layers; layer++) {
+                try (var e = device.encoder()) {
+                    decode.accept(e, layer);
+                    var read = e.download(o);
+                    try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                    var result = ByteBuffer.wrap(read.bytes()).order(ByteOrder.nativeOrder()).asShortBuffer();
+                    for (int row = 0; row < batch * b.heads(); row++) {
+                        double marker = layer + 1;
+                        assertEquals(marker, f(result.get(row * b.headDim())), marker * 0.001, "KV layer marker");
+                    }
+                }
+            }
+
+            Consumer<GpuCommandEncoder> reused = e -> {
+                for (int layer = 0; layer < layers; layer++) decode.accept(e, 0);
+            };
+            Consumer<GpuCommandEncoder> rotating = e -> {
+                for (int layer = 0; layer < layers; layer++) decode.accept(e, layer);
+            };
+            var timings = GpuBenchmark.rounds(device, List.of(reused, rotating));
+            long bytesPerLayer = 2 * config.poolBytes();
+            for (int mode = 0; mode < timings.length; mode++) {
+                long footprint = mode == 0 ? bytesPerLayer : bytesPerLayer * layers;
+                for (int round = 0; round < timings[mode].length; round++) {
+                    var t = timings[mode][round];
+                    System.out.printf(Locale.ROOT,
+                            "paged-decode %s keys=%d batch=%d calls=%d mode=%s round=%d kvWorkingSetBytes=%d "
+                                    + "gpuUs=%.2f hostEncodeUs=%.2f wallUs=%.2f%n",
+                            device.adapter().name(), keys, batch, layers, mode == 0 ? "reused" : "rotating", round + 1,
+                            footprint, t.gpuMicros(), t.encodeMicros(), t.wallMicros());
+                }
+            }
+            for (var seq : seqs) seq.close();
+        }
+    }
+
+    /** Tile randomized FP16 values across physically separate pages. Keep setup transfers and readbacks outside timing. */
+    private void fillDecodePool(GpuCommandEncoder init, GpuBuffer pool, SplittableRandom random, int dim, float marker) {
+        int tileBytes = (int) Math.min(1 << 20, pool.bytes());
+        short[] data = halves(tileBytes / 2, 1, random);
+        for (int i = 0; i < data.length; i += dim) data[i] = Float.floatToFloat16(marker);
+        try (var tile = buffer(tileBytes)) {
+            init.upload(tile, bytes(data));
+            for (long offset = 0; offset < pool.bytes(); offset += tileBytes) {
+                long count = Math.min(tileBytes, pool.bytes() - offset);
+                try (var from = tile.slice(0, count); var to = pool.slice(offset, count)) {
+                    init.copy(from, to);
+                }
+            }
         }
     }
 
