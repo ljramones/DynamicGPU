@@ -341,6 +341,77 @@ abstract class InferenceConformance {
     // --- activations and log-sum-exp -------------------------------------------------------------------------------
 
     /**
+     * Norms.backward (1.12.0): dv, and the weight and bias gradients accumulated over the rows, against the backward
+     * pass in double from the same v, w and dy, within the contract's bound; with and without accumulation into dv.
+     */
+    @Test void normBackwardWithinItsBound() {
+        final double U = 0x1p-24;
+        for (var in : Precision.values()) {
+            if (in == Precision.FP16 && !device.capabilities().dataTypes().contains(GpuCapabilities.FP16)) continue;
+            try (var norms = Norms.create(device, in, Precision.FP32)) {
+                for (var kind : Norms.Kind.values()) for (int[] shape : new int[][] {{37, 300}, {5, 4096}, {40, 1}, {3, 7}}) for (int mode = 0; mode < 2; mode++) {
+                    int rows = shape[0], n = shape[1], ldv = n + 3, lddy = n + 1, lddv = n + 5;
+                    boolean accumulate = mode == 1;
+                    var r = new SplittableRandom(70 + rows * 7 + n + mode);
+                    float[] v = values(rows * ldv, r, 4, in), w = values(n, r, 2, Precision.FP32), dy = values(rows * lddy, r, 3, Precision.FP32);
+                    float[] dv0 = values(rows * lddv, r, 1, Precision.FP32), dw0 = values(n, r, 1, Precision.FP32), db0 = values(n, r, 1, Precision.FP32);
+                    float eps = 1e-5f;
+                    var s = new Norms.BackwardShape(rows, n, ldv, lddy, lddv, eps);
+                    boolean layer = kind == Norms.Kind.LAYER;
+                    byte[][] got = new byte[3][];
+                    try (var gv = buffer(in.bytes() * (long) v.length); var gw = buffer(4L * n); var gdy = buffer(4L * dy.length); var gdv = buffer(4L * dv0.length);
+                         var gdw = buffer(4L * n); var gdb = buffer(4L * n); var e = device.encoder()) {
+                        e.upload(gv, encode(v, in)).upload(gw, encode(w, Precision.FP32)).upload(gdy, encode(dy, Precision.FP32))
+                                .upload(gdv, encode(dv0, Precision.FP32)).upload(gdw, encode(dw0, Precision.FP32)).upload(gdb, encode(db0, Precision.FP32));
+                        norms.backward(e, kind, gv, gw, gdy, gdv, gdw, layer ? gdb : null, s, accumulate);
+                        var a = e.download(gdv); var b = e.download(gdw); var c = e.download(gdb);
+                        try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                        got[0] = a.bytes(); got[1] = b.bytes(); got[2] = c.bytes();
+                    }
+                    float[] gdv = decode(got[0], Precision.FP32, dv0.length), gdw = decode(got[1], Precision.FP32, n), gdb = decode(got[2], Precision.FP32, n);
+                    double[] dwSum = new double[n], dwAbs = new double[n], dbSum = new double[n], dbAbs = new double[n];
+                    double worst = 0, eInv = (n / 256.0 + 16) * U, k = n / 256.0 + 16;
+                    for (int row = 0; row < rows; row++) {
+                        double[] dwRow = new double[n], dbRow = new double[n];
+                        double[] exact = Norms.backwardExact(kind, v, row * ldv, n, w, dy, row * lddy, eps, dwRow, dbRow);
+                        double mean = 0, absV = 0, var = 0;
+                        if (layer) { for (int j = 0; j < n; j++) mean += v[row * ldv + j]; mean /= n; }
+                        for (int j = 0; j < n; j++) { double d = v[row * ldv + j] - mean; var += d * d; absV += Math.abs(v[row * ldv + j]); }
+                        double inv = 1 / Math.sqrt(var / n + eps), sAbsG = 0, sAbsGX = 0;
+                        for (int j = 0; j < n; j++) {
+                            double g = (double) w[j] * dy[row * lddy + j], xh = (v[row * ldv + j] - mean) * inv;
+                            sAbsG += Math.abs(g); sAbsGX += Math.abs(g * xh);
+                        }
+                        double dMean = layer ? k * U * absV / n : 0;
+                        for (int j = 0; j < n; j++) {
+                            double g = (double) w[j] * dy[row * lddy + j], xh = (v[row * ldv + j] - mean) * inv;
+                            double terms = Math.abs(g) + (layer ? sAbsG / n : 0) + Math.abs(xh) * sAbsGX / n;
+                            double bound = inv * (terms * (4 * eInv + k * U) + inv * dMean * (sAbsGX / n + Math.abs(xh) * sAbsG / n) * 2) * 1.01 + 0x1p-126;
+                            double want = exact[j] + (accumulate ? dv0[row * lddv + j] : 0);
+                            if (accumulate) bound += U * (Math.abs(want) + Math.abs(exact[j]));
+                            double err = Math.abs(gdv[row * lddv + j] - want);
+                            assertTrue(err <= bound, kind + " " + in + " dv[" + row + "][" + j + "] = " + gdv[row * lddv + j] + ", exact " + want + ", bound " + bound + " (n " + n + ")");
+                            worst = Math.max(worst, err / bound);
+                            dwSum[j] += dwRow[j]; dwAbs[j] += Math.abs(dwRow[j]) * (1 + 2 * eInv / U * U) + Math.abs(dy[row * lddy + j]) * inv * dMean;
+                            dbSum[j] += dbRow[j]; dbAbs[j] += Math.abs(dbRow[j]);
+                        }
+                    }
+                    for (int j = 0; j < n; j++) {
+                        double want = dw0[j] + dwSum[j];
+                        double bound = (rows + k) * U * (dwAbs[j] + Math.abs(dw0[j])) + 4 * eInv * dwAbs[j] + 0x1p-126;
+                        assertTrue(Math.abs(gdw[j] - want) <= bound, kind + " " + in + " dWeight[" + j + "] = " + gdw[j] + ", exact " + want + ", bound " + bound);
+                        if (layer) {
+                            double wb = db0[j] + dbSum[j], bb = (rows + 2) * U * (dbAbs[j] + Math.abs(db0[j])) + 0x1p-126;
+                            assertTrue(Math.abs(gdb[j] - wb) <= bb, kind + " " + in + " dBias[" + j + "] = " + gdb[j] + ", exact " + wb + ", bound " + bb);
+                        }
+                    }
+                    if (n == 4096 && mode == 0) System.out.printf("norm backward %s %s v on %s: worst dv error/bound %.3g%n", kind, in, device.adapter().name(), worst);
+                }
+            }
+        }
+    }
+
+    /**
      * The activations' backward passes (1.12.0) against their derivatives in double, within bounds carried through
      * each step of the kernels' arithmetic (absolute: the derivatives cross zero).
      */

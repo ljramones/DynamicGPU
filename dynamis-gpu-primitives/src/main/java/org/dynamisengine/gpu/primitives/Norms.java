@@ -43,8 +43,27 @@ public final class Norms implements AutoCloseable {
         long elements(int ld) { return (long) (rows - 1) * ld + n; }
     }
 
+    /**
+     * The backward pass's rows (1.12.0): {@code rows} of {@code n}, leading dimensions in elements for v (the values
+     * the forward pass normalized: x, or h after the residual add), dy and dv.
+     */
+    public record BackwardShape(int rows, int n, int ldv, int lddy, int lddv, float eps) {
+        public BackwardShape {
+            if (rows <= 0 || n <= 0) throw new IllegalArgumentException("dimensions must be positive: " + rows + "x" + n);
+            if (ldv < n || lddy < n || lddv < n) throw new IllegalArgumentException("leading dimension smaller than a row");
+            if (!(eps >= 0) || Float.isInfinite(eps)) throw new IllegalArgumentException("eps must be finite and not negative: " + eps);
+        }
+        /** Densely packed rows. */
+        public static BackwardShape of(int rows, int n, float eps) { return new BackwardShape(rows, n, n, n, n, eps); }
+        long elements(int ld) { return (long) (rows - 1) * ld + n; }
+    }
+
+    /** Rows per group of the backward pass: each group's weight-gradient partials cover this many. */
+    static final int BACKWARD_ROWS = 16;
+
     private final GpuDevice device;
     private final GpuComputePipeline pipeline;
+    private PipelineSet backward;
     private final Precision input, output;
     private final ParameterLayout layout;
     private PipelineSet placeholders;
@@ -100,6 +119,93 @@ public final class Norms implements AutoCloseable {
                 4, bias == null ? none : bias, 5, y), params, grid.groups(), kind == Kind.RMS ? "norm.rms" : "norm.layer");
     }
 
+    /**
+     * Records the backward pass (1.12.0) of the norm of each row of {@code v} (this instance's input type: x, or h
+     * after the residual add) with weight {@code weight} and the FP32 output gradient {@code dy}:
+     * <ul>
+     * <li>{@code dv} (FP32) receives the gradient with respect to v, or, with {@code accumulate}, has it added (the
+     * residual stream's gradient, which then flows to both x and the residual);</li>
+     * <li>{@code dWeight} and, for LayerNorm, {@code dBias} (FP32 vectors of n, or null) have the sums over the rows of
+     * {@code dy xhat} and {@code dy} added: zero them before the first micro-batch.</li>
+     * </ul>
+     * The statistics are recomputed from v as the forward pass computed them. Sums are in fixed orders, so a device's
+     * result does not depend on scheduling; bounded ({@link #backwardContract}).
+     */
+    public GpuCommandEncoder backward(GpuCommandEncoder encoder, Kind kind, GpuBuffer v, GpuBuffer weight, GpuBuffer dy, GpuBuffer dv,
+            GpuBuffer dWeight, GpuBuffer dBias, BackwardShape s, boolean accumulate) {
+        Checks.notNull(kind, "kind"); Checks.notNull(s, "shape");
+        if (kind == Kind.RMS && dBias != null) throw new IllegalArgumentException("RMSNorm has no bias");
+        Checks.range(v, 0, s.elements(s.ldv()), input.bytes(), "v");
+        Checks.range(weight, 0, s.n(), 4, "weight");
+        Checks.range(dy, 0, s.elements(s.lddy()), 4, "dy");
+        Checks.range(dv, 0, s.elements(s.lddv()), 4, "dv");
+        if (dWeight != null) Checks.range(dWeight, 0, s.n(), 4, "dWeight");
+        if (dBias != null) Checks.range(dBias, 0, s.n(), 4, "dBias");
+        if (dWeight == null && dBias != null) throw new IllegalArgumentException("dBias needs dWeight");
+        if (backward == null) {
+            var types = input == Precision.FP16 ? Set.of(GpuCapabilities.FP32, GpuCapabilities.FP16) : Set.of(GpuCapabilities.FP32);
+            backward = PipelineSet.compile(device, List.of(
+                    GemmF16.KERNELS.pipeline(input == Precision.FP32 ? "norm_backward_f32" : "norm_backward_f16",
+                            List.of(Access.READ, Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE, Access.READ_WRITE), types, Set.of()),
+                    GemmF16.KERNELS.pipeline("norm_backward_columns",
+                            List.of(Access.READ, Access.READ, Access.READ_WRITE, Access.READ_WRITE), Set.of(GpuCapabilities.FP32), Set.of())));
+        }
+        int blocks = Math.ceilDiv(s.rows(), BACKWARD_ROWS);
+        boolean partials = dWeight != null;
+        var grid = Grid.linear(device.capabilities(), blocks);
+        byte[] params = ParameterLayout.of(GemmF16.KERNELS, "norm_backward_f32").block().u32("rows", s.rows()).u32("n", s.n())
+                .u32("ldv", s.ldv()).u32("lddy", s.lddy()).u32("lddv", s.lddv()).f32("eps", s.eps()).bool("layer", kind == Kind.LAYER)
+                .bool("accumulate", accumulate).u32("gridX", grid.gridX()).bool("partials", partials).bytes();
+        long partBytes = partials ? 4L * blocks * s.n() : 16;
+        // per dispatch: closing the handles keeps them alive for the recorded commands
+        try (var pw = device.allocate(new BufferDescriptor(partBytes, java.util.EnumSet.of(BufferUsage.STORAGE), Placement.PRIVATE).withLabel("norm-dw-partials"));
+             // LayerNorm writes bias partials whenever it writes weight partials
+             var pb = device.allocate(new BufferDescriptor(partials && kind == Kind.LAYER ? partBytes : 16, java.util.EnumSet.of(BufferUsage.STORAGE), Placement.PRIVATE)
+                     .withLabel("norm-db-partials"));
+             var none = device.allocate(new BufferDescriptor(16, java.util.EnumSet.of(BufferUsage.STORAGE), Placement.PRIVATE).withLabel("norm-no-bias"))) {
+            encoder.dispatch(backward.get(0), Map.of(0, v, 1, weight, 2, dy, 3, dv, 4, pw, 5, pb), params, grid.groups(),
+                    kind == Kind.RMS ? "norm.rms.backward" : "norm.layer.backward");
+            if (partials) {
+                var cgrid = Grid.forThreads(device.capabilities(), s.n(), 256);
+                byte[] cp = ParameterLayout.of(GemmF16.KERNELS, "norm_backward_columns").block().u32("n", s.n()).u32("blocks", blocks)
+                        .bool("bias", dBias != null).u32("gridX", cgrid.gridX()).bytes();
+                encoder.dispatch(backward.get(1), Map.of(0, pw, 1, pb, 2, dWeight, 3, dBias == null ? none : dBias), cp, cgrid.groups(), "norm.backward.columns");
+            }
+        }
+        return encoder;
+    }
+
+    /** The backward pass's contract: bounded (the device's rsqrt and divisions; sums in fixed orders). @since 1.12.0 */
+    public static AccuracyContract backwardContract(Kind kind, Precision input) {
+        return new AccuracyContract("Norms " + kind + " backward, " + input + " v", List.of(input.name(), "FP32 dy"),
+                "FP32, fixed tree over 256 threads per row, rows in order", "FP32", AccuracyContract.Order.DEVICE,
+                AccuracyContract.Bound.formula("|dv - exact| <= inv (|g| + sum|g| / n + |xhat| sum|g xhat| / n) (4 e_inv + k 2^-24) "
+                        + "(+ LayerNorm: the mean's error through xhat), e_inv = (n / 256 + 16) 2^-24, k = n / 256 + 16; "
+                        + "the weight and bias gradients within (rows + n / 256 + 16) 2^-24 of their sums of magnitudes"), "Norms.backwardExact");
+    }
+
+    /**
+     * The backward pass of one row in double from the given v (n values from {@code off}), w and dy: returns dv and
+     * fills {@code dwRow} and {@code dbRow} (may be null) with the row's contributions dy xhat and dy. @since 1.12.0
+     */
+    public static double[] backwardExact(Kind kind, float[] v, int off, int n, float[] w, float[] dy, int dyOff, float eps, double[] dwRow, double[] dbRow) {
+        double mean = 0, var = 0;
+        if (kind == Kind.LAYER) { for (int j = 0; j < n; j++) mean += v[off + j]; mean /= n; }
+        for (int j = 0; j < n; j++) { double d = v[off + j] - mean; var += d * d; }
+        double inv = 1 / Math.sqrt(var / n + eps);
+        double sgx = 0, sg = 0;
+        for (int j = 0; j < n; j++) { double g = (double) w[j] * dy[dyOff + j], xh = (v[off + j] - mean) * inv; sgx += g * xh; sg += g; }
+        sgx /= n; sg = kind == Kind.LAYER ? sg / n : 0;
+        double[] dv = new double[n];
+        for (int j = 0; j < n; j++) {
+            double g = (double) w[j] * dy[dyOff + j], xh = (v[off + j] - mean) * inv;
+            dv[j] = inv * (g - sg - xh * sgx);
+            if (dwRow != null) dwRow[j] = dy[dyOff + j] * xh;
+            if (dbRow != null) dbRow[j] = dy[dyOff + j];
+        }
+        return dv;
+    }
+
     /** Whether two buffers are the same range of the same memory (one may be bound in place of both). */
     static boolean same(GpuBuffer a, GpuBuffer b) {
         return a == b || a.offset() == b.offset() && a.bytes() == b.bytes() && root(a) == root(b);
@@ -138,5 +244,5 @@ public final class Norms implements AutoCloseable {
                         + "; h is in(x + res) exactly"), "Norms.exact");
     }
 
-    @Override public void close() { PipelineSet.closeAll(pipeline, placeholders, scratch); }
+    @Override public void close() { PipelineSet.closeAll(pipeline, placeholders, scratch, backward); }
 }
