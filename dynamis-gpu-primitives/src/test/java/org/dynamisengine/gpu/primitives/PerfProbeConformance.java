@@ -1,5 +1,6 @@
 package org.dynamisengine.gpu.primitives;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
@@ -92,6 +93,8 @@ abstract class PerfProbeConformance {
         String only = System.getProperty("perf.only", "gemm,selector,quant");
         if (only.contains("prefill")) prefillDequant();
         if (only.contains("gate")) prefillGate();
+        if (only.contains("pad")) padExperiment();
+        if (only.contains("kernelab")) kernelAb();
         if (only.contains("gemm")) squareGemm();
         if (only.contains("selector")) selectorMisses();
         if (only.contains("quant")) quantized();
@@ -368,6 +371,125 @@ abstract class PerfProbeConformance {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The partial-row-tile experiment (1.15 step 3 review, item 1): how much the matrix kernel's interior path is worth
+     * at m that is not a multiple of its 64-row tile. FP16 A and resident FP16 W (n x k, B transposed), FP32 C. Four
+     * arms alternate in the same rounds: the matrix kernel at m rows; the same product physically padded to the next
+     * multiple of 64 (zero rows in A), product only; the padded product including copying A in and C's m rows out; and
+     * dense AUTO at m. Before timing, each arm's logical C is checked on sampled elements and the guard words after
+     * C's m rows must be untouched. Lines: {@code perf|pad|<arm>|...}.
+     */
+    private void padExperiment() {
+        var r = new SplittableRandom(127);
+        int[][] nks = {{4096, 4096}, {14336, 4096}, {4096, 14336}};
+        int[] ms = java.util.Arrays.stream(System.getProperty("perf.padM", "17,32,48,63,65,96,112,127").split(",")).mapToInt(Integer::parseInt).toArray();
+        int guard = 64;
+        try (var matrix = GemmF16.create(device, Algorithm.SIMDGROUP_MATRIX, GemmF16.Input.FP16, Precision.FP32);
+             var auto = GemmF16.create(device, GemmF16.Input.FP16, Precision.FP32); var cast = Cast.create(device)) {
+            for (int[] nk : nks) {
+                int n = nk[0], k = nk[1];
+                short[] wh = GemmF16Conformance.halves(n * k, r);
+                var wEl = GemmF16.Elements.fp16(wh);
+                try (var gw = buffer(2L * n * k)) {
+                    run(e -> e.upload(gw, GemmF16Conformance.bytes(wh)));
+                    for (int m : ms) {
+                        int mp = Math.ceilDiv(m, 64) * 64;
+                        var s = Shape.ofTransposedB(m, n, k, 1, 0);
+                        var sp = Shape.ofTransposedB(mp, n, k, 1, 0);
+                        short[] ah = GemmF16Conformance.halves(m * k, r);
+                        short[] apad = java.util.Arrays.copyOf(ah, mp * k);   // the added rows are zero
+                        var aEl = GemmF16.Elements.fp16(ah);
+                        try (var ga = buffer(2L * m * k); var gap = buffer(2L * mp * k); var gc = buffer(4L * (m * n + guard));
+                             var gcp = buffer(4L * mp * n)) {
+                            run(e -> e.upload(ga, GemmF16Conformance.bytes(ah)).upload(gap, GemmF16Conformance.bytes(apad)));
+                            var aView = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous((long) m * k);
+                            var cView = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous((long) m * n);
+                            List<Consumer<GpuCommandEncoder>> arms = List.of(
+                                    e -> matrix.encode(e, ga, gw, gc, s),
+                                    e -> matrix.encode(e, gap, gw, gcp, sp),
+                                    e -> {
+                                        cast.cast(e, Cast.Type.FP16, Cast.Type.FP16, ga, aView, gap, aView);
+                                        matrix.encode(e, gap, gw, gcp, sp);
+                                        cast.cast(e, Cast.Type.FP32, Cast.Type.FP32, gcp, cView, gc, cView);
+                                    },
+                                    e -> auto.encode(e, ga, gw, gc, s));
+                            String[] names = {"matrix at m", "padded product", "padded with copies", "dense AUTO"};
+                            double[] checks = new double[4];
+                            for (int i = 0; i < 4; i++) {
+                                var arm = arms.get(i);
+                                run(e -> e.fill(gc, 0x7FC00000).fill(gcp, 0x7FC00000));
+                                run(arm);
+                                float[] out = download(i == 1 ? gcp : gc);
+                                checks[i] = checkGemm(out, aEl, wEl, s, new SplittableRandom(9));
+                                assertTrue(checks[i] <= 1, "pad " + names[i] + " " + s + ": sampled error " + checks[i]);
+                                if (i != 1) for (int g = 0; g < guard; g++)
+                                    assertTrue(Float.isNaN(out[m * n + g]), "pad " + names[i] + " " + s + ": guard word " + g + " written");
+                            }
+                            var t = GpuBenchmark.alternating(device, arms, ROUNDS);
+                            for (int i = 0; i < 4; i++)
+                                print("pad", names[i], s, "FP16", i == 3 ? auto.algorithm(s).name() : "SIMDGROUP_MATRIX", GpuBenchmark.Stats.of(t.get(i)), checks[i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Two versions of the matrix kernel's source ({@code -Dperf.kernelA}, {@code -Dperf.kernelB}: MSL files), timed in the
+     * same alternating rounds on the projection shapes, after checking that their C is bit for bit the same.
+     */
+    private void kernelAb() {
+        var paths = List.of(System.getProperty("perf.kernelA"), System.getProperty("perf.kernelB"));
+        int[] ms = java.util.Arrays.stream(System.getProperty("perf.abM", "32,64,127,128,512").split(",")).mapToInt(Integer::parseInt).toArray();
+        int[][] nks = {{4096, 4096}, {14336, 4096}, {4096, 14336}};
+        var kernels = new ArrayList<GemmF16>();
+        var names = new ArrayList<String>();
+        try {
+            for (int i = 0; i < 2; i++) {
+                var path = java.nio.file.Path.of(paths.get(i));
+                byte[] source;
+                try { source = java.nio.file.Files.readAllBytes(path); } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+                kernels.add(GemmF16.createSimdgroup(device, source, "ab" + i, GemmF16.Input.FP16, Precision.FP32));
+                names.add(path.getFileName().toString().replace(".metal", ""));
+            }
+            var r = new SplittableRandom(131);
+            for (int[] nk : nks) {
+                int n = nk[0], k = nk[1];
+                short[] wh = GemmF16Conformance.halves(n * k, r);
+                try (var gw = buffer(2L * n * k)) {
+                    run(e -> e.upload(gw, GemmF16Conformance.bytes(wh)));
+                    for (int m : ms) {
+                        short[] ah = GemmF16Conformance.halves(m * k, r);
+                        for (boolean transB : new boolean[] {true, false}) {
+                            var s = transB ? Shape.ofTransposedB(m, n, k, 1, 0) : Shape.of(m, n, k, 1, 0);
+                            try (var ga = buffer(2L * m * k); var c0 = buffer(4L * m * n); var c1 = buffer(4L * m * n)) {
+                                run(e -> e.upload(ga, GemmF16Conformance.bytes(ah)));
+                                var cs = List.of(c0, c1);
+                                List<Consumer<GpuCommandEncoder>> arms = new ArrayList<>();
+                                for (int i = 0; i < 2; i++) {
+                                    var g = kernels.get(i); var c = cs.get(i);
+                                    arms.add(e -> g.encode(e, ga, gw, c, s));
+                                }
+                                run(e -> e.fill(c0, 0x7FC00000).fill(c1, 0x7FC00000));
+                                run(arms.get(0)); run(arms.get(1));
+                                float[] x = download(c0), y = download(c1);
+                                int differ = 0;
+                                for (int j = 0; j < x.length; j++) if (Float.floatToRawIntBits(x[j]) != Float.floatToRawIntBits(y[j])) differ++;
+                                assertEquals(0, differ, "kernel A/B " + s + ": elements that differ");
+                                var t = GpuBenchmark.alternating(device, arms, ROUNDS);
+                                for (int i = 0; i < 2; i++)
+                                    print("kernel-ab", names.get(i), s, "FP16", "SIMDGROUP_MATRIX", GpuBenchmark.Stats.of(t.get(i)), 0);
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            kernels.forEach(GemmF16::close);
         }
     }
 
