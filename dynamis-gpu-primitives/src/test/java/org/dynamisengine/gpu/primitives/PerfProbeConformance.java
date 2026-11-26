@@ -97,34 +97,43 @@ abstract class PerfProbeConformance {
         if (only.contains("quant")) quantized();
     }
 
-    /** Times AUTO and every supported forced algorithm on one shape, on seeded inputs, and checks each one's C. */
+    /**
+     * Times AUTO and every supported forced algorithm on one shape, on seeded inputs, alternating in the same rounds
+     * (so drift lands on all of them alike), after checking each one's C.
+     */
     private void gemmCase(String section, Shape s, GemmF16.Input input, List<Algorithm> forced) {
         var r = new SplittableRandom(0x5eed ^ s.m() * 31L ^ s.n() * 17L ^ s.k());
         var a = GemmF16Conformance.data(input, (int) (GemmF16Conformance.pad4(s.aBytes(input)) / input.bytes()), r);
         var b = GemmF16Conformance.data(input, (int) (GemmF16Conformance.pad4(s.bBytes(input)) / input.bytes()), r);
+        var kernels = new ArrayList<GemmF16>();
         try (var ga = buffer(a.bytes().length); var gb = buffer(b.bytes().length); var gc = buffer(s.cBytes())) {
             run(e -> e.upload(ga, a.bytes()).upload(gb, b.bytes()));
-            try (var auto = GemmF16.create(device, input, Precision.FP32)) {
-                measure(section, "AUTO", s, input, auto.algorithm(s).name(), e -> auto.encode(e, ga, gb, gc, s), gc, a, b);
-            }
+            var names = new ArrayList<String>();
+            var selected = new ArrayList<String>();
+            var auto = GemmF16.create(device, input, Precision.FP32);
+            kernels.add(auto); names.add("AUTO"); selected.add(auto.algorithm(s).name());
             for (var alg : forced) {
                 if (!GemmF16.supports(device, alg, input)) continue;
                 if (alg == Algorithm.SKINNY && s.m() > GemmF16.SKINNY_MAX_M) continue;
-                try (var g = GemmF16.create(device, alg, input, Precision.FP32)) {
-                    measure(section, alg.name(), s, input, alg.name(), e -> g.encode(e, ga, gb, gc, s), gc, a, b);
-                }
+                kernels.add(GemmF16.create(device, alg, input, Precision.FP32)); names.add(alg.name()); selected.add(alg.name());
             }
+            var bodies = new ArrayList<Consumer<GpuCommandEncoder>>();
+            double[] checks = new double[kernels.size()];
+            for (int i = 0; i < kernels.size(); i++) {
+                var g = kernels.get(i);
+                Consumer<GpuCommandEncoder> body = e -> g.encode(e, ga, gb, gc, s);
+                bodies.add(body);
+                run(e -> e.fill(gc, 0x7FC00000));   // NaN, so a kernel that skips elements fails the check
+                run(body);
+                checks[i] = s.batch() == 1 ? checkGemm(download(gc), a.elements(), b.elements(), s, new SplittableRandom(7)) : Double.NaN;
+                if (s.batch() == 1) assertTrue(checks[i] <= 1, section + " " + names.get(i) + " " + s + ": sampled error " + checks[i] + " of the bound");
+            }
+            var t = GpuBenchmark.alternating(device, bodies, ROUNDS);
+            for (int i = 0; i < kernels.size(); i++)
+                print(section, names.get(i), s, input.name(), selected.get(i), GpuBenchmark.Stats.of(t.get(i)), checks[i]);
+        } finally {
+            kernels.forEach(GemmF16::close);
         }
-    }
-
-    private void measure(String section, String variant, Shape s, GemmF16.Input input, String selected, Consumer<GpuCommandEncoder> body,
-            GpuBuffer gc, GemmF16Conformance.Data a, GemmF16Conformance.Data b) {
-        run(e -> e.fill(gc, 0x7FC00000));   // NaN, so a kernel that skips elements fails the check
-        run(body);
-        double check = s.batch() == 1 ? checkGemm(download(gc), a.elements(), b.elements(), s, new SplittableRandom(7)) : Double.NaN;
-        if (s.batch() == 1) assertTrue(check <= 1, section + " " + variant + " " + s + ": sampled error " + check + " of the bound");
-        var t = GpuBenchmark.Stats.of(GpuBenchmark.paired(device, body, ROUNDS));
-        print(section, variant, s, input.name(), selected, t, check);
     }
 
     private void squareGemm() {
