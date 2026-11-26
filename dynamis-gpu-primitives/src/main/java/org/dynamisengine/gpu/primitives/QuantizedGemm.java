@@ -64,7 +64,10 @@ public final class QuantizedGemm implements AutoCloseable {
         this.layout = ParameterLayout.of(GemmF16.KERNELS, kernel(Algorithm.SKINNY, Input.FP16, Precision.FP32));
     }
 
-    /** Both algorithms, chosen per shape: SKINNY for {@code m <= 16}, TILED beyond. */
+    /**
+     * Both algorithms, chosen per shape and format: SKINNY up to {@link #skinnyMaxM} rows of A (16, or 13 for Q6K),
+     * TILED beyond.
+     */
     public static QuantizedGemm create(GpuDevice device, Input input, Precision output) {
         return compile(device, List.of(Algorithm.SKINNY, Algorithm.TILED), true, input, output);
     }
@@ -113,10 +116,30 @@ public final class QuantizedGemm implements AutoCloseable {
                 + (output == Precision.FP16 ? "_h" : "");
     }
 
-    /** The algorithm {@link #encode} runs for {@code s}. */
+    /**
+     * The algorithm {@link #encode} runs for {@code s} with weights of a format other than Q6K. For any format use
+     * {@link #algorithm(Shape, QuantizedMatrix)}.
+     */
     public Algorithm algorithm(Shape s) {
         if (!dispatch) return algorithms.getFirst();
         return s.m() <= SKINNY_MAX_M && !KitOptions.current().reproducible() ? Algorithm.SKINNY : Algorithm.TILED;
+    }
+
+    /** The algorithm {@link #encode} runs for {@code s} and the weights {@code w}. @since 1.15.0 */
+    public Algorithm algorithm(Shape s, QuantizedMatrix w) {
+        Checks.notNull(w, "weights");
+        if (!dispatch) return algorithms.getFirst();
+        return s.m() <= skinnyMaxM(w.format()) && !KitOptions.current().reproducible() ? Algorithm.SKINNY : Algorithm.TILED;
+    }
+
+    /**
+     * The most rows of A for which shape dispatch picks SKINNY with weights of {@code format} (1.15.0). It is 16, except
+     * for Q6K, which picks TILED from m = 14. On an M4 Max with representative weights, both kernels tie at m = 14
+     * (SKINNY at 1.01 to 1.02 times TILED's time on Metal and MoltenVK), and TILED is 13 to 15% faster at m = 16. SKINNY
+     * is 18 to 20% faster at m = 12. Every other format keeps SKINNY through m = 16, where it is 20 to 35% faster.
+     */
+    public static int skinnyMaxM(QuantizedMatrix.Format format) {
+        return Checks.notNull(format, "format") == QuantizedMatrix.Format.Q6K ? 13 : SKINNY_MAX_M;
     }
 
     public Input input() { return input; }
@@ -134,7 +157,7 @@ public final class QuantizedGemm implements AutoCloseable {
         if (!s.transposeB() || s.transposeA()) throw new IllegalArgumentException("the weights are W^T, A is not transposed: " + s);
         if (s.n() != w.rows() || s.k() != w.cols()) throw new IllegalArgumentException("shape " + s.n() + "x" + s.k() + " does not match the weights " + w);
         if (s.strideB() != 0 && s.batch() > 1) throw new IllegalArgumentException("a batch shares the weights: strideB must be 0");
-        Algorithm run = algorithm(s);
+        Algorithm run = algorithm(s, w);
         if (run == Algorithm.SKINNY && s.m() > SKINNY_MAX_M) throw new IllegalArgumentException("SKINNY needs m <= " + SKINNY_MAX_M + ": " + s);
         Checks.range(a, 0, s.aElements(), input.bytes(), "A");
         Checks.range(packed, 0, w.bytes() / 4, 4, "weights");

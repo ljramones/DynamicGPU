@@ -31,9 +31,9 @@ round.
 | Q4K decode, 32K context, warmed | 34.5 tok/s (29.0 ms) | 29.3 tok/s (34.1 ms) |
 
 **Scope of these numbers:**
-- They come from a synthetic model: random N(0, 0.02) weights and random KV history, with no tokenizer, embedding or
+- They are synthetic transformer-stack rates, not a model's. They come from a synthetic model: random N(0, 0.02) weights and random KV history, with no tokenizer, embedding or
   output head.
-- One layer's weights serve all 32 layers. That is 436 MB per layer in FP16, about 123 MB in Q4K. Decode reads them at
+- One layer's weights serve all 32 layers, and the sustained run repeats decode at a fixed position. That is 436 MB per layer in FP16, about 123 MB in Q4K. Decode reads them at
   330 and 257 GB/s, below the streaming rate, so the system cache isn't inflating them.
 - Not yet compared with llama.cpp, MLX or MPS on the same machine. That is still open in Phase 0.
 
@@ -112,7 +112,7 @@ through more than 256 MiB.
 
 - **Decode** held steady for 20 minutes: 46.1–46.7 ms per token on Metal and 48.7–50.0 ms on MoltenVK.
 - **Prefill** slowed from minute 3 on. On Metal it went from 613 ms warmed and 645 ms in minute 1 to 785–917 ms in
-  minutes 3–20, which is 28–50% slower than warmed. MoltenVK went from about 1,600 ms in minutes 1–2 to 1,782–1,988 ms, which is 9–22% slower than its warmed 1,631 ms.
+  minutes 3–20. That is 28–50% more time per pass, or 22–33% less throughput (558–652 against 835 tok/s). MoltenVK went from about 1,600 ms in minutes 1–2 to 1,782–1,988 ms, which is 9–22% slower than its warmed 1,631 ms.
 - Compute-bound work loses clock under sustained load; bandwidth-bound decode doesn't.
 - Publish both numbers.
 
@@ -458,6 +458,8 @@ Misses (regret > 1.15): Metal 33 of 72, MoltenVK 33 of 72.
   - Each phase is timed as 10 whole-pass submissions after 2 warm ones.
   - The profiled pass is a separate submission.
 - **Sustained:** prefill 512, then 32 decode tokens at 4K context, repeated for 20 minutes, with per-minute medians.
+- **Checks are assertions:** since the commit after this report, every probe case and every block phase fails the
+  test if its sampled check is NaN or above 1, before any timing.
 - **Order and conditions:** Metal ran, then MoltenVK, with cool-downs of 60–120 s between suites. The runs were not
   interleaved and the machine was otherwise idle. Power source and thermal state were not recorded.
 

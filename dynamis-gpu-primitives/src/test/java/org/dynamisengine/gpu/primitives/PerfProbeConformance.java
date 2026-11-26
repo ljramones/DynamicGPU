@@ -120,6 +120,7 @@ abstract class PerfProbeConformance {
         run(e -> e.fill(gc, 0x7FC00000));   // NaN, so a kernel that skips elements fails the check
         run(body);
         double check = s.batch() == 1 ? checkGemm(download(gc), a.elements(), b.elements(), s, new SplittableRandom(7)) : Double.NaN;
+        if (s.batch() == 1) assertTrue(check <= 1, section + " " + variant + " " + s + ": sampled error " + check + " of the bound");
         var t = GpuBenchmark.Stats.of(GpuBenchmark.paired(device, body, ROUNDS));
         print(section, variant, s, input.name(), selected, t, check);
     }
@@ -149,6 +150,18 @@ abstract class PerfProbeConformance {
                 shapes.add(Shape.of(1, n, k, 1, 0));
                 shapes.add(Shape.ofTransposedB(1, n, k, 1, 0));
             }
+        // the 1.8.0 shape sweep, to catch regressions elsewhere
+        int[][] sweep = {{1, 4096, 4096, 1}, {16, 4096, 4096, 1}, {32, 4096, 4096, 1}, {64, 4096, 4096, 1}, {128, 128, 128, 1},
+                {512, 512, 512, 1}, {2048, 2048, 128, 1}, {8, 8, 4096, 1}, {16, 16, 16, 4096}, {32, 32, 32, 4096}, {16, 16, 256, 512},
+                {32, 32, 128, 1024}, {8, 32, 64, 2048}, {64, 64, 64, 512}, {48, 48, 48, 1024}, {32, 64, 64, 512}, {8, 300, 200, 1},
+                {1, 1024, 1024, 1}, {4, 2048, 512, 1}, {16, 1024, 1024, 1}, {256, 256, 256, 1}, {96, 160, 96, 1}};
+        if (!Boolean.getBoolean("perf.selectorOnlyNew")) {
+            for (int[] m : sweep)
+                for (boolean t : new boolean[] {false, true}) {
+                    var shape = t ? Shape.ofTransposedB(m[0], m[1], m[2], 1, 0) : Shape.of(m[0], m[1], m[2], 1, 0);
+                    gemmCase("sweep", m[3] > 1 ? shape.batched(m[3]) : shape, GemmF16.Input.FP16, all);
+                }
+        }
         for (var s : shapes) gemmCase("selector", s, GemmF16.Input.FP16, all);
     }
 
@@ -165,13 +178,14 @@ abstract class PerfProbeConformance {
         short[] wh = new short[n * k];
         for (int i = 0; i < wh.length; i++) wh[i] = Float.floatToFloat16(values[i]);
         var fp16W = GemmF16Conformance.bytes(wh);
-        int[] ms = {1, 2, 4, 8, 16, 32, 64, 512};
+        int[] ms = java.util.Arrays.stream(System.getProperty("perf.quantM", "1,2,4,8,16,32,64,512").split(",")).mapToInt(Integer::parseInt).toArray();
+        var formats = List.of(System.getProperty("perf.quantFormats", "FP16,Q8,Q4,Q4M,Q4K,Q5K,Q6K").split(","));
         var acts = new java.util.HashMap<Integer, short[]>();
         for (int m : ms) acts.put(m, GemmF16Conformance.halves(m * k + (m * k & 1), r));
         // FP16 weights: AUTO at every m, over rotating copies
-        var copies = rotating(fp16W, fp16W.length);
+        var copies = formats.contains("FP16") ? rotating(fp16W, fp16W.length) : List.<GpuBuffer>of();
         try (var auto = GemmF16.create(device, GemmF16.Input.FP16, Precision.FP32)) {
-            for (int m : ms) {
+            for (int m : formats.contains("FP16") ? ms : new int[0]) {
                 var s = Shape.ofTransposedB(m, n, k, 1, 0);
                 var aEl = GemmF16.Elements.fp16(acts.get(m));
                 try (var ga = buffer(2L * acts.get(m).length); var gc = buffer(s.cBytes())) {
@@ -184,6 +198,7 @@ abstract class PerfProbeConformance {
         for (var w : new QuantizedMatrix[] {new QuantizedMatrix(Format.Q8, 32, n, k), new QuantizedMatrix(Format.Q4, 32, n, k),
                 new QuantizedMatrix(Format.Q4M, 32, n, k), new QuantizedMatrix(Format.Q4K, 256, n, k),
                 new QuantizedMatrix(Format.Q5K, 256, n, k), new QuantizedMatrix(Format.Q6K, 256, n, k)}) {
+            if (!formats.contains(w.format().name())) continue;
             byte[] packed = w.quantize(values);
             var qc = rotating(packed, w.bytes());
             try (var skinny = QuantizedGemm.create(device, QuantizedGemm.Algorithm.SKINNY, GemmF16.Input.FP16, Precision.FP32);
@@ -199,7 +214,7 @@ abstract class PerfProbeConformance {
                                     c -> checkQuant(c, aEl, w, packed, s));
                         quantMeasure("quant-fair", w.format() + " TILED", s, "TILED", qc, (e, buf) -> tiled.encode(e, ga, w, buf, gc, s), gc,
                                 c -> checkQuant(c, aEl, w, packed, s));
-                        quantMeasure("quant-fair", w.format() + " AUTO", s, auto.algorithm(s).name(), qc, (e, buf) -> auto.encode(e, ga, w, buf, gc, s), gc,
+                        quantMeasure("quant-fair", w.format() + " AUTO", s, auto.algorithm(s, w).name(), qc, (e, buf) -> auto.encode(e, ga, w, buf, gc, s), gc,
                                 c -> checkQuant(c, aEl, w, packed, s));
                     }
                 }
@@ -224,6 +239,7 @@ abstract class PerfProbeConformance {
         run(e -> e.fill(gc, 0x7FC00000));
         run(e -> body.accept(e, weights.get(0)));
         double err = check.applyAsDouble(download(gc));
+        assertTrue(err <= 1, section + " " + variant + " " + s + ": sampled error " + err + " of the bound");
         int[] next = {0};
         var t = GpuBenchmark.Stats.of(GpuBenchmark.paired(device, e -> body.accept(e, weights.get(next[0]++ % weights.size())), ROUNDS));
         print(section, variant, s, "FP16", selected, t, err);

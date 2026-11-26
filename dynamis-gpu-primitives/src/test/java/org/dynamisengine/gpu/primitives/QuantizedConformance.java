@@ -119,7 +119,7 @@ abstract class QuantizedConformance {
             try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
             got = rc.bytes();
         }
-        var alg = g.algorithm(s);
+        var alg = g.algorithm(s, w);
         var bufG = ByteBuffer.wrap(got).order(ByteOrder.LITTLE_ENDIAN);
         String what = alg + " " + w + " " + in + " " + out + " " + ep + " " + s.m() + "x" + s.n() + "x" + s.k() + "x" + s.batch();
         int differ = 0, first = -1;
@@ -180,6 +180,12 @@ abstract class QuantizedConformance {
                 checkQuantized(g, new QuantizedMatrix(format, format.kQuant() ? 256 : 32, 96, 4096), GemmF16.Shape.ofTransposedB(4, 96, 4096, 1f, 0f), none, seed++);
             assertEquals(QuantizedGemm.Algorithm.SKINNY, g.algorithm(GemmF16.Shape.ofTransposedB(16, 96, 4096, 1f, 0f)));
             assertEquals(QuantizedGemm.Algorithm.TILED, g.algorithm(GemmF16.Shape.ofTransposedB(17, 96, 4096, 1f, 0f)));
+            // Q6K switches to TILED from m = 14 (1.15.0); the other formats keep SKINNY through 16
+            var q6k = new QuantizedMatrix(Format.Q6K, 256, 96, 4096);
+            assertEquals(QuantizedGemm.Algorithm.SKINNY, g.algorithm(GemmF16.Shape.ofTransposedB(13, 96, 4096, 1f, 0f), q6k));
+            assertEquals(QuantizedGemm.Algorithm.TILED, g.algorithm(GemmF16.Shape.ofTransposedB(14, 96, 4096, 1f, 0f), q6k));
+            assertEquals(QuantizedGemm.Algorithm.SKINNY, g.algorithm(GemmF16.Shape.ofTransposedB(16, 96, 4096, 1f, 0f), new QuantizedMatrix(Format.Q5K, 256, 96, 4096)));
+            checkQuantized(g, q6k, GemmF16.Shape.ofTransposedB(14, 96, 4096, 1f, 0f), none, seed++);
         }
     }
 
@@ -287,7 +293,7 @@ abstract class QuantizedConformance {
                     short[] a = activations(GemmF16.Input.FP16, rows * m.cols() + 1, r);
                     var shape = GemmF16.Shape.ofTransposedB(rows, m.rows(), m.cols(), 1f, 0f);
                     float[] expect = new float[rows * m.rows()];
-                    QuantizedGemm.reference(g.algorithm(shape), GemmF16.Elements.fp16(a), m, packed.bytes(), expect, shape, GemmF16.Epilogue.NONE, null, null, null);
+                    QuantizedGemm.reference(g.algorithm(shape, m), GemmF16.Elements.fp16(a), m, packed.bytes(), expect, shape, GemmF16.Epilogue.NONE, null, null, null);
                     try (var ga = buffer(halfBytes(a).length); var gw = buffer(m.bytes()); var gc = buffer(4L * expect.length); var e = device.encoder()) {
                         e.upload(ga, halfBytes(a)).upload(gw, packed.bytes());
                         g.encode(e, ga, m, gw, gc, shape);
@@ -295,7 +301,7 @@ abstract class QuantizedConformance {
                         try (var s = device.queue().submit(e)) { assertTrue(s.await(WAIT)); }
                         var cv = ByteBuffer.wrap(rc.bytes()).order(ByteOrder.LITTLE_ENDIAN);
                         for (int i = 0; i < expect.length; i++)
-                            assertEquals(Float.floatToRawIntBits(expect[i]), Float.floatToRawIntBits(cv.getFloat(4 * i)), sample.type() + " " + g.algorithm(shape) + " C[" + i + "]");
+                            assertEquals(Float.floatToRawIntBits(expect[i]), Float.floatToRawIntBits(cv.getFloat(4 * i)), sample.type() + " " + g.algorithm(shape, m) + " C[" + i + "]");
                     }
                 }
             }

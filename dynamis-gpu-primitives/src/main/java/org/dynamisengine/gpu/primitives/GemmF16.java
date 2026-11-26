@@ -298,15 +298,18 @@ public final class GemmF16 implements AutoCloseable {
     /**
      * Estimated GPU time in microseconds of each algorithm for a shape, the shape registry's costs (1.8.0). Fitted to
      * the {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps on an Apple M4 Max (native Metal and
-     * MoltenVK agree): on all 46 measured shapes it picks the fastest algorithm or one within 1.2 times of it, with the
-     * matrix kernel and without ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
+     * MoltenVK agree): on all 118 measured shapes (46 from 1.8.0, 72 from the 1.15 Phase 0 probe) it picks the fastest
+     * algorithm or one within 1.2 times of it, with the matrix kernel and without
+     * ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
      * <ul>
      * <li>TILED runs 5.5 TFLOP/s over its 64-padded work when the GPU is full, which takes about 100 of its groups:
      * a 128^3 multiply (4 groups) runs at 4% of that;</li>
      * <li>SMALL runs 2.15 TFLOP/s over its 16-padded work, full from about 190 groups; it wins wherever TILED's tiles
      * are mostly padding (m or n up to 32) or too few to fill the GPU;</li>
      * <li>SKINNY streams B at 400 GB/s with B transposed (300 without) when full (256 groups of 16 columns; 64 of 64),
-     * slower by 17% (45%) per extra row of A; it is offered only for decode-sized products ({@link #skinnyApplies});</li>
+     * slower by 17% (45%) per extra row of A. With B transposed and fewer than 32 groups it is latency-bound instead,
+     * at about 1.2 + 1.5 m + 0.00064 m k microseconds (1.15.0). It is offered only where it can win
+     * ({@link #skinnyApplies}).</li>
      * <li>SIMDGROUP_MATRIX runs in 0.5 of TILED's time from m = 64, 0.75 for B transposed and m up to 16, else 1.5
      * (1.7.0).</li>
      * </ul>
@@ -325,17 +328,30 @@ public final class GemmF16 implements AutoCloseable {
         }
         static double skinny(Shape s) {
             double groups = (double) Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * s.batch();
-            double rate = s.transposeB() ? 4e5 * fill(groups, 256) : 3e5 * fill(groups, 64);
-            return s.bBytes() / rate * (1 + (s.transposeB() ? 0.17 : 0.45) * (s.m() - 1));
+            if (s.transposeB() && groups < 32) {
+                // too few groups to stream: the larger of streaming B at the full rate and the groups' latency, which
+                // grows with m k (1.15.0; fitted to one- and two-group products in the Phase 0 probe: 4 to 16 rows, k
+                // 2048 to 8192). From 32 groups the bandwidth estimate below holds, as it did before 1.15.0.
+                double stream = s.bBytes() / 4e5 * (1 + 0.17 * (s.m() - 1));
+                double latency = 1.2 + 1.5 * s.m() + 0.00064 * s.m() * s.k();
+                return Math.max(stream, latency);
+            }
+            return s.bBytes() / (3e5 * fill(groups, 64)) * (1 + 0.45 * (s.m() - 1));
         }
         /**
-         * Whether the registry offers SKINNY for {@code s}: m up to 16, A not transposed, and a decode-sized product
-         * (k at least 256 and at least 32 groups). Below that the kernel is latency-bound, which the bandwidth estimate
-         * does not see: 8 x 300 x 200 with B^T took twice SMALL's time.
+         * Whether the registry offers SKINNY for {@code s}: m up to 16, A not transposed, and k at least 256. With a
+         * shorter k the kernel is latency-bound, which the bandwidth estimate does not see: 8 x 300 x 200 with B^T took
+         * twice SMALL's time. With B not transposed and more than one row of A it also needs 32 groups of columns: below
+         * that SMALL is 1.2 to 4 times faster.
+         * <p>
+         * Until 1.15.0 the 32-group rule applied to every shape. That withheld SKINNY from small-n products with B
+         * transposed, and from m = 1 with n up to 1024. There SKINNY is 1.3 to 25 times faster than SMALL (the 1.15
+         * Phase 0 probe), and its cost estimate already ranks it first.
          */
         static boolean skinnyApplies(Shape s) {
-            long groups = Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * (long) s.batch();
-            return s.m() <= SKINNY_MAX_M && !s.transposeA() && s.k() >= 256 && groups >= 32;
+            if (s.m() > SKINNY_MAX_M || s.transposeA() || s.k() < 256) return false;
+            if (s.transposeB() || s.m() == 1) return true;
+            return Math.ceilDiv(s.n(), SKINNY_COLUMNS_N) * (long) s.batch() >= 32;
         }
         static double simdgroup(Shape s) {
             return tiled(s) * (s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5);

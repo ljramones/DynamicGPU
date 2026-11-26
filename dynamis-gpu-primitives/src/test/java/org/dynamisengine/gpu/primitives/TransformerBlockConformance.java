@@ -154,7 +154,7 @@ abstract class TransformerBlockConformance {
 
         String selected(Weight w, int m) {
             var s = GemmF16.Shape.ofTransposedB(m, w.n, w.k, 1f, 0f);
-            return w.q == null ? gemm.algorithm(s).name() : qgemm.algorithm(s).name();
+            return w.q == null ? gemm.algorithm(s).name() : qgemm.algorithm(s, w.q).name();
         }
 
         @Override public void close() { gemm.close(); qgemm.close(); }
@@ -302,6 +302,7 @@ abstract class TransformerBlockConformance {
             // check one layer, stage by stage
             run(e -> model.layer(e, 0, a, a.x0, a.x1, t, start, seq));
             double check = checkLayer(model, a, x, t, start);
+            assertTrue(check <= 1, weights + " " + phase + " t=" + t + " start=" + start + ": a stage of layer 0 is off by " + check + " of its bound");
             // time the whole pass; every round starts from the same input
             byte[] xb = bytes(x);
             Consumer<GpuCommandEncoder> pass = e -> { e.upload(a.x0, xb); model.forward(e, a, t, start, seq, layers); };
