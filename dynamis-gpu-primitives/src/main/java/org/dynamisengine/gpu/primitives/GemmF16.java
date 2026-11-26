@@ -298,21 +298,24 @@ public final class GemmF16 implements AutoCloseable {
     /**
      * Estimated GPU time in microseconds of each algorithm for a shape, the shape registry's costs (1.8.0). Fitted to
      * the {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps on an Apple M4 Max (native Metal and
-     * MoltenVK agree): on all 146 measured shapes (44 from the 1.8.0 sweep, 30 from the 1.14.1 decode grid, 72 from the
-     * 1.15 Phase 0 probe) it picks the fastest algorithm or one within 1.2 times of it, with the matrix kernel and without
-     * ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
+     * MoltenVK agree): on all 156 shapes of the 1.15 refit probe, timed on the 1.15 kernels (the 1.8.0 sweep, the 1.14.1
+     * decode grid, the Phase 0 selector shapes and the 3- to 6-row projections), it picks the fastest algorithm or one
+     * within 1.2 times of it, with the matrix kernel and without ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
      * <ul>
      * <li>TILED runs 5.5 TFLOP/s over its 64-padded work when the GPU is full, which takes about 100 of its groups:
      * a 128^3 multiply (4 groups) runs at 4% of that;</li>
      * <li>SMALL runs 2.15 TFLOP/s over its 16-padded work, full from about 190 groups; it wins wherever TILED's tiles
-     * are mostly padding (m or n up to 32) or too few to fill the GPU;</li>
+     * are mostly padding (m or n up to 32) or too few to fill the GPU. With B transposed it slows by 1/16384 per unit
+     * of k beyond 4096 (1.15.0);</li>
      * <li>SKINNY streams B at 400 GB/s with B transposed (300 without) when full (256 groups of 16 columns; 64 of 64),
      * slower by 17% (40%; 45% until 1.15.0, refitted to the 1.14.1 decode grid) per extra row of A. With B transposed
      * and fewer than 32 groups it is latency-bound instead,
      * at about 1.2 + 1.5 m + 0.00064 m k microseconds (1.15.0). It is offered only where it can win
      * ({@link #skinnyApplies}).</li>
-     * <li>SIMDGROUP_MATRIX runs in 0.5 of TILED's time from m = 64, 0.75 for B transposed and m up to 16, else 1.5
-     * (1.7.0).</li>
+     * <li>SIMDGROUP_MATRIX runs in 0.5 of TILED's time from m = 64 (1.7.0). Below 64 rows, with A not transposed,
+     * m at least 8 and k a multiple of 8, each complete column tile takes 0.65 (0.55 for B transposed): the kernel's
+     * row-edge path (1.15.0). A partial column tile, and other shapes, take 1.5 (0.75 for B transposed and m up to
+     * 16).</li>
      * </ul>
      */
     static final class Costs {
@@ -325,7 +328,10 @@ public final class GemmF16 implements AutoCloseable {
         }
         static double small(Shape s) {
             double groups = (double) Math.ceilDiv(s.m(), SMALL_TILE) * Math.ceilDiv(s.n(), SMALL_TILE) * s.batch();
-            return 2.0 * pad(s.m(), SMALL_TILE) * pad(s.n(), SMALL_TILE) * s.k() * s.batch() / (2.15e6 * fill(groups, 190));
+            double t = 2.0 * pad(s.m(), SMALL_TILE) * pad(s.n(), SMALL_TILE) * s.k() * s.batch() / (2.15e6 * fill(groups, 190));
+            // 1.15.0: with B transposed, k beyond 4096 runs slower per FLOP (the 1.15 refit probe: 1.3 times the estimate
+            // at k = 4096, 1.5 to 1.8 at k = 11008), where SKINNY's m = 16 projections are faster
+            return s.transposeB() && s.k() > 4096 ? t * (1 + (s.k() - 4096) / 16384.0) : t;
         }
         static double skinny(Shape s) {
             double groups = (double) Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * s.batch();
@@ -358,7 +364,15 @@ public final class GemmF16 implements AutoCloseable {
             return Math.ceilDiv(s.n(), SKINNY_COLUMNS_N) * (long) s.batch() >= 32;
         }
         static double simdgroup(Shape s) {
-            return tiled(s) * (s.m() >= 64 ? 0.5 : s.transposeB() && s.m() <= 16 ? 0.75 : 1.5);
+            if (s.m() >= 64) return tiled(s) * 0.5;
+            if (!s.transposeA() && s.m() >= 8 && s.k() % 8 == 0) {
+                // 1.15.0: a tile whose rows pass m but whose columns are complete takes the kernel's row-edge path, at
+                // 0.6 to 0.7 of TILED's time with B and 0.52 to 0.54 with B^T (8 to 32 rows, the 1.15 refit probe); a
+                // partial column tile still stages
+                double tiles = Math.ceilDiv(s.n(), TILE), full = s.n() / TILE;
+                return tiled(s) * ((s.transposeB() ? 0.55 : 0.65) * full + 1.5 * (tiles - full)) / tiles;
+            }
+            return tiled(s) * (s.transposeB() && s.m() <= 16 ? 0.75 : 1.5);
         }
     }
 
@@ -474,14 +488,33 @@ public final class GemmF16 implements AutoCloseable {
             case SIMDGROUP_MATRIX -> {
                 if (device.adapter().backend() != Backend.METAL)
                     throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
-                var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
-                for (int i = 0; i < ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, ACCESSES.get(i), 4));
-                yield new PipelineDescriptor(simdgroupBundle(), kernel("gemm", input, output) + "_simdgroup",
-                        new BindingLayout(b, KERNELS.parameterBytes(kernel(output))), new Dimensions(128, 1, 1), Map.of(), types,
-                        Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
+                yield simdgroupDescriptor(simdgroupBundle(), input, output);
             }
         };
         return descriptor;
+    }
+
+    private static PipelineDescriptor simdgroupDescriptor(KernelBundle bundle, Input input, Precision output) {
+        var b = new java.util.ArrayList<BindingLayout.BufferBinding>();
+        for (int i = 0; i < ACCESSES.size(); i++) b.add(new BindingLayout.BufferBinding(i, ACCESSES.get(i), 4));
+        return new PipelineDescriptor(bundle, kernel("gemm", input, output) + "_simdgroup",
+                new BindingLayout(b, KERNELS.parameterBytes(kernel(output))), new Dimensions(128, 1, 1), Map.of(), types(input, output),
+                Set.of(GpuCapabilities.SUBGROUP_MATRIX_F16));
+    }
+
+    /**
+     * Test seam: SIMDGROUP_MATRIX compiled from {@code source} instead of the bundled kernel, so a benchmark can time two
+     * versions of the kernel in the same rounds. {@code version} must differ between sources.
+     */
+    static GemmF16 createSimdgroup(GpuDevice device, byte[] source, String version, Input input, Precision output) {
+        if (!supports(device, Algorithm.SIMDGROUP_MATRIX, input))
+            throw new ComputeException(ComputeException.Code.UNSUPPORTED, "SIMD-group matrix GEMM needs native Metal");
+        var bundle = new KernelBundle("dynamisgpu.primitives.gemm_f16_simdgroup", version,
+                Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, source)));
+        var set = PipelineSet.compile(device, List.of(simdgroupDescriptor(bundle, input, output)));
+        var pipelines = new java.util.EnumMap<Algorithm, GpuComputePipeline>(Algorithm.class);
+        pipelines.put(Algorithm.SIMDGROUP_MATRIX, set.get(0));
+        return new GemmF16(device, pipelines, null, Algorithm.SIMDGROUP_MATRIX, false, input, output);
     }
 
     private static String kernel(Precision output) { return output == Precision.FP32 ? "gemm_f16" : "gemm_f16_h"; }
@@ -571,7 +604,7 @@ public final class GemmF16 implements AutoCloseable {
         try (var in = GemmF16.class.getResourceAsStream("metal/gemm_f16_simdgroup.metal")) {
             if (in == null) throw new IllegalStateException("missing metal/gemm_f16_simdgroup.metal");
             byte[] source = in.readAllBytes();
-            return new KernelBundle("dynamisgpu.primitives.gemm_f16_simdgroup", "3",
+            return new KernelBundle("dynamisgpu.primitives.gemm_f16_simdgroup", "4",
                     Map.of(Backend.METAL, new KernelBundle.Executable(KernelBundle.Format.MSL_SOURCE, source)));
         } catch (java.io.IOException e) {
             throw new java.io.UncheckedIOException(e);

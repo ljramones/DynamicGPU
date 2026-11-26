@@ -158,6 +158,98 @@ abstract class GemmF16Conformance {
         return worst;
     }
 
+    /**
+     * The matrix kernel's row-only edge (1.15.0): where only rows pass m (complete column tiles, k a multiple of 8),
+     * the m logical rows of C are the same bits as the same product with A padded by zero rows to whole 64-row tiles,
+     * which the interior path computes, and nothing outside them is written: the padding of a wider ldc and the words
+     * after C keep their sentinel. Both layouts of B, FP16 and FP32 inputs, FP32 and FP16 outputs, a batch of two, and
+     * the epilogues the transformer uses (column bias, residual, SiLU gated); unaligned k takes the general edge path
+     * in both runs.
+     */
+    @Test void rowEdgeMatchesPaddedRows() throws Exception {
+        if (!GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX)) return;
+        var epilogues = new GemmF16.Epilogue[] {GemmF16.Epilogue.NONE, GemmF16.Epilogue.NONE.withBias(GemmF16.Epilogue.Bias.COLUMN),
+                GemmF16.Epilogue.NONE.withResidual(), GemmF16.Epilogue.NONE.withActivation(GemmF16.Epilogue.Activation.SILU).withGate()};
+        var r = new SplittableRandom(6413);
+        int cases = 0;
+        for (var input : new GemmF16.Input[] {GemmF16.Input.FP16, GemmF16.Input.FP32}) {
+            if (!GemmF16.supports(device, Algorithm.SIMDGROUP_MATRIX, input)) continue;
+            for (var output : Precision.values()) {
+                try (var g = GemmF16.create(device, Algorithm.SIMDGROUP_MATRIX, input, output)) {
+                    for (int m : new int[] {1, 7, 8, 9, 17, 33, 63, 65, 100, 127})
+                        for (int[] nk : new int[][] {{64, 72}, {192, 136}, {128, 100}})
+                            for (boolean t : new boolean[] {false, true})
+                                for (var ep : epilogues) {
+                                    rowEdgeCase(g, input, output, m, nk[0], nk[1], t, ep, r);
+                                    cases++;
+                                }
+                }
+            }
+        }
+        System.out.println("gemm row edge on " + device.adapter().name() + ": " + cases + " cases bit for bit against padded rows");
+    }
+
+    private void rowEdgeCase(GemmF16 g, GemmF16.Input input, Precision output, int m, int n, int k, boolean transB, GemmF16.Epilogue ep,
+            SplittableRandom r) {
+        int mp = Math.ceilDiv(m, 64) * 64, ldc = n + 8, batch = 2, guard = 32, cb = output.bytes();
+        int lda = k, ldb = transB ? k : n;
+        long aStride = (long) m * lda, apStride = (long) mp * lda, bStride = (long) (transB ? n : k) * ldb;
+        long cStride = (long) m * ldc, cpStride = (long) mp * ldc;
+        var s = new Shape(m, n, k, lda, ldb, ldc, 0.75f, 0f, transB, batch, aStride, bStride, cStride, false);
+        var sp = new Shape(mp, n, k, lda, ldb, ldc, 0.75f, 0f, transB, batch, apStride, bStride, cpStride, false);
+        var a = data(input, (int) (batch * aStride + (batch * aStride & 1)), r);
+        var b = data(input, (int) (batch * bStride + (batch * bStride & 1)), r);
+        // A padded to mp rows per matrix: the added rows are zero
+        var ap = ByteBuffer.allocate((int) pad4(batch * apStride * input.bytes())).order(ByteOrder.nativeOrder());
+        for (int z = 0; z < batch; z++)
+            ap.put((int) (z * apStride * input.bytes()), a.bytes(), (int) (z * aStride * input.bytes()), (int) (aStride * input.bytes()));
+        // epilogue operands, laid out as C (residual, gate) or n per column (bias), in C's type
+        int cElems = (int) (batch * cStride), cpElems = (int) (batch * cpStride);
+        float[] side = new float[cpElems];
+        for (int i = 0; i < side.length; i++) side[i] = (float) (r.nextDouble() * 2 - 1);
+        float[] sideM = new float[cElems];
+        for (int z = 0; z < batch; z++) System.arraycopy(side, (int) (z * cpStride), sideM, (int) (z * cStride), (int) cStride);
+        java.util.function.Function<float[], byte[]> asC = v -> {
+            var bb = ByteBuffer.allocate((int) pad4((long) v.length * cb)).order(ByteOrder.nativeOrder());
+            for (float x : v) { if (cb == 4) bb.putFloat(x); else bb.putShort(Float.floatToFloat16(x)); }
+            return bb.array();
+        };
+        boolean usesSide = ep.residual() || ep.gated();
+        int sentinel = 0x7FC0_7FC0;
+        try (var ga = buffer(a.bytes().length); var gap = buffer(ap.capacity()); var gb = buffer(b.bytes().length);
+             var gc = buffer(pad4((long) (cElems + guard) * cb)); var gcp = buffer(pad4((long) cpElems * cb));
+             var gs = buffer(pad4((long) cElems * cb)); var gsp = buffer(pad4((long) cpElems * cb)); var gbias = buffer(pad4((long) n * cb));
+             var e = device.encoder()) {
+            float[] bias = new float[n];
+            for (int i = 0; i < n; i++) bias[i] = (float) (r.nextDouble() - 0.5);
+            e.upload(ga, a.bytes()).upload(gap, ap.array()).upload(gb, b.bytes()).upload(gs, asC.apply(sideM)).upload(gsp, asC.apply(side))
+                    .upload(gbias, asC.apply(bias)).fill(gc, sentinel).fill(gcp, sentinel);
+            var biasArg = ep.bias() == GemmF16.Epilogue.Bias.NONE ? null : gbias;
+            g.encode(e, ga, gb, gc, s, ep, biasArg, ep.gated() ? gs : null, ep.residual() ? gs : null);
+            g.encode(e, gap, gb, gcp, sp, ep, biasArg, ep.gated() ? gsp : null, ep.residual() ? gsp : null);
+            var rc = e.download(gc); var rcp = e.download(gcp);
+            try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+            var got = ByteBuffer.wrap(rc.bytes()).order(ByteOrder.nativeOrder());
+            var want = ByteBuffer.wrap(rcp.bytes()).order(ByteOrder.nativeOrder());
+            String what = input + " -> " + output + " " + m + "x" + n + "x" + k + (transB ? " B^T " : " B ") + ep;
+            int sentinelC = cb == 4 ? sentinel : 0x7FC0;
+            for (int z = 0; z < batch; z++)
+                for (int i = 0; i < m; i++)
+                    for (int j = 0; j < ldc; j++) {
+                        long at = z * cStride + (long) i * ldc + j, atp = z * cpStride + (long) i * ldc + j;
+                        int g1 = cb == 4 ? got.getInt((int) (4 * at)) : got.getShort((int) (2 * at)) & 0xFFFF;
+                        int g2 = cb == 4 ? want.getInt((int) (4 * atp)) : want.getShort((int) (2 * atp)) & 0xFFFF;
+                        if (j < n) assertEquals(g2, g1, what + ": C[" + z + "][" + i + "][" + j + "] differs from the padded rows");
+                        else assertEquals(sentinelC, g1, what + ": ldc padding C[" + z + "][" + i + "][" + j + "] written");
+                    }
+            for (int w = 0; w < guard; w++) {
+                long at = cElems + w;
+                int g1 = cb == 4 ? got.getInt((int) (4 * at)) : got.getShort((int) (2 * at)) & 0xFFFF;
+                assertEquals(sentinelC, g1, what + ": the word " + w + " after C written");
+            }
+        }
+    }
+
     @Test void matchesTheReferenceWithinTheBound() throws Exception {
         int[][] shapes = {{1, 1, 1}, {64, 64, 16}, {64, 64, 64}, {65, 63, 17}, {1, 100, 300}, {130, 1, 77}, {100, 37, 513}, {128, 256, 1024}};
         eachKernel(() -> {
