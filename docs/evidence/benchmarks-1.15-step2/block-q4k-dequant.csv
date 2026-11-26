@@ -1,0 +1,7 @@
+backend,weights,phase,tokens,context,layers,rounds,gpu_median_ms,gpu_p10_ms,gpu_p90_ms,wall_median_ms,encode_median_ms,tokens_per_s_wall,check_worst_over_bound
+METAL,Q4K,prefill,512,512,32,10,880.897,878.040,914.428,894.038,3.546,572.7,0.189
+METAL,Q4K,prefill,2048,2048,32,10,3058.740,2992.121,3234.961,3064.632,2.575,668.3,0.193
+METAL,Q4K,decode,1,512,32,10,15.838,15.531,16.192,18.898,1.027,52.9,0.147
+VULKAN,Q4K,prefill,512,512,32,10,2022.419,1997.542,2043.315,2033.159,3.398,251.8,0.189
+VULKAN,Q4K,prefill,2048,2048,32,10,7125.408,7018.529,7375.138,7132.960,2.331,287.1,0.184
+VULKAN,Q4K,decode,1,512,32,10,20.746,20.584,21.217,24.722,1.197,40.5,0.146

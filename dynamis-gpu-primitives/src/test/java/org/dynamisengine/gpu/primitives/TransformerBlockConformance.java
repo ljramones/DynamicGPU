@@ -145,19 +145,37 @@ abstract class TransformerBlockConformance {
     final class Products implements AutoCloseable {
         final GemmF16 gemm = GemmF16.create(device, Precision.FP16);
         final QuantizedGemm qgemm = QuantizedGemm.create(device, GemmF16.Input.FP16, Precision.FP16);
+        /** -Dblock.quantPrefill=dequant: quantized products beyond SKINNY's rows unpack W to FP16 and run the FP16 GEMM. */
+        final boolean dequant = "dequant".equals(System.getProperty("block.quantPrefill"));
+        final Quantize unpack = Quantize.create(device);
+        final Cast cast = Cast.create(device);
+        GpuBuffer w32, w16;
+
+        boolean unpacks(Weight w, int m) { return w.q != null && dequant && m > QuantizedGemm.skinnyMaxM(w.q.format()); }
 
         void encode(GpuCommandEncoder e, GpuBuffer a, Weight w, GpuBuffer c, int m, Epilogue epi, GpuBuffer gate, GpuBuffer residual) {
             var s = GemmF16.Shape.ofTransposedB(m, w.n, w.k, 1f, 0f);
             if (w.q == null) gemm.encode(e, a, w.buffer, c, s, epi, null, gate, residual);
-            else qgemm.encode(e, a, w.q, w.buffer, c, s, epi, null, gate, residual);
+            else if (unpacks(w, m)) {
+                long nk = (long) w.n * w.k;
+                if (w32 == null) { w32 = buffer(4L * F * D); w16 = buffer(2L * F * D); }
+                var view = StridedView.contiguous(nk);
+                unpack.unpack(e, w.q, w.buffer, w32);
+                cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, w32, view, w16, view);
+                gemm.encode(e, a, w16, c, s, epi, null, gate, residual);
+            } else qgemm.encode(e, a, w.q, w.buffer, c, s, epi, null, gate, residual);
         }
 
         String selected(Weight w, int m) {
             var s = GemmF16.Shape.ofTransposedB(m, w.n, w.k, 1f, 0f);
+            if (unpacks(w, m)) return "UNPACK+" + gemm.algorithm(s).name();
             return w.q == null ? gemm.algorithm(s).name() : qgemm.algorithm(s, w.q).name();
         }
 
-        @Override public void close() { gemm.close(); qgemm.close(); }
+        @Override public void close() {
+            gemm.close(); qgemm.close(); unpack.close(); cast.close();
+            if (w32 != null) { w32.close(); w16.close(); }
+        }
     }
 
     /** Activations for up to {@code maxTokens} tokens. */

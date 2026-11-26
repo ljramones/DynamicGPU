@@ -90,6 +90,7 @@ abstract class PerfProbeConformance {
         Assumptions.assumeTrue(Boolean.getBoolean("perf.probe"), "set -Dperf.probe=true");
         System.out.println("perf-device|" + device.adapter().name() + "|" + device.adapter().backend() + "|rounds=" + ROUNDS);
         String only = System.getProperty("perf.only", "gemm,selector,quant");
+        if (only.contains("prefill")) prefillDequant();
         if (only.contains("gemm")) squareGemm();
         if (only.contains("selector")) selectorMisses();
         if (only.contains("quant")) quantized();
@@ -230,6 +231,60 @@ abstract class PerfProbeConformance {
         byte[] upload = data.length % 4 == 0 ? data : java.util.Arrays.copyOf(data, (data.length + 3) & ~3);
         for (var b : out) run(e -> e.upload(b, upload));
         return out;
+    }
+
+    /**
+     * Quantized prefill through existing kernels (1.15 plan, Phase 2 experiment): unpack the packed weights to FP32
+     * ({@link Quantize#unpack}), cast them to FP16 ({@link Cast}), then the FP16 GEMM with AUTO selection, timed as
+     * one sequence against the current quantized TILED kernel and against the FP16 GEMM alone on the unpacked weights.
+     * The FP16 rounding of each weight is a different contract from the quantized kernels'; the check is against the
+     * exact dequantized weights with the loose bound.
+     */
+    private void prefillDequant() {
+        var r = new SplittableRandom(512);
+        int[][] nks = {{4096, 4096}, {14336, 4096}, {4096, 14336}};
+        int[] ms = java.util.Arrays.stream(System.getProperty("perf.prefillM", "64,512,2048").split(",")).mapToInt(Integer::parseInt).toArray();
+        var formats = List.of(System.getProperty("perf.prefillFormats", "Q4K,Q4,Q8,Q6K").split(","));
+        try (var tiled = QuantizedGemm.create(device, QuantizedGemm.Algorithm.TILED, GemmF16.Input.FP16, Precision.FP32);
+             var gemm = GemmF16.create(device, GemmF16.Input.FP16, Precision.FP32); var unpack = Quantize.create(device); var cast = Cast.create(device)) {
+            for (int[] nk : nks) {
+                int n = nk[0], k = nk[1];
+                float[] values = new float[n * k];
+                for (int i = 0; i < values.length; i++) values[i] = (float) (r.nextGaussian() * 0.02);
+                try (var w32 = buffer(4L * n * k); var w16 = buffer(2L * n * k)) {
+                    for (String fname : formats) {
+                        var w = new QuantizedMatrix(Format.valueOf(fname), Format.valueOf(fname).kQuant() ? 256 : 32, n, k);
+                        byte[] packed = w.quantize(values);
+                        byte[] up = packed.length % 4 == 0 ? packed : java.util.Arrays.copyOf(packed, (packed.length + 3) & ~3);
+                        try (var gw = buffer(w.bytes())) {
+                            run(e -> e.upload(gw, up));
+                            var view = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous((long) n * k);
+                            Consumer<GpuCommandEncoder> toFp16 = e -> {
+                                unpack.unpack(e, w, gw, w32);
+                                cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, w32, view, w16, view);
+                            };
+                            for (int m : ms) {
+                                var s = Shape.ofTransposedB(m, n, k, 1, 0);
+                                short[] ah = GemmF16Conformance.halves(m * k, r);
+                                var aEl = GemmF16.Elements.fp16(ah);
+                                try (var ga = buffer(2L * ah.length); var gc = buffer(s.cBytes())) {
+                                    run(e -> e.upload(ga, GemmF16Conformance.bytes(ah)));
+                                    var one = List.of(gw);
+                                    quantMeasure("prefill-dequant", fname + " TILED", s, "TILED", one, (e, b) -> tiled.encode(e, ga, w, b, gc, s), gc,
+                                            c -> checkQuant(c, aEl, w, packed, s));
+                                    quantMeasure("prefill-dequant", fname + " unpack+cast+GEMM", s, "UNPACK+" + gemm.algorithm(s).name(), one,
+                                            (e, b) -> { toFp16.accept(e); gemm.encode(e, ga, w16, gc, s); }, gc, c -> checkQuant(c, aEl, w, packed, s));
+                                    run(toFp16);
+                                    quantMeasure("prefill-dequant", fname + " GEMM only", s, gemm.algorithm(s).name(), one,
+                                            (e, b) -> gemm.encode(e, ga, w16, gc, s), gc, c -> checkQuant(c, aEl, w, packed, s));
+                                    if (m == ms[0]) quantMeasure("prefill-dequant", fname + " unpack+cast only", s, "UNPACK", one, (e, b) -> toFp16.accept(e), gc, c -> 0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     interface WeightBody { void accept(GpuCommandEncoder e, GpuBuffer w); }
