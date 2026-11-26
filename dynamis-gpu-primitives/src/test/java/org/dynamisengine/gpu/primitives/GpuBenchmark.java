@@ -55,5 +55,54 @@ final class GpuBenchmark {
         return results;
     }
 
+    /** Statistics over paired rounds: each round's GPU, encode and wall times come from the same submission. */
+    record Stats(int n, double gpuMedian, double gpuMin, double gpuP10, double gpuP90, double wallMedian, double wallMin, double encodeMedian) {
+        static Stats of(List<Timing> rounds) {
+            double[] g = rounds.stream().mapToDouble(Timing::gpuMicros).sorted().toArray();
+            double[] w = rounds.stream().mapToDouble(Timing::wallMicros).sorted().toArray();
+            double[] e = rounds.stream().mapToDouble(Timing::encodeMicros).sorted().toArray();
+            return new Stats(g.length, quantile(g, 0.5), g[0], quantile(g, 0.1), quantile(g, 0.9), quantile(w, 0.5), w[0], quantile(e, 0.5));
+        }
+        private static double quantile(double[] sorted, double q) {
+            double at = q * (sorted.length - 1);
+            int lo = (int) Math.floor(at), hi = (int) Math.ceil(at);
+            return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo);
+        }
+    }
+
+    /**
+     * {@code n} paired rounds of {@code body} after the clocks ramp up. Each round records enough bodies for at least
+     * 20 ms of GPU time and keeps that one submission's GPU, encode and wall time, normalized per body.
+     */
+    static List<Timing> paired(GpuDevice device, Consumer<GpuCommandEncoder> body, int n) {
+        int reps = 1;
+        for (int ramp = 0; ; ramp++) {   // size the rounds; these submissions are discarded
+            double gpuNanos = once(device, body, reps).gpuMicros() * 1000.0 * reps;
+            if (gpuNanos >= 20e6 || reps >= 8192) break;
+            reps = (int) Math.min(8192, Math.ceil(reps * Math.min(8.0, 24e6 / Math.max(1, gpuNanos))));
+            assertTrue(ramp < 32, "could not size a 20 ms round");
+        }
+        once(device, body, reps);   // one full-size round at the final size, also discarded
+        var out = new java.util.ArrayList<Timing>(n);
+        for (int i = 0; i < n; i++) out.add(once(device, body, reps));
+        return out;
+    }
+
+    /** One submission of {@code reps} bodies: its GPU, encode and wall time per body. */
+    static Timing once(GpuDevice device, Consumer<GpuCommandEncoder> body, int reps) {
+        long start = System.nanoTime();
+        try (var encoder = device.encoder()) {
+            for (int i = 0; i < reps; i++) body.accept(encoder);
+            long encoded = System.nanoTime();
+            try (var sub = device.queue().submit(encoder)) {
+                assertTrue(sub.await(Duration.ofSeconds(120)));
+                long wall = System.nanoTime() - start;
+                long gpu = sub.gpuTime().orElseThrow().toNanos();
+                double divisor = 1000.0 * reps;
+                return new Timing(gpu / divisor, (encoded - start) / divisor, wall / divisor);
+            }
+        }
+    }
+
     private GpuBenchmark() { }
 }
