@@ -56,15 +56,17 @@ abstract class QuantizedConformance {
                         float[] x = weights(m, r);
                         byte[] expected = m.quantize(x);
                         float[] values = m.dequantize(expected);
-                        byte[] packed, unpacked;
-                        try (var gx = buffer(4L * x.length); var gp = buffer(m.bytes()); var gy = buffer(4L * x.length); var e = device.encoder()) {
-                            e.upload(gx, bytes(x)).fill(gp, 0xDEADBEEF);
+                        byte[] packed, unpacked, unpacked16;
+                        try (var gx = buffer(4L * x.length); var gp = buffer(m.bytes()); var gy = buffer(4L * x.length);
+                             var gh = buffer(2L * x.length); var e = device.encoder()) {
+                            e.upload(gx, bytes(x)).fill(gp, 0xDEADBEEF).fill(gh, 0xDEADBEEF);
                             if (format.kQuant()) e.upload(gp, expected);   // no GPU encoder: unpack the CPU's blocks
                             else q.pack(e, gx, m, gp);
                             q.unpack(e, m, gp, gy);
-                            var rp = e.download(gp); var ry = e.download(gy);
+                            q.unpackF16(e, m, gp, gh);
+                            var rp = e.download(gp); var ry = e.download(gy); var rh = e.download(gh);
                             try (var s = device.queue().submit(e)) { assertTrue(s.await(WAIT)); }
-                            packed = rp.bytes(); unpacked = ry.bytes();
+                            packed = rp.bytes(); unpacked = ry.bytes(); unpacked16 = rh.bytes();
                         }
                         String what = format + "/" + block + " " + shape[0] + "x" + shape[1];
                         int differ = 0, first = -1;
@@ -73,10 +75,78 @@ abstract class QuantizedConformance {
                         var got = ByteBuffer.wrap(unpacked).order(ByteOrder.LITTLE_ENDIAN);
                         for (int i = 0; i < values.length; i++)
                             assertEquals(Float.floatToRawIntBits(values[i]), Float.floatToRawIntBits(got.getFloat(4 * i)), what + ": value " + i);
+                        // unpackF16 (1.15.0): each value rounded once to FP16, as Float.floatToFloat16
+                        var got16 = ByteBuffer.wrap(unpacked16).order(ByteOrder.LITTLE_ENDIAN);
+                        for (int i = 0; i < values.length; i++)
+                            assertEquals(Float.floatToFloat16(values[i]), got16.getShort(2 * i), what + ": FP16 value " + i);
                     }
                 }
             }
         }
+    }
+
+    /**
+     * unpackF16 (1.15.0) gives the same FP16 bits as unpack followed by Cast, and as Float.floatToFloat16 of
+     * QuantizedMatrix.dequantize, for every format over weights at three scales. The scales are chosen so that the
+     * dequantized values reach exact FP16 ties, FP16 subnormals and finite values beyond FP16's range, and the test
+     * counts each, failing if any of the three never occurred. All 18 format and scale pairs run: the large scale for
+     * Q4M uses values spread over [30000, 70000], since Gaussian values that large give a block minimum (Q4M's offset)
+     * below FP16's range, which quantize rejects.
+     */
+    @Test void unpackF16MatchesUnpackThenCast() {
+        var r = new SplittableRandom(1615);
+        long ties = 0, subnormals = 0, overflows = 0, compared = 0;
+        int pairs = 0;
+        try (var q = Quantize.create(device); var cast = Cast.create(device)) {
+            for (var format : Format.values()) {
+                for (double scale : new double[] {0.02, 1e-5, 2e4}) {
+                    var m = new QuantizedMatrix(format, format.kQuant() ? 256 : 32, 64, 4096);
+                    int count = m.rows() * m.cols();
+                    float[] x = new float[count];
+                    boolean spread = format == Format.Q4M && scale > 1;
+                    for (int i = 0; i < count; i++)
+                        x[i] = spread ? 30000f + 40000f * ((i * 37) % 101) / 100f : (float) (r.nextGaussian() * scale);
+                    byte[] packed = m.quantize(x);   // every pair must quantize; an exception fails the test
+                    pairs++;
+                    float[] values = m.dequantize(packed);
+                    byte[] viaCast, direct;
+                    try (var gp = buffer(m.bytes()); var g32 = buffer(4L * count); var g16a = buffer(2L * count); var g16b = buffer(2L * count);
+                         var e = device.encoder()) {
+                        var view = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous(count);
+                        e.upload(gp, packed.length % 4 == 0 ? packed : java.util.Arrays.copyOf(packed, (packed.length + 3) & ~3))
+                                .fill(g16a, 0xDEADBEEF).fill(g16b, 0xDEADBEEF);
+                        q.unpack(e, m, gp, g32);
+                        cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, g32, view, g16a, view);
+                        q.unpackF16(e, m, gp, g16b);
+                        var ra = e.download(g16a); var rb = e.download(g16b);
+                        try (var sub = device.queue().submit(e)) { assertTrue(sub.await(WAIT)); }
+                        viaCast = ra.bytes(); direct = rb.bytes();
+                    }
+                    var ba = ByteBuffer.wrap(viaCast).order(ByteOrder.LITTLE_ENDIAN);
+                    var bb = ByteBuffer.wrap(direct).order(ByteOrder.LITTLE_ENDIAN);
+                    String what = format + " at scale " + scale;
+                    for (int i = 0; i < count; i++) {
+                        short want = Float.floatToFloat16(values[i]);
+                        assertEquals(want, ba.getShort(2 * i), what + ": unpack + Cast, element " + i + " (" + values[i] + ")");
+                        assertEquals(want, bb.getShort(2 * i), what + ": unpackF16, element " + i + " (" + values[i] + ")");
+                        float v = Math.abs(values[i]);
+                        if (v >= 65520f) overflows++;   // rounds to infinity
+                        else if (v != 0 && v < 0x1p-14f) {
+                            subnormals++;
+                            double units = v * 0x1p24;
+                            if (units - Math.floor(units) == 0.5) ties++;
+                        } else if (v >= 0x1p-14f && (Float.floatToRawIntBits(v) & 0x1FFF) == 0x1000) ties++;
+                    }
+                    compared += count;
+                }
+            }
+        }
+        System.out.printf("unpackF16 on %s: %d format/scale pairs, %d values bit for bit, %d ties, %d FP16 subnormals, %d overflows%n",
+                device.adapter().name(), pairs, compared, ties, subnormals, overflows);
+        assertEquals(3 * Format.values().length, pairs, "format and scale pairs run");
+        assertTrue(ties > 0, "no FP16 ties exercised");
+        assertTrue(subnormals > 0, "no FP16 subnormals exercised");
+        assertTrue(overflows > 0, "no FP16 overflow exercised");
     }
 
     static byte[] halfBytes(short[] h) {

@@ -41,6 +41,7 @@ scan_rows scan_rows.slang scan_rows
 nan_check nan_check.slang nan_check
 quant_pack quant_pack.slang quant_pack
 quant_unpack quant_unpack.slang quant_unpack
+quant_unpack_h quant_unpack_h.slang quant_unpack_h
 # quantized weights (1.9.0)
 gemm_q_skinny gemm_q_skinny.slang gemm_q_skinny
 gemm_q_skinny_h gemm_q_skinny_h.slang gemm_q_skinny_h

@@ -43,8 +43,8 @@ struct Params_0
 struct KernelContext_0
 {
     Params_0 constant* p_0;
-    uint device* packed_0;
     float device* y_0;
+    uint device* packed_0;
 };
 
 uint qWord_0(uint w_0, KernelContext_0 thread* kernelContext_0)
@@ -188,32 +188,23 @@ uint qParamHalf_0(uint format_6, uint b_1, uint t_0)
     return _S14;
 }
 
-[[kernel]] void quant_unpack(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(2)]], uint device* packed_1 [[buffer(0)]], float device* y_1 [[buffer(1)]])
+float unpackAt_0(uint e_1, KernelContext_0 thread* kernelContext_4)
 {
-    thread KernelContext_0 kernelContext_4;
-    (&kernelContext_4)->p_0 = p_1;
-    (&kernelContext_4)->packed_0 = packed_1;
-    (&kernelContext_4)->y_0 = y_1;
-    uint e_1 = dg_linear_thread_0(group_2, local_1, p_1->gridX_2, 256U);
-    if(e_1 >= (p_1->count_0))
-    {
-        return;
-    }
-    uint r_2 = e_1 / (&kernelContext_4)->p_0->cols_1;
-    uint col_3 = e_1 % (&kernelContext_4)->p_0->cols_1;
+    uint r_2 = e_1 / kernelContext_4->p_0->cols_1;
+    uint col_3 = e_1 % kernelContext_4->p_0->cols_1;
     float v_0;
-    if(((&kernelContext_4)->p_0->format_1) >= 3U)
+    if((kernelContext_4->p_0->format_1) >= 3U)
     {
-        uint u_2 = ((*((&kernelContext_4)->packed_0+qCodeWord_0((&kernelContext_4)->p_0->format_1, r_2, col_3, (&kernelContext_4)->p_0->cols_1))) >> (4U * (col_3 & 7U))) & 15U;
+        uint u_2 = ((*(kernelContext_4->packed_0+qCodeWord_0(kernelContext_4->p_0->format_1, r_2, col_3, kernelContext_4->p_0->cols_1))) >> (4U * (col_3 & 7U))) & 15U;
         uint h_2;
-        if(((&kernelContext_4)->p_0->format_1) == 3U)
+        if((kernelContext_4->p_0->format_1) == 3U)
         {
             h_2 = 0U;
         }
         else
         {
-            uint _S15 = kHigh8_0((&kernelContext_4)->p_0->format_1, (&kernelContext_4)->p_0->qhigh_0, e_1 & 4294967288U, &kernelContext_4);
-            if(((&kernelContext_4)->p_0->format_1) == 4U)
+            uint _S15 = kHigh8_0(kernelContext_4->p_0->format_1, kernelContext_4->p_0->qhigh_0, e_1 & 4294967288U, kernelContext_4);
+            if((kernelContext_4->p_0->format_1) == 4U)
             {
                 h_2 = 1U;
             }
@@ -223,10 +214,9 @@ uint qParamHalf_0(uint format_6, uint b_1, uint t_0)
             }
             h_2 = _S15 >> (h_2 * (e_1 & 7U));
         }
-        float qk_0 = float(kCode_0((&kernelContext_4)->p_0->format_1, u_2, h_2));
-        float2 _S16 = kScale_0((&kernelContext_4)->p_0->format_1, (&kernelContext_4)->p_0->qparams_0, r_2, col_3, (&kernelContext_4)->p_0->cols_1, &kernelContext_4);
-        float device* _S17 = (&kernelContext_4)->y_0+e_1;
-        if(((&kernelContext_4)->p_0->format_1) == 5U)
+        float qk_0 = float(kCode_0(kernelContext_4->p_0->format_1, u_2, h_2));
+        float2 _S16 = kScale_0(kernelContext_4->p_0->format_1, kernelContext_4->p_0->qparams_0, r_2, col_3, kernelContext_4->p_0->cols_1, kernelContext_4);
+        if((kernelContext_4->p_0->format_1) == 5U)
         {
             v_0 = _S16.x * qk_0;
         }
@@ -234,22 +224,37 @@ uint qParamHalf_0(uint format_6, uint b_1, uint t_0)
         {
             v_0 = _S16.x * qk_0 - _S16.y;
         }
-        *_S17 = v_0;
-        return;
+        return v_0;
     }
-    uint b_2 = e_1 / (&kernelContext_4)->p_0->block_0;
-    uint dh_0 = qParamHalf_0((&kernelContext_4)->p_0->format_1, b_2, 0U);
-    float v_1 = float(qCode_0((&kernelContext_4)->p_0->format_1, *((&kernelContext_4)->packed_0+qCodeWord_0((&kernelContext_4)->p_0->format_1, r_2, col_3, (&kernelContext_4)->p_0->cols_1)), col_3)) * qF16ToF32_0((*((&kernelContext_4)->packed_0+((&kernelContext_4)->p_0->qparams_0 + (dh_0 >> 1U)))) >> (16U * (dh_0 & 1U)));
-    if(((&kernelContext_4)->p_0->format_1) == 2U)
+    uint b_2 = e_1 / kernelContext_4->p_0->block_0;
+    uint dh_0 = qParamHalf_0(kernelContext_4->p_0->format_1, b_2, 0U);
+    float v_1 = float(qCode_0(kernelContext_4->p_0->format_1, *(kernelContext_4->packed_0+qCodeWord_0(kernelContext_4->p_0->format_1, r_2, col_3, kernelContext_4->p_0->cols_1)), col_3)) * qF16ToF32_0((*(kernelContext_4->packed_0+(kernelContext_4->p_0->qparams_0 + (dh_0 >> 1U)))) >> (16U * (dh_0 & 1U)));
+    if((kernelContext_4->p_0->format_1) == 2U)
     {
-        uint mh_0 = qParamHalf_0((&kernelContext_4)->p_0->format_1, b_2, 1U);
-        v_0 = v_1 + qF16ToF32_0((*((&kernelContext_4)->packed_0+((&kernelContext_4)->p_0->qparams_0 + (mh_0 >> 1U)))) >> (16U * (mh_0 & 1U)));
+        uint mh_0 = qParamHalf_0(kernelContext_4->p_0->format_1, b_2, 1U);
+        v_0 = v_1 + qF16ToF32_0((*(kernelContext_4->packed_0+(kernelContext_4->p_0->qparams_0 + (mh_0 >> 1U)))) >> (16U * (mh_0 & 1U)));
     }
     else
     {
         v_0 = v_1;
     }
-    *((&kernelContext_4)->y_0+e_1) = v_0;
+    return v_0;
+}
+
+[[kernel]] void quant_unpack(uint3 group_2 [[threadgroup_position_in_grid]], uint3 local_1 [[thread_position_in_threadgroup]], Params_0 constant* p_1 [[buffer(2)]], float device* y_1 [[buffer(1)]], uint device* packed_1 [[buffer(0)]])
+{
+    thread KernelContext_0 kernelContext_5;
+    (&kernelContext_5)->p_0 = p_1;
+    (&kernelContext_5)->y_0 = y_1;
+    (&kernelContext_5)->packed_0 = packed_1;
+    uint t_1 = dg_linear_thread_0(group_2, local_1, p_1->gridX_2, 256U);
+    if(t_1 >= (p_1->count_0))
+    {
+        return;
+    }
+    float device* _S17 = (&kernelContext_5)->y_0+t_1;
+    float _S18 = unpackAt_0(t_1, &kernelContext_5);
+    *_S17 = _S18;
     return;
 }
 
