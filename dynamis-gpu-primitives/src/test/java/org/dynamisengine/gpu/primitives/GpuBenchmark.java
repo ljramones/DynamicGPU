@@ -88,6 +88,31 @@ final class GpuBenchmark {
         return out;
     }
 
+    /**
+     * {@code n} paired rounds of each workload, alternating: round i runs every workload once, starting from workload
+     * i mod size, all with the same repetitions (sized so the fastest takes at least 20 ms). Slow drift (clocks,
+     * temperature) then lands on every workload alike. Result: per workload, its n timings.
+     */
+    static List<List<Timing>> alternating(GpuDevice device, List<Consumer<GpuCommandEncoder>> workloads, int n) {
+        int reps = 1;
+        for (int ramp = 0; ; ramp++) {
+            double fastest = Double.MAX_VALUE;
+            for (var w : workloads) fastest = Math.min(fastest, once(device, w, reps).gpuMicros() * 1000.0 * reps);
+            if (fastest >= 20e6 || reps >= 8192) break;
+            reps = (int) Math.min(8192, Math.ceil(reps * Math.min(8.0, 24e6 / Math.max(1, fastest))));
+            assertTrue(ramp < 32, "could not size a 20 ms round");
+        }
+        var out = new java.util.ArrayList<List<Timing>>();
+        for (int i = 0; i < workloads.size(); i++) out.add(new java.util.ArrayList<>());
+        for (int round = 0; round < n; round++) {
+            for (int j = 0; j < workloads.size(); j++) {
+                int w = (round + j) % workloads.size();
+                out.get(w).add(once(device, workloads.get(w), reps));
+            }
+        }
+        return out;
+    }
+
     /** One submission of {@code reps} bodies: its GPU, encode and wall time per body. */
     static Timing once(GpuDevice device, Consumer<GpuCommandEncoder> body, int reps) {
         long start = System.nanoTime();

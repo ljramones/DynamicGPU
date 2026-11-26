@@ -145,36 +145,44 @@ abstract class TransformerBlockConformance {
     final class Products implements AutoCloseable {
         final GemmF16 gemm = GemmF16.create(device, Precision.FP16);
         final QuantizedGemm qgemm = QuantizedGemm.create(device, GemmF16.Input.FP16, Precision.FP16);
-        /** -Dblock.quantPrefill=dequant: quantized products beyond SKINNY's rows unpack W to FP16 and run the FP16 GEMM. */
-        final boolean dequant = "dequant".equals(System.getProperty("block.quantPrefill"));
+        /**
+         * How quantized products beyond SKINNY's rows run: 0 quantized TILED; 1 two-pass (unpack to FP32, cast to FP16,
+         * FP16 GEMM); 2 direct (Quantize.unpackF16, FP16 GEMM). -Dblock.quantPrefill=dequant selects 2; =compare
+         * alternates all three in the same rounds.
+         */
+        int mode = "dequant".equals(System.getProperty("block.quantPrefill")) ? 2 : 0;
         final Quantize unpack = Quantize.create(device);
         final Cast cast = Cast.create(device);
-        GpuBuffer w32, w16;
+        GpuBuffer w16, w32;
 
-        boolean unpacks(Weight w, int m) { return w.q != null && dequant && m > QuantizedGemm.skinnyMaxM(w.q.format()); }
+        boolean unpacks(Weight w, int m) { return w.q != null && mode > 0 && m > QuantizedGemm.skinnyMaxM(w.q.format()); }
 
         void encode(GpuCommandEncoder e, GpuBuffer a, Weight w, GpuBuffer c, int m, Epilogue epi, GpuBuffer gate, GpuBuffer residual) {
             var s = GemmF16.Shape.ofTransposedB(m, w.n, w.k, 1f, 0f);
             if (w.q == null) gemm.encode(e, a, w.buffer, c, s, epi, null, gate, residual);
             else if (unpacks(w, m)) {
-                long nk = (long) w.n * w.k;
-                if (w32 == null) { w32 = buffer(4L * F * D); w16 = buffer(2L * F * D); }
-                var view = StridedView.contiguous(nk);
-                unpack.unpack(e, w.q, w.buffer, w32);
-                cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, w32, view, w16, view);
+                if (w16 == null) w16 = buffer(2L * F * D);
+                if (mode == 2) unpack.unpackF16(e, w.q, w.buffer, w16);   // 1.15.0: straight to FP16
+                else {
+                    if (w32 == null) w32 = buffer(4L * F * D);
+                    var view = StridedView.contiguous((long) w.n * w.k);
+                    unpack.unpack(e, w.q, w.buffer, w32);
+                    cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, w32, view, w16, view);
+                }
                 gemm.encode(e, a, w16, c, s, epi, null, gate, residual);
             } else qgemm.encode(e, a, w.q, w.buffer, c, s, epi, null, gate, residual);
         }
 
         String selected(Weight w, int m) {
             var s = GemmF16.Shape.ofTransposedB(m, w.n, w.k, 1f, 0f);
-            if (unpacks(w, m)) return "UNPACK+" + gemm.algorithm(s).name();
+            if (unpacks(w, m)) return (mode == 2 ? "UNPACK16+" : "UNPACK+CAST+") + gemm.algorithm(s).name();
             return w.q == null ? gemm.algorithm(s).name() : qgemm.algorithm(s, w.q).name();
         }
 
         @Override public void close() {
             gemm.close(); qgemm.close(); unpack.close(); cast.close();
-            if (w32 != null) { w32.close(); w16.close(); }
+            if (w16 != null) w16.close();
+            if (w32 != null) w32.close();
         }
     }
 
@@ -313,6 +321,7 @@ abstract class TransformerBlockConformance {
     private short[][] history;
 
     private void phase(Model model, Activations a, String weights, String phase, int t, int start) {
+        if ("compare".equals(System.getProperty("block.quantPrefill")) && !weights.equals("FP16") && t > 16) { compare(model, a, weights, phase, t, start); return; }
         var r = new SplittableRandom(31L * t + start);
         short[] x = gaussianHalves(t * D, 1, r);
         run(e -> e.upload(a.x0, bytes(x)));
@@ -334,6 +343,44 @@ abstract class TransformerBlockConformance {
             System.out.println("block-selected|" + weights + "|" + phase + "|" + t + "|q=" + model.products.selected(model.wq, t) + " o="
                     + model.products.selected(model.wo, t) + " up=" + model.products.selected(model.wup, t) + " down=" + model.products.selected(model.wdown, t));
             profile(model, a, weights, phase, t, start, seq);
+        }
+    }
+
+    /** The three quantized-prefill paths, each checked, then timed alternately in the same rounds. */
+    private void compare(Model model, Activations a, String weights, String phase, int t, int start) {
+        var r = new SplittableRandom(31L * t + start);
+        short[] x = gaussianHalves(t * D, 1, r);
+        byte[] xb = bytes(x);
+        String[] names = {"TILED", "two-pass", "direct"};
+        try (var seq = sequence(model, a, t, start, r)) {
+            double[] checks = new double[3];
+            for (int mode = 0; mode < 3; mode++) {
+                model.products.mode = mode;
+                run(e -> e.upload(a.x0, xb));
+                run(e -> model.layer(e, 0, a, a.x0, a.x1, t, start, seq));
+                checks[mode] = checkLayer(model, a, x, t, start);
+                assertTrue(checks[mode] <= 1, weights + " " + names[mode] + " " + phase + " t=" + t + ": a stage of layer 0 is off by " + checks[mode]);
+            }
+            Consumer<GpuCommandEncoder> pass = e -> { e.upload(a.x0, xb); model.forward(e, a, t, start, seq, layers); };
+            var timings = new ArrayList<List<GpuBenchmark.Timing>>();
+            for (int mode = 0; mode < 3; mode++) {
+                timings.add(new ArrayList<>());
+                model.products.mode = mode;
+                GpuBenchmark.once(device, pass, 1);   // warm each path
+            }
+            for (int round = 0; round < rounds; round++)
+                for (int j = 0; j < 3; j++) {
+                    int mode = (round + j) % 3;
+                    model.products.mode = mode;
+                    timings.get(mode).add(GpuBenchmark.once(device, pass, 1));
+                }
+            for (int mode = 0; mode < 3; mode++) {
+                var st = GpuBenchmark.Stats.of(timings.get(mode));
+                System.out.printf(Locale.ROOT, "block|%s|%s/%s|%s|%d|%d|%d|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.1f|%.3g%n", device.adapter().backend(), weights,
+                        names[mode], phase, t, start + t, layers, st.n(), st.gpuMedian() / 1e3, st.gpuP10() / 1e3, st.gpuP90() / 1e3,
+                        st.wallMedian() / 1e3, st.encodeMedian() / 1e3, t / (st.wallMedian() / 1e6), checks[mode]);
+            }
+            model.products.mode = 0;
         }
     }
 

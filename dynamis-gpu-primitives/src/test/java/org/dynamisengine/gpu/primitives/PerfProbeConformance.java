@@ -91,6 +91,7 @@ abstract class PerfProbeConformance {
         System.out.println("perf-device|" + device.adapter().name() + "|" + device.adapter().backend() + "|rounds=" + ROUNDS);
         String only = System.getProperty("perf.only", "gemm,selector,quant");
         if (only.contains("prefill")) prefillDequant();
+        if (only.contains("gate")) prefillGate();
         if (only.contains("gemm")) squareGemm();
         if (only.contains("selector")) selectorMisses();
         if (only.contains("quant")) quantized();
@@ -163,6 +164,17 @@ abstract class PerfProbeConformance {
                     gemmCase("sweep", m[3] > 1 ? shape.batched(m[3]) : shape, GemmF16.Input.FP16, all);
                 }
         }
+        // three- and five-row projections, absent from the decode grid that refitted SKINNY's ordinary-B row penalty
+        for (int m : new int[] {3, 5, 6})
+            for (int[] nk : new int[][] {{3456, 4096}, {4096, 4096}, {11008, 4096}})
+                for (boolean t : new boolean[] {false, true})
+                    gemmCase("rows-check", t ? Shape.ofTransposedB(m, nk[0], nk[1], 1, 0) : Shape.of(m, nk[0], nk[1], 1, 0), GemmF16.Input.FP16, all);
+        if (Boolean.getBoolean("perf.rowsCheckOnly")) return;
+        // the established large-projection decode grid (1.14.1's -Dgemm.decode=true shapes)
+        for (int[] nk : new int[][] {{4096, 4096}, {11008, 4096}, {4096, 11008}})
+            for (int m : new int[] {1, 2, 4, 8, 16})
+                for (boolean t : new boolean[] {true, false})
+                    gemmCase("decode-grid", t ? Shape.ofTransposedB(m, nk[0], nk[1], 1, 0) : Shape.of(m, nk[0], nk[1], 1, 0), GemmF16.Input.FP16, all);
         for (var s : shapes) gemmCase("selector", s, GemmF16.Input.FP16, all);
     }
 
@@ -274,10 +286,73 @@ abstract class PerfProbeConformance {
                                             c -> checkQuant(c, aEl, w, packed, s));
                                     quantMeasure("prefill-dequant", fname + " unpack+cast+GEMM", s, "UNPACK+" + gemm.algorithm(s).name(), one,
                                             (e, b) -> { toFp16.accept(e); gemm.encode(e, ga, w16, gc, s); }, gc, c -> checkQuant(c, aEl, w, packed, s));
+                                    quantMeasure("prefill-dequant", fname + " unpackF16+GEMM", s, "UNPACK16+" + gemm.algorithm(s).name(), one,
+                                            (e, b) -> { unpack.unpackF16(e, w, gw, w16); gemm.encode(e, ga, w16, gc, s); }, gc, c -> checkQuant(c, aEl, w, packed, s));
                                     run(toFp16);
                                     quantMeasure("prefill-dequant", fname + " GEMM only", s, gemm.algorithm(s).name(), one,
                                             (e, b) -> gemm.encode(e, ga, w16, gc, s), gc, c -> checkQuant(c, aEl, w, packed, s));
-                                    if (m == ms[0]) quantMeasure("prefill-dequant", fname + " unpack+cast only", s, "UNPACK", one, (e, b) -> toFp16.accept(e), gc, c -> 0);
+                                    if (m == ms[0]) {
+                                        quantMeasure("prefill-dequant", fname + " unpack+cast only", s, "UNPACK", one, (e, b) -> toFp16.accept(e), gc, c -> 0);
+                                        quantMeasure("prefill-dequant", fname + " unpackF16 only", s, "UNPACK16", one, (e, b) -> unpack.unpackF16(e, w, gw, w16), gc, c -> 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The quantized-prefill performance gate (1.15): quantized TILED, the two-pass path (unpack to FP32, cast, FP16
+     * GEMM) and the direct path (unpackF16, FP16 GEMM), alternating in the same rounds so drift lands on all three,
+     * around the tile boundaries. Each path's output is checked first. Lines: {@code perf|gate|<format> <path>|...}.
+     */
+    private void prefillGate() {
+        var r = new SplittableRandom(64);
+        int[][] nks = {{4096, 4096}, {14336, 4096}, {4096, 14336}};
+        int[] ms = java.util.Arrays.stream(System.getProperty("perf.gateM", "17,32,48,64,96,128,256,512,2048").split(",")).mapToInt(Integer::parseInt).toArray();
+        var formats = List.of(System.getProperty("perf.gateFormats", "Q4K,Q4,Q8,Q6K").split(","));
+        try (var tiled = QuantizedGemm.create(device, QuantizedGemm.Algorithm.TILED, GemmF16.Input.FP16, Precision.FP32);
+             var gemm = GemmF16.create(device, GemmF16.Input.FP16, Precision.FP32); var unpack = Quantize.create(device); var cast = Cast.create(device)) {
+            for (int[] nk : nks) {
+                int n = nk[0], k = nk[1];
+                float[] values = new float[n * k];
+                for (int i = 0; i < values.length; i++) values[i] = (float) (r.nextGaussian() * 0.02);
+                try (var w32 = buffer(4L * n * k); var w16 = buffer(2L * n * k)) {
+                    for (String fname : formats) {
+                        var format = Format.valueOf(fname);
+                        var w = new QuantizedMatrix(format, format.kQuant() ? 256 : 32, n, k);
+                        byte[] packed = w.quantize(values);
+                        byte[] up = packed.length % 4 == 0 ? packed : java.util.Arrays.copyOf(packed, (packed.length + 3) & ~3);
+                        try (var gw = buffer(w.bytes())) {
+                            run(e -> e.upload(gw, up));
+                            var view = org.dynamisengine.gpu.api.compute.kit.StridedView.contiguous((long) n * k);
+                            for (int m : ms) {
+                                var s = Shape.ofTransposedB(m, n, k, 1, 0);
+                                short[] ah = GemmF16Conformance.halves(m * k + (m * k & 1), r);
+                                var aEl = GemmF16.Elements.fp16(ah);
+                                try (var ga = buffer(2L * ah.length); var gc = buffer(s.cBytes())) {
+                                    run(e -> e.upload(ga, GemmF16Conformance.bytes(ah)));
+                                    List<Consumer<GpuCommandEncoder>> paths = List.of(
+                                            e -> tiled.encode(e, ga, w, gw, gc, s),
+                                            e -> { unpack.unpack(e, w, gw, w32); cast.cast(e, Cast.Type.FP32, Cast.Type.FP16, w32, view, w16, view); gemm.encode(e, ga, w16, gc, s); },
+                                            e -> { unpack.unpackF16(e, w, gw, w16); gemm.encode(e, ga, w16, gc, s); });
+                                    String[] names = {"TILED", "two-pass", "direct"};
+                                    double[] checks = new double[3];
+                                    for (int i = 0; i < 3; i++) {
+                                        var body = paths.get(i);
+                                        run(e -> e.fill(gc, 0x7FC00000));
+                                        run(body);
+                                        checks[i] = checkQuant(download(gc), aEl, w, packed, s);
+                                        assertTrue(checks[i] <= 1, "gate " + fname + " " + names[i] + " " + s + ": " + checks[i]);
+                                    }
+                                    var t = GpuBenchmark.alternating(device, paths, ROUNDS);
+                                    String sel = gemm.algorithm(s).name();
+                                    for (int i = 0; i < 3; i++)
+                                        print("gate", fname + " " + names[i], s, "FP16", i == 0 ? "TILED" : (i == 1 ? "UNPACK+CAST+" : "UNPACK16+") + sel,
+                                                GpuBenchmark.Stats.of(t.get(i)), checks[i]);
                                 }
                             }
                         }
