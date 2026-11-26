@@ -298,8 +298,8 @@ public final class GemmF16 implements AutoCloseable {
     /**
      * Estimated GPU time in microseconds of each algorithm for a shape, the shape registry's costs (1.8.0). Fitted to
      * the {@code -Dgemm.shapes=true} and {@code -Dgemm.decode=true} sweeps on an Apple M4 Max (native Metal and
-     * MoltenVK agree): on all 118 measured shapes (46 from 1.8.0, 72 from the 1.15 Phase 0 probe) it picks the fastest
-     * algorithm or one within 1.2 times of it, with the matrix kernel and without
+     * MoltenVK agree): on all 146 measured shapes (44 from the 1.8.0 sweep, 30 from the 1.14.1 decode grid, 72 from the
+     * 1.15 Phase 0 probe) it picks the fastest algorithm or one within 1.2 times of it, with the matrix kernel and without
      * ({@code GemmF16Test.costModelPicksTheMeasuredFastest}):
      * <ul>
      * <li>TILED runs 5.5 TFLOP/s over its 64-padded work when the GPU is full, which takes about 100 of its groups:
@@ -307,7 +307,8 @@ public final class GemmF16 implements AutoCloseable {
      * <li>SMALL runs 2.15 TFLOP/s over its 16-padded work, full from about 190 groups; it wins wherever TILED's tiles
      * are mostly padding (m or n up to 32) or too few to fill the GPU;</li>
      * <li>SKINNY streams B at 400 GB/s with B transposed (300 without) when full (256 groups of 16 columns; 64 of 64),
-     * slower by 17% (45%) per extra row of A. With B transposed and fewer than 32 groups it is latency-bound instead,
+     * slower by 17% (40%; 45% until 1.15.0, refitted to the 1.14.1 decode grid) per extra row of A. With B transposed
+     * and fewer than 32 groups it is latency-bound instead,
      * at about 1.2 + 1.5 m + 0.00064 m k microseconds (1.15.0). It is offered only where it can win
      * ({@link #skinnyApplies}).</li>
      * <li>SIMDGROUP_MATRIX runs in 0.5 of TILED's time from m = 64, 0.75 for B transposed and m up to 16, else 1.5
@@ -328,15 +329,18 @@ public final class GemmF16 implements AutoCloseable {
         }
         static double skinny(Shape s) {
             double groups = (double) Math.ceilDiv(s.n(), s.transposeB() ? SKINNY_COLUMNS_T : SKINNY_COLUMNS_N) * s.batch();
-            if (s.transposeB() && groups < 32) {
-                // too few groups to stream: the larger of streaming B at the full rate and the groups' latency, which
-                // grows with m k (1.15.0; fitted to one- and two-group products in the Phase 0 probe: 4 to 16 rows, k
-                // 2048 to 8192). From 32 groups the bandwidth estimate below holds, as it did before 1.15.0.
-                double stream = s.bBytes() / 4e5 * (1 + 0.17 * (s.m() - 1));
-                double latency = 1.2 + 1.5 * s.m() + 0.00064 * s.m() * s.k();
-                return Math.max(stream, latency);
+            if (s.transposeB()) {
+                if (groups < 32) {
+                    // too few groups to stream: the larger of streaming B at the full rate and the groups' latency,
+                    // which grows with m k (1.15.0; fitted to one- and two-group products in the Phase 0 probe: 4 to 16
+                    // rows, k 2048 to 8192)
+                    double stream = s.bBytes() / 4e5 * (1 + 0.17 * (s.m() - 1));
+                    double latency = 1.2 + 1.5 * s.m() + 0.00064 * s.m() * s.k();
+                    return Math.max(stream, latency);
+                }
+                return s.bBytes() / (4e5 * fill(groups, 256)) * (1 + 0.17 * (s.m() - 1));   // as before 1.15.0
             }
-            return s.bBytes() / (3e5 * fill(groups, 64)) * (1 + 0.45 * (s.m() - 1));
+            return s.bBytes() / (3e5 * fill(groups, 64)) * (1 + 0.40 * (s.m() - 1));   // 0.45 until 1.15.0
         }
         /**
          * Whether the registry offers SKINNY for {@code s}: m up to 16, A not transposed, and k at least 256. With a
